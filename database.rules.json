@@ -1,0 +1,40 @@
+{
+  "rules": {
+    "platformSettings": {
+      ".read": true,
+      ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || !data.exists())"
+    },
+    "users": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      ".indexOn": ["email", "role", "status", "createdAt"],
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || (auth.uid === $uid && (!data.exists() || newData.child('role').val() === data.child('role').val())))"
+      }
+    },
+    "businessProfiles": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')"
+      }
+    },
+    "tenants": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      "$uid": {
+        ".read": "auth != null && ((auth.uid === $uid && root.child('users').child(auth.uid).child('status').val() === 'active') || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        ".write": "auth != null && ((auth.uid === $uid && root.child('users').child(auth.uid).child('status').val() === 'active') || root.child('users').child(auth.uid).child('role').val() === 'super_admin')"
+      }
+    },
+    "activityLogs": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      ".write": "auth != null",
+      ".indexOn": ["createdAt", "targetTenantUid", "actorUid"]
+    },
+    "impersonationSessions": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      ".write": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      ".indexOn": ["startedAt", "adminUid", "targetUid"]
+    }
+  }
+}
