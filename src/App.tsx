@@ -302,8 +302,8 @@ function AppRouter() {
       <AppShell
         currentPath={path}
         navigate={navigate}
-        title="Edit Draft Invoice"
-        breadcrumbs={[bizName, 'Invoices', 'Edit Draft']}
+        title="Edit Invoice"
+        breadcrumbs={[bizName, 'Invoices', 'Edit']}
       >
         <DocumentEditor docType="invoice" editId={id} navigate={navigate} />
       </AppShell>

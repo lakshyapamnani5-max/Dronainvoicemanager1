@@ -2189,29 +2189,56 @@ export const rtdbService = {
     let status: InvoiceStatus = 'draft';
     let finalizedAt: string | null = null;
     let createdAt = now;
+    let amountPaid = 0;
+    let balanceDue = calc.grandTotal;
+    let sourceQuotationId: string | null = null;
+    let wasAlreadyFinalized = false;
 
     if (existingInvoiceId) {
       const exSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${existingInvoiceId}`));
       if (!exSnap.exists()) throw new Error('Invoice not found');
       const existing = normalizeInvoice(exSnap.val() as Record<string, unknown>);
-      if (existing.status !== 'draft') {
-        throw new Error(
-          'Finalized invoices are immutable and cannot be edited. Cancel the invoice and issue a replacement instead.'
-        );
+      if (existing.status === 'cancelled') {
+        throw new Error('Cancelled invoices cannot be edited.');
       }
       createdAt = existing.createdAt;
-      if (isDraft) {
-        invoiceNumber = existing.invoiceNumber;
-        status = 'draft';
+      sourceQuotationId = existing.sourceQuotationId ?? null;
+
+      if (existing.status === 'draft') {
+        if (isDraft) {
+          invoiceNumber = existing.invoiceNumber;
+          status = 'draft';
+        } else {
+          invoiceNumber = await allocateDocumentNumber(
+            tenantUid,
+            'INV',
+            profile.invoicePrefix,
+            invoiceDate
+          );
+          status = dueDate < todayISO() ? 'overdue' : 'unpaid';
+          finalizedAt = now;
+        }
       } else {
-        invoiceNumber = await allocateDocumentNumber(
-          tenantUid,
-          'INV',
-          profile.invoicePrefix,
-          invoiceDate
-        );
-        status = dueDate < todayISO() ? 'overdue' : 'unpaid';
-        finalizedAt = now;
+        wasAlreadyFinalized = true;
+        invoiceNumber = existing.invoiceNumber;
+        finalizedAt = existing.finalizedAt || existing.createdAt;
+        amountPaid = existing.amountPaid || 0;
+        const paidPaise = toPaise(amountPaid);
+        const grandPaise = toPaise(calc.grandTotal);
+        if (paidPaise > grandPaise) {
+          throw new Error(
+            `Invoice total cannot be less than recorded payments (INR ${amountPaid.toFixed(2)})`
+          );
+        }
+        balanceDue = fromPaise(grandPaise - paidPaise);
+        status =
+          balanceDue === 0
+            ? 'paid'
+            : dueDate < todayISO()
+              ? 'overdue'
+              : paidPaise > 0
+                ? 'partially_paid'
+                : 'unpaid';
       }
     } else {
       if (isDraft) {
@@ -2256,13 +2283,13 @@ export const rtdbService = {
       totalTax: calc.totalTax,
       roundOff: calc.roundOff,
       grandTotal: calc.grandTotal,
-      amountPaid: 0,
-      balanceDue: calc.grandTotal,
+      amountPaid,
+      balanceDue,
       amountInWords: calc.amountInWords,
       templateId,
       notes: sanitizeStr(input.notes, 1000),
       terms: sanitizeStr(input.terms ?? profile.termsAndConditions, 1500),
-      sourceQuotationId: null,
+      sourceQuotationId,
       cancellationReason: null,
       cancelledAt: null,
       finalizedAt,
@@ -2273,7 +2300,7 @@ export const rtdbService = {
 
     await set(ref(rtdb, `tenants/${tenantUid}/invoices/${targetId}`), stripUndefined(savedInvoice));
 
-    if (!isDraft) {
+    if (!isDraft && !wasAlreadyFinalized) {
       await createNotification({
         userUid: tenantUid,
         type: 'invoice_created',
@@ -2291,17 +2318,21 @@ export const rtdbService = {
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
       action: existingInvoiceId
-        ? isDraft
-          ? 'INVOICE_DRAFT_UPDATED'
-          : 'INVOICE_FINALIZED'
+        ? wasAlreadyFinalized
+          ? 'INVOICE_UPDATED'
+          : isDraft
+            ? 'INVOICE_DRAFT_UPDATED'
+            : 'INVOICE_FINALIZED'
         : isDraft
           ? 'INVOICE_DRAFT_CREATED'
           : 'INVOICE_CREATED',
       entityType: 'invoice',
       entityId: targetId,
-      summary: isDraft
-        ? `Saved draft invoice ${invoiceNumber}`
-        : `Issued invoice ${invoiceNumber} for INR ${calc.grandTotal.toFixed(2)}`,
+      summary: wasAlreadyFinalized
+        ? `Updated invoice ${invoiceNumber} for INR ${calc.grandTotal.toFixed(2)}`
+        : isDraft
+          ? `Saved draft invoice ${invoiceNumber}`
+          : `Issued invoice ${invoiceNumber} for INR ${calc.grandTotal.toFixed(2)}`,
     });
 
     return { invoice: savedInvoice };

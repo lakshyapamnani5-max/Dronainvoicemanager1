@@ -156,6 +156,8 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const [saveUpiToProfile, setSaveUpiToProfile] = React.useState<boolean>(true);
   const [uploadingLogo, setUploadingLogo] = React.useState(false);
   const [existingDocNumber, setExistingDocNumber] = React.useState<string>('');
+  const [existingStatus, setExistingStatus] = React.useState<string | null>(null);
+  const [existingAmountPaid, setExistingAmountPaid] = React.useState<number>(0);
 
   const [items, setItems] = React.useState<LineItemInput[]>([
     {
@@ -188,20 +190,24 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     async function init() {
       setLoading(true);
       try {
-        const custRes = await customersApi.list();
+        const custRes = await customersApi.list({ includeArchived: Boolean(editId) });
         if (!active) return;
-        setCustomers(custRes.customers);
 
         if (editId) {
           if (docType === 'invoice') {
             const res = await invoicesApi.get(editId);
             const inv: Invoice = res.invoice;
-            if (inv.status !== 'draft') {
-              notify('error', 'Finalized invoices cannot be edited');
+            if (inv.status === 'cancelled') {
+              notify('error', 'Cancelled invoices cannot be edited');
               navigate(`/invoices/${inv.id}`);
               return;
             }
+            setCustomers(
+              custRes.customers.filter((c) => !c.archived || c.id === inv.customerId)
+            );
             setExistingDocNumber(inv.invoiceNumber);
+            setExistingStatus(inv.status);
+            setExistingAmountPaid(inv.amountPaid || 0);
             setCustomerId(inv.customerId);
             setDocDate(inv.invoiceDate);
             setDueDate(inv.dueDate);
@@ -226,7 +232,11 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               navigate(`/quotations/${quo.id}`);
               return;
             }
+            setCustomers(
+              custRes.customers.filter((c) => !c.archived || c.id === quo.customerId)
+            );
             setExistingDocNumber(quo.quotationNumber);
+            setExistingStatus(quo.status);
             setCustomerId(quo.customerId);
             setDocDate(quo.quotationDate);
             setDueDate(quo.validUntil);
@@ -244,6 +254,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             setItems(quo.items);
           }
         } else {
+          setCustomers(custRes.customers);
           setLogoDataUrl(profile?.logoDataUrl || '');
           setUpiId(profile?.upiId || '');
           if (custRes.customers.length > 0) {
@@ -367,12 +378,12 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       const invPreview: Invoice = {
         ...base,
         invoiceNumber: existingDocNumber || `${prefix}-${year}-PREVIEW`,
-        status: 'unpaid',
+        status: (existingStatus as Invoice['status']) || 'unpaid',
         invoiceDate: docDate,
         dueDate,
         paymentTerms,
-        amountPaid: 0,
-        balanceDue: calc.grandTotal,
+        amountPaid: existingAmountPaid,
+        balanceDue: Math.max(0, calc.grandTotal - existingAmountPaid),
         sourceQuotationId: null,
         cancellationReason: null,
         cancelledAt: null,
@@ -416,6 +427,8 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     paymentTerms,
     today,
     existingDocNumber,
+    existingStatus,
+    existingAmountPaid,
   ]);
 
   const updateItem = (idx: number, patch: Partial<LineItemInput>) => {
@@ -522,7 +535,11 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         } else {
           notify(
             'success',
-            saveAsDraft ? 'Invoice saved as draft' : `Invoice ${res.invoice.invoiceNumber} issued`
+            saveAsDraft
+              ? 'Invoice saved as draft'
+              : editId && existingStatus && existingStatus !== 'draft'
+                ? `Invoice ${res.invoice.invoiceNumber} updated`
+                : `Invoice ${res.invoice.invoiceNumber} issued`
           );
         }
         navigate(`/invoices/${res.invoice.id}`);
@@ -629,14 +646,16 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         </div>
 
         <div className="hidden md:flex flex-wrap items-center gap-2">
-          <Button
-            variant="outline"
-            size="sm"
-            disabled={isBusy}
-            onClick={() => handleSave('draft')}
-          >
-            {savingMode === 'draft' ? 'Saving...' : 'Save as Draft'}
-          </Button>
+          {!(editId && docType === 'invoice' && existingStatus && existingStatus !== 'draft') ? (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isBusy}
+              onClick={() => handleSave('draft')}
+            >
+              {savingMode === 'draft' ? 'Saving...' : 'Save as Draft'}
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="sm"
@@ -646,7 +665,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             {savingMode === 'issue'
               ? 'Saving...'
               : docType === 'invoice'
-                ? 'Save Invoice'
+                ? editId && existingStatus && existingStatus !== 'draft'
+                  ? 'Save Changes'
+                  : 'Save Invoice'
                 : 'Save & Send Quotation'}
           </Button>
           <Button size="sm" disabled={isBusy} onClick={() => handleSave('download')}>
@@ -1365,15 +1386,23 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     ? 'Saving & Downloading...'
                     : `Save & Download ${docType === 'invoice' ? 'Invoice' : 'Quotation'} PDF`}
                 </Button>
-                <div className="grid grid-cols-2 gap-2.5">
-                  <Button
-                    type="button"
-                    variant="outline"
-                    disabled={isBusy}
-                    onClick={() => handleSave('draft')}
-                  >
-                    {savingMode === 'draft' ? 'Saving...' : 'Save Draft'}
-                  </Button>
+                <div
+                  className={
+                    editId && docType === 'invoice' && existingStatus && existingStatus !== 'draft'
+                      ? 'grid grid-cols-1'
+                      : 'grid grid-cols-2 gap-2.5'
+                  }
+                >
+                  {!(editId && docType === 'invoice' && existingStatus && existingStatus !== 'draft') ? (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      disabled={isBusy}
+                      onClick={() => handleSave('draft')}
+                    >
+                      {savingMode === 'draft' ? 'Saving...' : 'Save Draft'}
+                    </Button>
+                  ) : null}
                   <Button
                     type="button"
                     variant="outline"
@@ -1383,7 +1412,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     {savingMode === 'issue'
                       ? 'Saving...'
                       : docType === 'invoice'
-                        ? 'Save Invoice'
+                        ? editId && existingStatus && existingStatus !== 'draft'
+                          ? 'Save Changes'
+                          : 'Save Invoice'
                         : 'Save & Send'}
                   </Button>
                 </div>

@@ -284,7 +284,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                         <Eye className="h-3.5 w-3.5" />
                         View
                       </Button>
-                      {inv.status === 'draft' ? (
+                      {inv.status !== 'cancelled' ? (
                         <Button
                           size="sm"
                           variant="outline"
@@ -377,12 +377,12 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                           >
                             <Eye className="h-3.5 w-3.5" />
                           </Button>
-                          {inv.status === 'draft' ? (
+                          {inv.status !== 'cancelled' ? (
                             <Button
                               size="sm"
                               variant="ghost"
                               onClick={() => navigate(`/invoices/${inv.id}/edit`)}
-                              title="Edit Draft"
+                              title={inv.status === 'draft' ? 'Edit Draft' : 'Edit Invoice'}
                             >
                               <Edit2 className="h-3.5 w-3.5" />
                             </Button>
@@ -655,21 +655,21 @@ export function InvoiceDetailsPage({
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
+          {invoice.status !== 'cancelled' ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => navigate(`/invoices/${invoice.id}/edit`)}
+            >
+              <Edit2 className="h-3.5 w-3.5" />
+              {invoice.status === 'draft' ? 'Edit Draft' : 'Edit Invoice'}
+            </Button>
+          ) : null}
           {invoice.status === 'draft' ? (
-            <>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => navigate(`/invoices/${invoice.id}/edit`)}
-              >
-                <Edit2 className="h-3.5 w-3.5" />
-                Edit Draft
-              </Button>
-              <Button size="sm" onClick={handleFinalize}>
-                <CheckCircle2 className="h-3.5 w-3.5" />
-                Finalize & Issue
-              </Button>
-            </>
+            <Button size="sm" onClick={handleFinalize}>
+              <CheckCircle2 className="h-3.5 w-3.5" />
+              Finalize &amp; Issue
+            </Button>
           ) : null}
 
           {invoice.balanceDue > 0 &&
