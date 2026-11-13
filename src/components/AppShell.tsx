@@ -10,6 +10,7 @@ import {
   FileSpreadsheet,
   FileText,
   History,
+  Home,
   LayoutDashboard,
   LayoutTemplate,
   LogOut,
@@ -20,6 +21,7 @@ import {
   Settings,
   ShieldAlert,
   Sun,
+  UserCircle2,
   Users,
   X,
 } from 'lucide-react';
@@ -116,13 +118,55 @@ export function AppShell({
   const { theme, toggleTheme } = useTheme();
   const { notify } = useToast();
   const [mobileOpen, setMobileOpen] = React.useState(false);
+  const [moreSheetOpen, setMoreSheetOpen] = React.useState(false);
   const [notifOpen, setNotifOpen] = React.useState(false);
   const [notifications, setNotifications] = React.useState<NotificationItem[]>([]);
   const [exitingImp, setExitingImp] = React.useState(false);
+  const [inputFocused, setInputFocused] = React.useState(false);
 
   const isAdminView =
     session?.effectiveUser.role === 'super_admin' && !session.isImpersonating;
   const navGroups = isAdminView ? ADMIN_NAV : CUSTOMER_NAV;
+
+  // Hide mobile bottom bar while typing on small touch screens so soft keyboard never overlaps nav
+  React.useEffect(() => {
+    const isEditable = (el: EventTarget | null) => {
+      if (!(el instanceof HTMLElement)) return false;
+      const tag = el.tagName;
+      if (tag === 'TEXTAREA') return true;
+      if (tag === 'INPUT') {
+        const type = (el as HTMLInputElement).type;
+        return !['checkbox', 'radio', 'file', 'button', 'submit'].includes(type);
+      }
+      return el.isContentEditable;
+    };
+
+    const onFocusIn = (e: FocusEvent) => {
+      if (window.innerWidth < 1024 && isEditable(e.target)) {
+        setInputFocused(true);
+      }
+    };
+    const onFocusOut = () => {
+      setTimeout(() => {
+        if (!isEditable(document.activeElement)) {
+          setInputFocused(false);
+        }
+      }, 120);
+    };
+
+    window.addEventListener('focusin', onFocusIn);
+    window.addEventListener('focusout', onFocusOut);
+    return () => {
+      window.removeEventListener('focusin', onFocusIn);
+      window.removeEventListener('focusout', onFocusOut);
+    };
+  }, []);
+
+  React.useEffect(() => {
+    setMoreSheetOpen(false);
+    setMobileOpen(false);
+    setNotifOpen(false);
+  }, [currentPath]);
 
   const loadNotifications = React.useCallback(async () => {
     if (!session || session.effectiveUser.role !== 'business') return;
@@ -169,6 +213,60 @@ export function AppShell({
     }
   };
 
+  const isNavItemActive = (itemPath: string) =>
+    currentPath === itemPath ||
+    (itemPath !== '/admin' &&
+      itemPath !== '/dashboard' &&
+      currentPath.startsWith(itemPath + '/'));
+
+  const mobileBottomPrimary = isAdminView
+    ? [
+        { label: 'Home', path: '/admin', icon: Home },
+        { label: 'Businesses', path: '/admin/users', icon: Users },
+        { label: 'Invoices', path: '/admin/invoices', icon: Receipt },
+        { label: 'Activity', path: '/admin/activity', icon: Activity },
+      ]
+    : [
+        { label: 'Home', path: '/dashboard', icon: Home },
+        { label: 'Invoices', path: '/invoices', icon: Receipt },
+        { label: 'Quotes', path: '/quotations', icon: FileCheck2 },
+        { label: 'Customers', path: '/customers', icon: Users },
+      ];
+
+  const isMoreActive = isAdminView
+    ? [
+        '/admin/analytics',
+        '/admin/quotations',
+        '/admin/impersonation',
+        '/admin/settings',
+      ].some((p) => currentPath === p || currentPath.startsWith(p + '/'))
+    : [
+        '/payments',
+        '/reports/outstanding',
+        '/reports/sales',
+        '/business-profile',
+        '/templates/invoices',
+        '/templates/quotations',
+        '/settings',
+      ].some((p) => currentPath === p || currentPath.startsWith(p + '/'));
+
+  const moreSheetItems: NavItem[] = isAdminView
+    ? [
+        { label: 'Platform Analytics', path: '/admin/analytics', icon: BarChart3 },
+        { label: 'Platform Quotations', path: '/admin/quotations', icon: FileCheck2 },
+        { label: 'Impersonation History', path: '/admin/impersonation', icon: History },
+        { label: 'Platform Settings', path: '/admin/settings', icon: Settings },
+      ]
+    : [
+        { label: 'Payments', path: '/payments', icon: CreditCard },
+        { label: 'Outstanding Reports', path: '/reports/outstanding', icon: FileSpreadsheet },
+        { label: 'Sales Reports', path: '/reports/sales', icon: BarChart3 },
+        { label: 'Business Profile', path: '/business-profile', icon: Building2 },
+        { label: 'Invoice Templates', path: '/templates/invoices', icon: LayoutTemplate },
+        { label: 'Quotation Templates', path: '/templates/quotations', icon: FileText },
+        { label: 'Workspace Settings', path: '/settings', icon: Settings },
+      ];
+
   const sidebarContent = (
     <div className="flex h-full flex-col bg-zinc-950 text-zinc-100">
       <div className="flex h-16 items-center justify-between px-5 border-b border-zinc-800/80">
@@ -187,7 +285,7 @@ export function AppShell({
         <button
           type="button"
           onClick={() => setMobileOpen(false)}
-          className="lg:hidden text-zinc-400 hover:text-white p-1"
+          className="lg:hidden text-zinc-400 hover:text-white p-2 -mr-2"
           aria-label="Close navigation menu"
         >
           <X className="h-5 w-5" />
@@ -202,11 +300,7 @@ export function AppShell({
             </div>
             {group.items.map((item) => {
               const Icon = item.icon;
-              const active =
-                currentPath === item.path ||
-                (item.path !== '/admin' &&
-                  item.path !== '/dashboard' &&
-                  currentPath.startsWith(item.path + '/'));
+              const active = isNavItemActive(item.path);
               return (
                 <button
                   key={item.path}
@@ -268,7 +362,7 @@ export function AppShell({
             className="fixed inset-0 bg-black/50"
             onClick={() => setMobileOpen(false)}
           />
-          <div className="relative z-10 w-64 max-w-[80vw] h-full">{sidebarContent}</div>
+          <div className="relative z-10 w-72 max-w-[82vw] h-full">{sidebarContent}</div>
         </div>
       ) : null}
 
@@ -276,11 +370,11 @@ export function AppShell({
       <div className="flex-1 flex flex-col min-w-0">
         {/* Persistent Admin Impersonation Warning Banner */}
         {session?.isImpersonating ? (
-          <div className="no-print sticky top-0 z-40 flex flex-wrap items-center justify-between gap-3 bg-amber-500 px-4 py-2.5 text-zinc-950 shadow-sm">
-            <div className="flex items-center gap-2.5 text-xs sm:text-sm font-semibold">
+          <div className="no-print sticky top-0 z-40 flex flex-wrap items-center justify-between gap-2 bg-amber-500 px-3 sm:px-4 py-2 text-zinc-950 shadow-sm">
+            <div className="flex items-center gap-2 text-xs sm:text-sm font-semibold min-w-0">
               <ShieldAlert className="h-4 w-4 shrink-0" />
-              <span>
-                ADMIN MODE — You are viewing {session.effectiveUser.businessName}
+              <span className="truncate">
+                ADMIN MODE — {session.effectiveUser.businessName}
               </span>
               <span className="hidden md:inline font-normal text-zinc-900/80">
                 · Signed in as {session.actorUser.email}
@@ -291,7 +385,7 @@ export function AppShell({
               variant="secondary"
               disabled={exitingImp}
               onClick={handleExitImpersonation}
-              className="bg-zinc-950 text-white hover:bg-zinc-800 h-8 text-xs"
+              className="bg-zinc-950 text-white hover:bg-zinc-800 h-8 text-xs shrink-0"
             >
               {exitingImp ? 'Exiting...' : 'Exit Customer Mode'}
             </Button>
@@ -299,18 +393,18 @@ export function AppShell({
         ) : null}
 
         {/* Top Bar */}
-        <header className="no-print sticky top-0 z-30 flex h-16 items-center justify-between gap-4 border-b border-zinc-200 bg-white/95 px-4 sm:px-6 backdrop-blur-xs dark:border-zinc-800 dark:bg-zinc-900/95">
-          <div className="flex items-center gap-3 min-w-0">
+        <header className="no-print sticky top-0 z-30 flex h-14 lg:h-16 items-center justify-between gap-2 sm:gap-4 border-b border-zinc-200 bg-white/95 px-3 sm:px-6 backdrop-blur-xs dark:border-zinc-800 dark:bg-zinc-900/95">
+          <div className="flex items-center gap-2 sm:gap-3 min-w-0">
             <button
               type="button"
               onClick={() => setMobileOpen(true)}
-              className="lg:hidden rounded-lg p-2 text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800"
+              className="lg:hidden flex h-10 w-10 -ml-1 items-center justify-center rounded-lg text-zinc-600 hover:bg-zinc-100 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer shrink-0"
               aria-label="Open navigation menu"
             >
               <Menu className="h-5 w-5" />
             </button>
             <div className="min-w-0">
-              <div className="flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 truncate">
+              <div className="hidden sm:flex items-center gap-1.5 text-xs text-zinc-500 dark:text-zinc-400 truncate">
                 {breadcrumbs.map((b, i) => (
                   <React.Fragment key={i}>
                     {i > 0 ? <span aria-hidden="true">/</span> : null}
@@ -318,19 +412,19 @@ export function AppShell({
                   </React.Fragment>
                 ))}
               </div>
-              <h1 className="text-base sm:text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
+              <h1 className="text-sm sm:text-base lg:text-lg font-semibold tracking-tight text-zinc-900 dark:text-zinc-100 truncate">
                 {title}
               </h1>
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
             {session?.effectiveUser.role === 'business' ? (
               <div className="relative">
                 <button
                   type="button"
                   onClick={() => setNotifOpen((o) => !o)}
-                  className="relative flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer"
+                  className="relative flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer"
                   aria-label="Notifications"
                 >
                   <Bell className="h-4 w-4" />
@@ -347,7 +441,7 @@ export function AppShell({
                       className="fixed inset-0 z-30"
                       onClick={() => setNotifOpen(false)}
                     />
-                    <div className="absolute right-0 mt-2 z-40 w-80 sm:w-96 rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
+                    <div className="absolute right-0 mt-2 z-40 w-[min(calc(100vw-1.5rem),24rem)] rounded-xl border border-zinc-200 bg-white shadow-xl dark:border-zinc-800 dark:bg-zinc-900">
                       <div className="flex items-center justify-between px-4 py-3 border-b border-zinc-100 dark:border-zinc-800">
                         <span className="text-sm font-semibold">Notifications</span>
                         {unreadCount > 0 ? (
@@ -415,25 +509,177 @@ export function AppShell({
               type="button"
               onClick={toggleTheme}
               aria-label="Toggle light or dark theme"
-              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer"
+              className="flex h-10 w-10 sm:h-9 sm:w-9 items-center justify-center rounded-lg border border-zinc-200 text-zinc-600 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300 dark:hover:bg-zinc-800 cursor-pointer"
             >
               {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
             </button>
 
             {primaryAction ? (
-              <Button size="sm" onClick={primaryAction.onClick}>
+              <Button size="sm" onClick={primaryAction.onClick} className="h-10 sm:h-9 px-2.5 sm:px-3">
                 <Plus className="h-4 w-4" />
-                {primaryAction.label}
+                <span className="hidden sm:inline">{primaryAction.label}</span>
+                <span className="sm:hidden">New</span>
               </Button>
             ) : null}
           </div>
         </header>
 
         {/* Main Viewport */}
-        <main className="flex-1 p-4 sm:p-6 lg:p-8 max-w-[1440px] w-full mx-auto">
+        <main className="flex-1 p-3.5 sm:p-6 lg:p-8 pb-[calc(5.5rem+env(safe-area-inset-bottom))] lg:pb-8 max-w-[1440px] w-full mx-auto min-w-0">
           {children}
         </main>
       </div>
+
+      {/* Instagram-Style Fixed Bottom Navigation Bar (Mobile & Tablet < lg only) */}
+      {!inputFocused ? (
+        <nav
+          aria-label="Mobile navigation"
+          className="no-print lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200/90 bg-white/95 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95 pb-[env(safe-area-inset-bottom)]"
+        >
+          <div className="grid grid-cols-5 h-16 items-center max-w-lg mx-auto">
+            {mobileBottomPrimary.map((item) => {
+              const Icon = item.icon;
+              const active = isNavItemActive(item.path);
+              return (
+                <button
+                  key={item.path}
+                  type="button"
+                  onClick={() => {
+                    setMoreSheetOpen(false);
+                    navigate(item.path);
+                  }}
+                  className={`flex flex-col items-center justify-center h-full min-h-[44px] gap-0.5 transition-colors cursor-pointer ${
+                    active
+                      ? 'text-[#F57C00]'
+                      : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
+                >
+                  <div className="relative flex items-center justify-center">
+                    <Icon className={`h-5 w-5 ${active ? 'stroke-[2.4]' : 'stroke-[1.9]'}`} />
+                  </div>
+                  <span className={`text-[10px] tracking-tight ${active ? 'font-semibold' : 'font-medium'}`}>
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
+
+            <button
+              type="button"
+              onClick={() => setMoreSheetOpen((o) => !o)}
+              className={`flex flex-col items-center justify-center h-full min-h-[44px] gap-0.5 transition-colors cursor-pointer ${
+                moreSheetOpen || isMoreActive
+                  ? 'text-[#F57C00]'
+                  : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+              }`}
+              aria-expanded={moreSheetOpen}
+              aria-label="More workspace options"
+            >
+              <UserCircle2
+                className={`h-5 w-5 ${moreSheetOpen || isMoreActive ? 'stroke-[2.4]' : 'stroke-[1.9]'}`}
+              />
+              <span
+                className={`text-[10px] tracking-tight ${
+                  moreSheetOpen || isMoreActive ? 'font-semibold' : 'font-medium'
+                }`}
+              >
+                More
+              </span>
+            </button>
+          </div>
+        </nav>
+      ) : null}
+
+      {/* Mobile Profile & More Bottom Sheet */}
+      {moreSheetOpen ? (
+        <div
+          className="no-print lg:hidden fixed inset-0 z-50 flex items-end justify-center bg-black/50 backdrop-blur-[1px]"
+          role="dialog"
+          aria-modal="true"
+          aria-label="Workspace menu"
+        >
+          <div className="fixed inset-0" onClick={() => setMoreSheetOpen(false)} />
+          <div className="relative z-10 w-full max-w-lg rounded-t-3xl border-t border-zinc-200 bg-white px-5 pt-3 pb-[calc(1.25rem+env(safe-area-inset-bottom))] shadow-2xl dark:border-zinc-800 dark:bg-zinc-900 max-h-[85dvh] overflow-y-auto">
+            <div className="mx-auto mb-3 h-1.5 w-10 rounded-full bg-zinc-300 dark:bg-zinc-700" />
+
+            <div className="flex items-center justify-between gap-3 pb-4 border-b border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center gap-3 min-w-0">
+                <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-[#F57C00] text-white font-display font-bold">
+                  {(session?.effectiveUser.businessName || session?.effectiveUser.ownerName || 'D')
+                    .slice(0, 1)
+                    .toUpperCase()}
+                </div>
+                <div className="min-w-0">
+                  <div className="truncate text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    {session?.effectiveUser.businessName || session?.effectiveUser.ownerName}
+                  </div>
+                  <div className="truncate text-xs text-zinc-500 dark:text-zinc-400">
+                    {session?.effectiveUser.email}
+                  </div>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setMoreSheetOpen(false)}
+                className="flex h-10 w-10 items-center justify-center rounded-lg text-zinc-400 hover:bg-zinc-100 dark:hover:bg-zinc-800"
+                aria-label="Close menu"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <div className="py-4 grid grid-cols-2 gap-2.5">
+              {moreSheetItems.map((item) => {
+                const Icon = item.icon;
+                const active = isNavItemActive(item.path);
+                return (
+                  <button
+                    key={item.path}
+                    type="button"
+                    onClick={() => {
+                      setMoreSheetOpen(false);
+                      navigate(item.path);
+                    }}
+                    className={`flex items-center gap-2.5 rounded-xl border px-3.5 py-3 text-left text-xs font-medium transition-colors min-h-[48px] cursor-pointer ${
+                      active
+                        ? 'border-[#F57C00] bg-orange-50/70 text-[#F57C00] dark:bg-orange-950/20'
+                        : 'border-zinc-200 bg-zinc-50/60 text-zinc-800 hover:bg-zinc-100 dark:border-zinc-800 dark:bg-zinc-950/60 dark:text-zinc-200'
+                    }`}
+                  >
+                    <Icon className="h-4 w-4 shrink-0" />
+                    <span className="truncate">{item.label}</span>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 flex items-center gap-2.5">
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1"
+                onClick={toggleTheme}
+              >
+                {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                {theme === 'dark' ? 'Light Mode' : 'Dark Mode'}
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                className="flex-1 text-red-600 hover:text-red-700"
+                onClick={async () => {
+                  setMoreSheetOpen(false);
+                  await logout();
+                  navigate('/login');
+                }}
+              >
+                <LogOut className="h-4 w-4" />
+                Sign Out
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

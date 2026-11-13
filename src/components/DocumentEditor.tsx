@@ -116,7 +116,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [savingMode, setSavingMode] = React.useState<'draft' | 'issue' | 'download' | null>(null);
-  const [viewMode, setViewMode] = React.useState<ViewMode>('split');
+  const [viewMode, setViewMode] = React.useState<ViewMode>(() =>
+    typeof window !== 'undefined' && window.innerWidth < 1280 ? 'editor' : 'split'
+  );
   const [fullPreviewOpen, setFullPreviewOpen] = React.useState(false);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -571,23 +573,26 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
 
   return (
     <div className="space-y-5">
-      {/* Sticky Top Action Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
+      {/* Top Action Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2.5 sm:gap-3">
+        <div className="flex flex-wrap items-center justify-between w-full md:w-auto gap-2">
           <Button
             variant="outline"
             size="sm"
             onClick={() => navigate(docType === 'invoice' ? '/invoices' : '/quotations')}
           >
             <ArrowLeft className="h-4 w-4" />
-            Back to {docType === 'invoice' ? 'Invoices' : 'Quotations'}
+            <span className="sm:hidden">Back</span>
+            <span className="hidden sm:inline">
+              Back to {docType === 'invoice' ? 'Invoices' : 'Quotations'}
+            </span>
           </Button>
 
           <div className="inline-flex rounded-lg border border-zinc-200 bg-white p-0.5 dark:border-zinc-800 dark:bg-zinc-950">
             <button
               type="button"
               onClick={() => setViewMode('split')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+              className={`hidden xl:inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
                 viewMode === 'split'
                   ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
                   : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
@@ -599,7 +604,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             <button
               type="button"
               onClick={() => setViewMode('editor')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 sm:px-2.5 sm:py-1 text-xs font-medium cursor-pointer transition-colors ${
                 viewMode === 'editor'
                   ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
                   : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
@@ -611,7 +616,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             <button
               type="button"
               onClick={() => setViewMode('preview')}
-              className={`inline-flex items-center gap-1.5 rounded-md px-2.5 py-1 text-xs font-medium cursor-pointer transition-colors ${
+              className={`inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 sm:px-2.5 sm:py-1 text-xs font-medium cursor-pointer transition-colors ${
                 viewMode === 'preview'
                   ? 'bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900'
                   : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
@@ -623,7 +628,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="hidden md:flex flex-wrap items-center gap-2">
           <Button
             variant="outline"
             size="sm"
@@ -663,9 +668,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         {viewMode !== 'preview' ? (
           <div className={viewMode === 'split' ? 'xl:col-span-7 space-y-5' : 'space-y-6'}>
             {/* Business Logo & Customer */}
-            <div className="grid grid-cols-1 lg:grid-cols-12 gap-5">
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
               {/* Ask for Business Logo & UPI ID */}
-              <Card className="lg:col-span-5">
+              <Card className="lg:col-span-5 order-2 lg:order-1">
                 <CardHeader className="pb-3">
                   <CardTitle>Business Logo &amp; UPI QR</CardTitle>
                 </CardHeader>
@@ -731,7 +736,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                       value={upiId}
                       onChange={(e) => setUpiId(e.target.value)}
                       placeholder="yourname@okaxis"
-                      className="font-mono text-xs h-9"
+                      className="font-mono text-base sm:text-xs h-11 sm:h-9"
                     />
                     {upiId.trim() ? (
                       !upiId.includes('@') ? (
@@ -779,7 +784,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               </Card>
 
               {/* Customer Details */}
-              <Card className="lg:col-span-7">
+              <Card className="lg:col-span-7 order-1 lg:order-2">
                 <CardHeader className="flex flex-row items-center justify-between pb-3">
                   <CardTitle>Customer Details</CardTitle>
                   <Button size="sm" variant="ghost" onClick={() => setQuickCustOpen(true)}>
@@ -904,13 +909,13 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                   ) : null}
                 </div>
 
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-1">
-                  <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">
+                  <label className="flex min-h-[40px] sm:min-h-0 items-center gap-2 text-xs font-medium cursor-pointer">
                     <input
                       type="checkbox"
                       checked={isGst}
                       onChange={(e) => setIsGst(e.target.checked)}
-                      className="accent-[#F57C00]"
+                      className="h-4 w-4 accent-[#F57C00]"
                     />
                     GST Document
                   </label>
@@ -919,7 +924,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     value={taxMode}
                     disabled={!isGst}
                     onChange={(e) => setTaxMode(e.target.value as TaxPricingMode)}
-                    className="h-9 text-xs"
+                    className="h-11 sm:h-9 text-base sm:text-xs"
                   >
                     <option value="exclusive">GST Exclusive</option>
                     <option value="inclusive">GST Inclusive</option>
@@ -929,7 +934,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     value={taxSupplyMode}
                     disabled={!isGst}
                     onChange={(e) => setTaxSupplyMode(e.target.value as TaxSupplyMode)}
-                    className="h-9 text-xs"
+                    className="h-11 sm:h-9 text-base sm:text-xs"
                   >
                     <option value="auto">
                       Auto ({calc.isInterState ? 'IGST' : 'CGST+SGST'})
@@ -938,12 +943,12 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     <option value="inter">Force Inter-State (IGST)</option>
                   </Select>
 
-                  <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                  <label className="flex min-h-[40px] sm:min-h-0 items-center gap-2 text-xs font-medium cursor-pointer">
                     <input
                       type="checkbox"
                       checked={roundOffEnabled}
                       onChange={(e) => setRoundOffEnabled(e.target.checked)}
-                      className="accent-[#F57C00]"
+                      className="h-4 w-4 accent-[#F57C00]"
                     />
                     Auto Round-Off
                   </label>
@@ -951,17 +956,185 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               </CardContent>
             </Card>
 
-            {/* Line Items Table */}
+            {/* Line Items Table (Desktop) + Card Builder (Mobile) */}
             <Card>
               <CardHeader className="flex flex-row items-center justify-between pb-3">
-                <CardTitle>Line Items</CardTitle>
+                <CardTitle>Line Items ({items.length})</CardTitle>
                 <Button size="sm" variant="outline" onClick={addItem}>
                   <Plus className="h-3.5 w-3.5" />
                   Add Item
                 </Button>
               </CardHeader>
               <CardContent className="p-0">
-                <div className="overflow-x-auto">
+                {/* Mobile Line Items Card Builder */}
+                <div className="md:hidden p-3.5 space-y-3.5 border-t border-zinc-100 dark:border-zinc-800">
+                  {items.map((item, idx) => {
+                    const computed = calc.items[idx];
+                    return (
+                      <div
+                        key={idx}
+                        className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-950/50"
+                      >
+                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200/80 dark:border-zinc-800">
+                          <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                            Item #{idx + 1}
+                          </span>
+                          <div className="flex items-center gap-2">
+                            <span className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
+                              {formatINR(computed?.totalAmount || 0)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => removeItem(idx)}
+                              disabled={items.length <= 1}
+                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-red-600 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                              aria-label={`Remove item ${idx + 1}`}
+                            >
+                              <Trash2 className="h-4 w-4" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label>Item / Service Name *</Label>
+                          <Input
+                            value={item.name}
+                            onChange={(e) => updateItem(idx, { name: e.target.value })}
+                            placeholder="Service or product name"
+                          />
+                        </div>
+
+                        <div className="space-y-1">
+                          <Label>Description (Optional)</Label>
+                          <Input
+                            value={item.description}
+                            onChange={(e) => updateItem(idx, { description: e.target.value })}
+                            placeholder="Details or scope"
+                          />
+                        </div>
+
+                        <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          {isGst ? (
+                            <div className="space-y-1">
+                              <Label>HSN / SAC</Label>
+                              <Input
+                                value={item.hsnSac}
+                                onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                                placeholder="998314"
+                                className="font-mono"
+                              />
+                            </div>
+                          ) : null}
+                          <div className="space-y-1">
+                            <Label>Unit</Label>
+                            <Input
+                              value={item.unit}
+                              onChange={(e) => updateItem(idx, { unit: e.target.value })}
+                              placeholder="Nos / Hrs"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-2.5">
+                          <div className="space-y-1">
+                            <Label>Quantity</Label>
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              min="0.01"
+                              step="0.01"
+                              value={item.quantity}
+                              onChange={(e) =>
+                                updateItem(idx, { quantity: Number(e.target.value) })
+                              }
+                              className="font-mono"
+                            />
+                          </div>
+                          <div className="space-y-1">
+                            <Label>Rate (INR)</Label>
+                            <Input
+                              type="number"
+                              inputMode="decimal"
+                              min="0"
+                              step="0.01"
+                              value={item.rate}
+                              onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
+                              className="font-mono"
+                            />
+                          </div>
+                        </div>
+
+                        <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                          <div className="space-y-1">
+                            <Label>Discount</Label>
+                            <div className="flex gap-1.5">
+                              <Input
+                                type="number"
+                                inputMode="decimal"
+                                min="0"
+                                step="0.01"
+                                value={item.discountValue}
+                                onChange={(e) =>
+                                  updateItem(idx, { discountValue: Number(e.target.value) })
+                                }
+                                className="font-mono flex-1 min-w-0"
+                              />
+                              <Select
+                                value={item.discountType}
+                                onChange={(e) =>
+                                  updateItem(idx, {
+                                    discountType: e.target.value as 'percent' | 'fixed',
+                                  })
+                                }
+                                className="w-16 px-2"
+                              >
+                                <option value="percent">%</option>
+                                <option value="fixed">₹</option>
+                              </Select>
+                            </div>
+                          </div>
+                          {isGst ? (
+                            <div className="space-y-1">
+                              <Label>GST Rate (%)</Label>
+                              <Select
+                                value={item.taxRate}
+                                onChange={(e) =>
+                                  updateItem(idx, { taxRate: Number(e.target.value) })
+                                }
+                                className="font-mono"
+                              >
+                                {[0, 5, 12, 18, 28].map((r) => (
+                                  <option key={r} value={r}>
+                                    {r}%
+                                  </option>
+                                ))}
+                              </Select>
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {isGst || (computed?.discountAmount || 0) > 0 ? (
+                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-200/70 dark:border-zinc-800 text-[11px] text-zinc-500 font-mono">
+                            <span>Taxable: {formatINR(computed?.taxableAmount || 0)}</span>
+                            {isGst ? (
+                              <span>
+                                GST ({item.taxRate}%): {formatINR(computed?.taxAmount || 0)}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+
+                  <Button type="button" variant="outline" className="w-full" onClick={addItem}>
+                    <Plus className="h-4 w-4" />
+                    Add Another Item
+                  </Button>
+                </div>
+
+                {/* Desktop Line Items Table */}
+                <div className="hidden md:block overflow-x-auto">
                   <table className="w-full text-xs">
                     <thead className="border-y border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
                       <tr>
@@ -1177,6 +1350,54 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                 </CardContent>
               </Card>
             </div>
+
+            {/* Mobile Document Actions */}
+            <Card className="md:hidden">
+              <CardContent className="p-4 space-y-2.5">
+                <Button
+                  type="button"
+                  className="w-full"
+                  disabled={isBusy}
+                  onClick={() => handleSave('download')}
+                >
+                  <Download className="h-4 w-4" />
+                  {savingMode === 'download'
+                    ? 'Saving & Downloading...'
+                    : `Save & Download ${docType === 'invoice' ? 'Invoice' : 'Quotation'} PDF`}
+                </Button>
+                <div className="grid grid-cols-2 gap-2.5">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isBusy}
+                    onClick={() => handleSave('draft')}
+                  >
+                    {savingMode === 'draft' ? 'Saving...' : 'Save Draft'}
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    disabled={isBusy}
+                    onClick={() => handleSave('issue')}
+                  >
+                    {savingMode === 'issue'
+                      ? 'Saving...'
+                      : docType === 'invoice'
+                        ? 'Save Invoice'
+                        : 'Save & Send'}
+                  </Button>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  className="w-full text-xs text-zinc-600 dark:text-zinc-300"
+                  onClick={() => setViewMode('preview')}
+                >
+                  <FileText className="h-4 w-4" />
+                  Preview A4 {docType === 'invoice' ? 'Invoice' : 'Quotation'}
+                </Button>
+              </CardContent>
+            </Card>
           </div>
         ) : null}
 
@@ -1221,16 +1442,25 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                   </Button>
                 </div>
               </CardHeader>
-              <CardContent className="p-4 bg-zinc-100 dark:bg-zinc-900/70">
+              <CardContent className="p-3 sm:p-4 bg-zinc-100 dark:bg-zinc-900/70">
                 {viewMode === 'preview' ? (
-                  <div className="overflow-x-auto py-2">
-                    <DocumentPreviewSheet
-                      docType={docType}
-                      record={previewRecord}
-                      templateOverride={templateId}
-                      a4Ratio
-                    />
-                  </div>
+                  <>
+                    <div className="md:hidden py-1">
+                      <ScaledA4Preview
+                        docType={docType}
+                        record={previewRecord}
+                        templateId={templateId}
+                      />
+                    </div>
+                    <div className="hidden md:block overflow-x-auto py-2">
+                      <DocumentPreviewSheet
+                        docType={docType}
+                        record={previewRecord}
+                        templateOverride={templateId}
+                        a4Ratio
+                      />
+                    </div>
+                  </>
                 ) : (
                   <ScaledA4Preview
                     docType={docType}
@@ -1295,7 +1525,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               onChange={(e) => setQuickCust({ ...quickCust, companyName: e.target.value })}
             />
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>GSTIN</Label>
               <Input
@@ -1322,7 +1552,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               </Select>
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Email</Label>
               <Input

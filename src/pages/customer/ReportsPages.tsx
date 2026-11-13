@@ -79,9 +79,9 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <div className="flex items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2">
+          <div className="col-span-2 flex items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-x-auto no-scrollbar max-w-full">
             {[
               { id: 'all', label: 'All Outstanding' },
               { id: 'not_due', label: 'Not Due' },
@@ -91,7 +91,7 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
                 key={f.id}
                 type="button"
                 onClick={() => setFilter(f.id as 'all' | 'not_due' | 'overdue')}
-                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+                className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                   filter === f.id
                     ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-800 dark:text-zinc-100'
                     : 'text-zinc-600 dark:text-zinc-400'
@@ -105,7 +105,7 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
           <Select
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            className="w-48 h-9 text-xs"
+            className="col-span-2 w-full sm:w-48 h-10 sm:h-9 text-xs"
           >
             <option value="all">All Customers</option>
             {customers.map((c) => (
@@ -119,20 +119,23 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="w-36 h-9 text-xs"
+            className="w-full sm:w-36 h-10 sm:h-9 text-xs"
+            aria-label="Start date"
           />
           <Input
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="w-36 h-9 text-xs"
+            className="w-full sm:w-36 h-10 sm:h-9 text-xs"
+            aria-label="End date"
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
           <Button
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() =>
               exportToExcel(
                 `outstanding-report-${new Date().toISOString().slice(0, 10)}`,
@@ -153,6 +156,7 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
           </Button>
           <Button
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() =>
               generateOutstandingPdf(
                 session?.businessProfile?.businessName || 'DRONA Business',
@@ -166,7 +170,7 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
         <Card className="p-5">
           <div className="text-xs text-zinc-500">Total Outstanding Balance</div>
           <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-[#F57C00]">
@@ -198,55 +202,95 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
               />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer Name</TableHead>
-                  <TableHead className="text-right">Total Invoiced</TableHead>
-                  <TableHead className="text-right">Amount Paid</TableHead>
-                  <TableHead className="text-right">Outstanding Balance</TableHead>
-                  <TableHead className="text-right">Unpaid Invoices</TableHead>
-                  <TableHead className="text-right">Overdue Amount</TableHead>
-                  <TableHead>Oldest Due Date</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
                 {rows.map((r) => (
-                  <TableRow
+                  <button
                     key={r.customerId}
-                    className="cursor-pointer"
+                    type="button"
                     onClick={() => navigate(`/customers/${r.customerId}`)}
+                    className="w-full text-left p-4 space-y-1.5 active:bg-zinc-50 dark:active:bg-zinc-800/40 cursor-pointer"
                   >
-                    <TableCell>
-                      <div className="font-medium text-zinc-900 dark:text-zinc-100">
-                        {r.companyName || r.customerName}
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate">
+                          {r.companyName || r.customerName}
+                        </div>
+                        {r.companyName ? (
+                          <div className="text-xs text-zinc-500 truncate">{r.customerName}</div>
+                        ) : null}
                       </div>
-                      {r.companyName ? (
-                        <div className="text-xs text-zinc-500">{r.customerName}</div>
-                      ) : null}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatINR(r.totalInvoiced)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-emerald-600">
-                      {formatINR(r.amountPaid)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
-                      {formatINR(r.outstandingBalance)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {r.unpaidInvoiceCount}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums text-red-600">
-                      {formatINR(r.overdueAmount)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-zinc-500">
-                      {formatDate(r.oldestDueDate)}
-                    </TableCell>
-                  </TableRow>
+                      <div className="text-right shrink-0">
+                        <div className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
+                          {formatINR(r.outstandingBalance)}
+                        </div>
+                        {r.overdueAmount > 0 ? (
+                          <div className="font-mono text-[11px] text-red-600 tabular-nums">
+                            Overdue {formatINR(r.overdueAmount)}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                    <div className="flex items-center justify-between text-[11px] font-mono text-zinc-500">
+                      <span>{r.unpaidInvoiceCount} open inv · Oldest {formatDate(r.oldestDueDate)}</span>
+                      <span>Paid {formatINR(r.amountPaid)}</span>
+                    </div>
+                  </button>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Customer Name</TableHead>
+                      <TableHead className="text-right">Total Invoiced</TableHead>
+                      <TableHead className="text-right">Amount Paid</TableHead>
+                      <TableHead className="text-right">Outstanding Balance</TableHead>
+                      <TableHead className="text-right">Unpaid Invoices</TableHead>
+                      <TableHead className="text-right">Overdue Amount</TableHead>
+                      <TableHead>Oldest Due Date</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {rows.map((r) => (
+                      <TableRow
+                        key={r.customerId}
+                        className="cursor-pointer"
+                        onClick={() => navigate(`/customers/${r.customerId}`)}
+                      >
+                        <TableCell>
+                          <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                            {r.companyName || r.customerName}
+                          </div>
+                          {r.companyName ? (
+                            <div className="text-xs text-zinc-500">{r.customerName}</div>
+                          ) : null}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums">
+                          {formatINR(r.totalInvoiced)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums text-emerald-600">
+                          {formatINR(r.amountPaid)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
+                          {formatINR(r.outstandingBalance)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums">
+                          {r.unpaidInvoiceCount}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums text-red-600">
+                          {formatINR(r.overdueAmount)}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-500">
+                          {formatDate(r.oldestDueDate)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -305,8 +349,8 @@ export function SalesReportsPage() {
 
   return (
     <div className="space-y-6">
-      <div className="no-print flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
+      <div className="no-print flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-x-auto no-scrollbar max-w-full">
           {[
             { id: 'today', label: 'Daily' },
             { id: 'week', label: 'Weekly' },
@@ -319,7 +363,7 @@ export function SalesReportsPage() {
               key={opt.id}
               type="button"
               onClick={() => setRange(opt.id)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
                 range === opt.id
                   ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-800 dark:text-zinc-100'
                   : 'text-zinc-600 dark:text-zinc-400'
@@ -330,45 +374,48 @@ export function SalesReportsPage() {
           ))}
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {range === 'custom' ? (
-            <>
+            <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
               <Input
                 type="date"
                 value={customStart}
                 onChange={(e) => setCustomStart(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-xs"
               />
               <Input
                 type="date"
                 value={customEnd}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-xs"
               />
-            </>
+            </div>
           ) : null}
-          <Button
-            variant="outline"
-            size="sm"
-            onClick={() =>
-              exportToExcel(
-                `sales-report-${range}`,
-                'Sales',
-                (data?.salesSeries || []).map((s) => ({
-                  Period: s.period,
-                  'Invoices Count': s.invoiceCount,
-                  'Invoiced Amount': s.invoiced,
-                  'Payments Collected': s.collected,
-                }))
-              )
-            }
-          >
-            Export Excel
-          </Button>
-          <Button size="sm" onClick={() => window.print()}>
-            <Download className="h-4 w-4" />
-            Print / Save PDF
-          </Button>
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full sm:w-auto"
+              onClick={() =>
+                exportToExcel(
+                  `sales-report-${range}`,
+                  'Sales',
+                  (data?.salesSeries || []).map((s) => ({
+                    Period: s.period,
+                    'Invoices Count': s.invoiceCount,
+                    'Invoiced Amount': s.invoiced,
+                    'Payments Collected': s.collected,
+                  }))
+                )
+              }
+            >
+              Export Excel
+            </Button>
+            <Button size="sm" className="w-full sm:w-auto" onClick={() => window.print()}>
+              <Download className="h-4 w-4" />
+              Print / Save PDF
+            </Button>
+          </div>
         </div>
       </div>
 
@@ -376,28 +423,28 @@ export function SalesReportsPage() {
         <div className="p-8 text-sm text-zinc-500">Generating sales report...</div>
       ) : (
         <>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-4">
-            <Card className="p-5">
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 sm:gap-4">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs text-zinc-500">Period Sales</div>
-              <div className="mt-2 text-xl font-bold font-mono tabular-nums">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-xl font-bold font-mono tabular-nums truncate">
                 {formatINR(data.summary.totalSales)}
               </div>
             </Card>
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs text-zinc-500">Previous Period</div>
-              <div className="mt-2 text-xl font-bold font-mono tabular-nums">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-xl font-bold font-mono tabular-nums truncate">
                 {formatINR(data.summary.previousPeriodSales)}
               </div>
             </Card>
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs text-zinc-500">Collections</div>
-              <div className="mt-2 text-xl font-bold font-mono tabular-nums text-emerald-600">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-xl font-bold font-mono tabular-nums text-emerald-600 truncate">
                 {formatINR(data.summary.totalAmountReceived)}
               </div>
             </Card>
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs text-zinc-500">Receivables</div>
-              <div className="mt-2 text-xl font-bold font-mono tabular-nums text-[#F57C00]">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-xl font-bold font-mono tabular-nums text-[#F57C00] truncate">
                 {formatINR(data.summary.totalOutstanding)}
               </div>
             </Card>
@@ -409,7 +456,7 @@ export function SalesReportsPage() {
               <CardDescription>Period-by-period invoiced revenue vs cash collected</CardDescription>
             </CardHeader>
             <CardContent>
-              <div className="h-72 w-full">
+              <div className="h-56 sm:h-72 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <AreaChart data={data.salesSeries}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" vertical={false} />

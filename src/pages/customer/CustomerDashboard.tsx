@@ -84,8 +84,8 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
   return (
     <div className="space-y-6">
       {/* Filter Toolbar */}
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800 overflow-x-auto no-scrollbar max-w-full">
           {[
             { id: 'today', label: 'Today' },
             { id: 'week', label: 'This Week' },
@@ -111,35 +111,37 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
 
         <div className="flex flex-wrap items-center gap-2">
           {range === 'custom' ? (
-            <>
+            <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
               <Input
                 type="date"
                 value={customStart}
                 onChange={(e) => setCustomStart(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-xs"
               />
-              <span className="text-xs text-zinc-400">to</span>
+              <span className="hidden sm:inline text-xs text-zinc-400">to</span>
               <Input
                 type="date"
                 value={customEnd}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-xs"
               />
-            </>
+            </div>
           ) : null}
-          <Button variant="outline" size="sm" onClick={() => navigate('/quotations/new')}>
-            <Plus className="h-3.5 w-3.5" />
-            New Quotation
-          </Button>
-          <Button size="sm" onClick={() => navigate('/invoices/new')}>
-            <Plus className="h-3.5 w-3.5" />
-            New Invoice
-          </Button>
+          <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+            <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={() => navigate('/quotations/new')}>
+              <Plus className="h-3.5 w-3.5" />
+              New Quotation
+            </Button>
+            <Button size="sm" className="w-full sm:w-auto" onClick={() => navigate('/invoices/new')}>
+              <Plus className="h-3.5 w-3.5" />
+              New Invoice
+            </Button>
+          </div>
         </div>
       </div>
 
       {error ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between">
+        <div className="rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700 flex items-center justify-between gap-2">
           <span>{error}</span>
           <Button size="sm" variant="outline" onClick={() => load(false)}>
             Retry
@@ -148,7 +150,7 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
       ) : null}
 
       {/* 8 Summary Metric Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
         {loading || !s ? (
           Array.from({ length: 8 }).map((_, i) => (
             <Card key={i} className="p-5 space-y-2">
@@ -159,12 +161,12 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
           ))
         ) : (
           <>
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Total Sales</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100 truncate">
                 {formatINR(s.totalSales)}
               </div>
-              <div className="mt-1.5 flex items-center gap-1 text-xs">
+              <div className="mt-1 sm:mt-1.5 flex flex-wrap items-center gap-1 text-[11px] sm:text-xs">
                 {s.salesGrowthPct >= 0 ? (
                   <span className="inline-flex items-center text-emerald-600 dark:text-emerald-400 font-medium">
                     <ArrowUpRight className="h-3.5 w-3.5" />+{s.salesGrowthPct}%
@@ -175,64 +177,64 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
                     {s.salesGrowthPct}%
                   </span>
                 )}
-                <span className="text-zinc-400">vs previous period</span>
+                <span className="text-zinc-400">vs prev</span>
               </div>
             </Card>
 
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Total Invoices</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
                 {s.totalInvoices}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Issued tax & non-GST invoices</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Issued documents</div>
             </Card>
 
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Amount Received</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 truncate">
                 {formatINR(s.totalAmountReceived)}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Verified settled payments</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Settled payments</div>
             </Card>
 
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Total Outstanding</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-[#F57C00]">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-[#F57C00] truncate">
                 {formatINR(s.totalOutstanding)}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Pending receivable balance</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Pending balance</div>
             </Card>
 
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Overdue Amount</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-red-600 dark:text-red-400">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-red-600 dark:text-red-400 truncate">
                 {formatINR(s.overdueAmount)}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Past due date balance</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Past due balance</div>
             </Card>
 
-            <Card className="p-5">
+            <Card className="p-3.5 sm:p-5">
               <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Total Quotations</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
                 {s.totalQuotations}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Quotes created in period</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Quotes in period</div>
             </Card>
 
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Accepted Quotations</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Accepted Quotes</div>
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
                 {s.acceptedQuotations}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Approved & converted</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Approved &amp; converted</div>
             </Card>
 
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Pending Quotations</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">Pending Quotes</div>
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
                 {s.pendingQuotations}
               </div>
-              <div className="mt-1.5 text-xs text-zinc-500">Awaiting client confirmation</div>
+              <div className="mt-1 sm:mt-1.5 text-[11px] sm:text-xs text-zinc-500">Awaiting client</div>
             </Card>
           </>
         )}
@@ -249,9 +251,9 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
           </CardHeader>
           <CardContent>
             {loading ? (
-              <Skeleton className="h-72 w-full" />
+              <Skeleton className="h-56 sm:h-72 w-full" />
             ) : data && data.salesSeries.length > 0 ? (
-              <div className="h-72 w-full">
+              <div className="h-56 sm:h-72 w-full min-w-0">
                 <ResponsiveContainer width="100%" height="100%">
                   <BarChart data={data.salesSeries}>
                     <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" vertical={false} />
@@ -440,42 +442,82 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
         </CardHeader>
         <CardContent>
           {data && data.recentInvoices.length > 0 ? (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Invoice #</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Total</TableHead>
-                  <TableHead className="text-right">Balance</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800 -mx-1">
                 {data.recentInvoices.map((inv) => (
-                  <TableRow
+                  <button
                     key={inv.id}
-                    className="cursor-pointer"
+                    type="button"
                     onClick={() => navigate(`/invoices/${inv.id}`)}
+                    className="w-full text-left py-3 px-1 flex items-center justify-between gap-3 active:bg-zinc-50 dark:active:bg-zinc-800/40 cursor-pointer"
                   >
-                    <TableCell className="font-mono font-medium">{inv.invoiceNumber}</TableCell>
-                    <TableCell>{inv.customerSnapshot.companyName || inv.customerSnapshot.name}</TableCell>
-                    <TableCell className="font-mono text-xs text-zinc-500">
-                      {formatDate(inv.invoiceDate)}
-                    </TableCell>
-                    <TableCell>
-                      <InvoiceStatusLabel status={inv.status} />
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatINR(inv.grandTotal)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums font-semibold">
-                      {formatINR(inv.balanceDue)}
-                    </TableCell>
-                  </TableRow>
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                          {inv.invoiceNumber}
+                        </span>
+                        <InvoiceStatusLabel status={inv.status} />
+                      </div>
+                      <div className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200 mt-0.5">
+                        {inv.customerSnapshot.companyName || inv.customerSnapshot.name}
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                        {formatDate(inv.invoiceDate)}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-mono text-sm font-semibold tabular-nums">
+                        {formatINR(inv.grandTotal)}
+                      </div>
+                      {inv.balanceDue > 0 ? (
+                        <div className="font-mono text-[11px] text-[#F57C00] tabular-nums">
+                          Due {formatINR(inv.balanceDue)}
+                        </div>
+                      ) : null}
+                    </div>
+                  </button>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Invoice #</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Total</TableHead>
+                      <TableHead className="text-right">Balance</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {data.recentInvoices.map((inv) => (
+                      <TableRow
+                        key={inv.id}
+                        className="cursor-pointer"
+                        onClick={() => navigate(`/invoices/${inv.id}`)}
+                      >
+                        <TableCell className="font-mono font-medium">{inv.invoiceNumber}</TableCell>
+                        <TableCell>{inv.customerSnapshot.companyName || inv.customerSnapshot.name}</TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-500">
+                          {formatDate(inv.invoiceDate)}
+                        </TableCell>
+                        <TableCell>
+                          <InvoiceStatusLabel status={inv.status} />
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums">
+                          {formatINR(inv.grandTotal)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums font-semibold">
+                          {formatINR(inv.balanceDue)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           ) : (
             <EmptyState
               icon={Receipt}

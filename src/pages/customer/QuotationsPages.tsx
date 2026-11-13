@@ -98,10 +98,10 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 flex-1">
-          <div className="relative w-64">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 flex-1">
+          <div className="relative col-span-2 sm:w-64">
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -109,7 +109,7 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
               className="pl-9"
             />
           </div>
-          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-40">
+          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-full sm:w-40">
             <option value="all">All Statuses</option>
             <option value="draft">Draft</option>
             <option value="sent">Sent</option>
@@ -118,7 +118,7 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
             <option value="expired">Expired</option>
             <option value="converted">Converted</option>
           </Select>
-          <Select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="w-48">
+          <Select value={customerId} onChange={(e) => setCustomerId(e.target.value)} className="w-full sm:w-48">
             <option value="all">All Customers</option>
             {customers.map((c) => (
               <option key={c.id} value={c.id}>
@@ -128,10 +128,11 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
           </Select>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
           <Button
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() =>
               exportToExcel(
                 `drona-quotations-${new Date().toISOString().slice(0, 10)}`,
@@ -149,7 +150,7 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
           >
             Export Excel
           </Button>
-          <Button size="sm" onClick={() => navigate('/quotations/new')}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => navigate('/quotations/new')}>
             <Plus className="h-4 w-4" />
             Create Quotation
           </Button>
@@ -171,110 +172,186 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
               />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Quotation #</TableHead>
-                  <TableHead>Customer</TableHead>
-                  <TableHead>Date</TableHead>
-                  <TableHead>Valid Until</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-right">Amount</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              {/* Mobile Quotation Cards */}
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
                 {quotations.map((q) => (
-                  <TableRow key={q.id}>
-                    <TableCell>
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/quotations/${q.id}`)}
-                        className="font-mono font-semibold text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
-                      >
-                        {q.quotationNumber}
-                      </button>
-                    </TableCell>
-                    <TableCell>
-                      {q.customerSnapshot.companyName || q.customerSnapshot.name}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-zinc-500">
-                      {formatDate(q.quotationDate)}
-                    </TableCell>
-                    <TableCell className="font-mono text-xs text-zinc-500">
-                      {formatDate(q.validUntil)}
-                    </TableCell>
-                    <TableCell>
-                      <QuotationStatusLabel status={q.status} />
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums font-semibold">
-                      {formatINR(q.grandTotal)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="inline-flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => navigate(`/quotations/${q.id}`)}
-                          title="View"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                        {q.status === 'draft' ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => navigate(`/quotations/${q.id}/edit`)}
-                            title="Edit Draft"
+                  <div key={q.id} className="p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/quotations/${q.id}`)}
+                            className="font-mono text-sm font-semibold text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
                           >
-                            <Edit2 className="h-3.5 w-3.5" />
-                          </Button>
-                        ) : null}
-                        {q.status === 'sent' ? (
-                          <>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleStatus(q, 'accepted')}
-                              title="Mark Accepted"
-                            >
-                              <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => handleStatus(q, 'rejected')}
-                              title="Mark Rejected"
-                            >
-                              <XCircle className="h-3.5 w-3.5 text-red-600" />
-                            </Button>
-                          </>
-                        ) : null}
-                        {(q.status === 'draft' || q.status === 'sent' || q.status === 'accepted') &&
-                        !q.convertedInvoiceId ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleConvert(q)}
-                            title="Convert to Invoice"
-                          >
-                            <ArrowRightLeft className="h-3.5 w-3.5 text-[#F57C00]" />
-                          </Button>
-                        ) : null}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => generateDocumentPdf('quotation', q)}
-                          title="Download PDF"
-                        >
-                          <Download className="h-3.5 w-3.5" />
-                        </Button>
+                            {q.quotationNumber}
+                          </button>
+                          <QuotationStatusLabel status={q.status} />
+                        </div>
+                        <div className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200 mt-0.5">
+                          {q.customerSnapshot.companyName || q.customerSnapshot.name}
+                        </div>
+                        <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                          Date {formatDate(q.quotationDate)} · Valid {formatDate(q.validUntil)}
+                        </div>
                       </div>
-                    </TableCell>
-                  </TableRow>
+                      <div className="font-mono text-sm font-bold tabular-nums shrink-0">
+                        {formatINR(q.grandTotal)}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => navigate(`/quotations/${q.id}`)}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        View
+                      </Button>
+                      {q.status === 'draft' ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigate(`/quotations/${q.id}/edit`)}
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit
+                        </Button>
+                      ) : null}
+                      {(q.status === 'draft' || q.status === 'sent' || q.status === 'accepted') &&
+                      !q.convertedInvoiceId ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleConvert(q)}
+                        >
+                          <ArrowRightLeft className="h-3.5 w-3.5 text-[#F57C00]" />
+                          Invoice
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => generateDocumentPdf('quotation', q)}
+                        aria-label="Download PDF"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Quotation #</TableHead>
+                      <TableHead>Customer</TableHead>
+                      <TableHead>Date</TableHead>
+                      <TableHead>Valid Until</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Amount</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {quotations.map((q) => (
+                      <TableRow key={q.id}>
+                        <TableCell>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/quotations/${q.id}`)}
+                            className="font-mono font-semibold text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                          >
+                            {q.quotationNumber}
+                          </button>
+                        </TableCell>
+                        <TableCell>
+                          {q.customerSnapshot.companyName || q.customerSnapshot.name}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-500">
+                          {formatDate(q.quotationDate)}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-zinc-500">
+                          {formatDate(q.validUntil)}
+                        </TableCell>
+                        <TableCell>
+                          <QuotationStatusLabel status={q.status} />
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums font-semibold">
+                          {formatINR(q.grandTotal)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="inline-flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => navigate(`/quotations/${q.id}`)}
+                              title="View"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            {q.status === 'draft' ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => navigate(`/quotations/${q.id}/edit`)}
+                                title="Edit Draft"
+                              >
+                                <Edit2 className="h-3.5 w-3.5" />
+                              </Button>
+                            ) : null}
+                            {q.status === 'sent' ? (
+                              <>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleStatus(q, 'accepted')}
+                                  title="Mark Accepted"
+                                >
+                                  <CheckCircle2 className="h-3.5 w-3.5 text-emerald-600" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => handleStatus(q, 'rejected')}
+                                  title="Mark Rejected"
+                                >
+                                  <XCircle className="h-3.5 w-3.5 text-red-600" />
+                                </Button>
+                              </>
+                            ) : null}
+                            {(q.status === 'draft' || q.status === 'sent' || q.status === 'accepted') &&
+                            !q.convertedInvoiceId ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleConvert(q)}
+                                title="Convert to Invoice"
+                              >
+                                <ArrowRightLeft className="h-3.5 w-3.5 text-[#F57C00]" />
+                              </Button>
+                            ) : null}
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => generateDocumentPdf('quotation', q)}
+                              title="Download PDF"
+                            >
+                              <Download className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>

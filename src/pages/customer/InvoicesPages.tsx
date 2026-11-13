@@ -147,10 +147,10 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 flex-1">
-          <div className="relative w-64">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 flex-1">
+          <div className="relative col-span-2 sm:w-64">
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => {
@@ -167,7 +167,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               setStatus(e.target.value);
               setPage(1);
             }}
-            className="w-40"
+            className="w-full sm:w-40"
           >
             <option value="all">All Statuses</option>
             <option value="draft">Draft</option>
@@ -183,7 +183,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               setCustomerId(e.target.value);
               setPage(1);
             }}
-            className="w-48"
+            className="w-full sm:w-48"
           >
             <option value="all">All Customers</option>
             {customers.map((c) => (
@@ -196,21 +196,23 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="w-36"
+            className="w-full sm:w-36"
+            aria-label="Start date"
           />
           <Input
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="w-36"
+            className="w-full sm:w-36"
+            aria-label="End date"
           />
         </div>
 
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm" onClick={handleExportExcel}>
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
+          <Button variant="outline" size="sm" className="w-full sm:w-auto" onClick={handleExportExcel}>
             Export Excel
           </Button>
-          <Button size="sm" onClick={() => navigate('/invoices/new')}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={() => navigate('/invoices/new')}>
             <Plus className="h-4 w-4" />
             Create Invoice
           </Button>
@@ -233,7 +235,92 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
             </div>
           ) : (
             <>
-              <Table>
+              {/* Mobile Invoice Cards */}
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+                {paginated.map((inv) => (
+                  <div key={inv.id} className="p-4 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/invoices/${inv.id}`)}
+                            className="font-mono text-sm font-semibold text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                          >
+                            {inv.invoiceNumber}
+                          </button>
+                          <InvoiceStatusLabel status={inv.status} />
+                        </div>
+                        <div className="truncate text-sm font-medium text-zinc-800 dark:text-zinc-200 mt-0.5">
+                          {inv.customerSnapshot.companyName || inv.customerSnapshot.name}
+                        </div>
+                        <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                          Issued {formatDate(inv.invoiceDate)} · Due {formatDate(inv.dueDate)}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0">
+                        <div className="font-mono text-sm font-bold tabular-nums">
+                          {formatINR(inv.grandTotal)}
+                        </div>
+                        {inv.balanceDue > 0 ? (
+                          <div className="font-mono text-xs font-semibold text-[#F57C00] tabular-nums">
+                            Due {formatINR(inv.balanceDue)}
+                          </div>
+                        ) : (
+                          <div className="font-mono text-[11px] text-emerald-600 tabular-nums">
+                            Paid {formatINR(inv.amountPaid)}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => navigate(`/invoices/${inv.id}`)}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        View
+                      </Button>
+                      {inv.status === 'draft' ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => navigate(`/invoices/${inv.id}/edit`)}
+                        >
+                          <Edit2 className="h-3.5 w-3.5" />
+                          Edit
+                        </Button>
+                      ) : null}
+                      {inv.balanceDue > 0 &&
+                      inv.status !== 'draft' &&
+                      inv.status !== 'cancelled' ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleOpenPayment(inv)}
+                        >
+                          <CreditCard className="h-3.5 w-3.5 text-[#F57C00]" />
+                          Pay
+                        </Button>
+                      ) : null}
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => generateDocumentPdf('invoice', inv)}
+                        aria-label="Download PDF"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
                 <TableHeader>
                   <TableRow>
                     <TableHead>Invoice #</TableHead>
@@ -326,6 +413,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                   ))}
                 </TableBody>
               </Table>
+              </div>
 
               {totalPages > 1 ? (
                 <div className="flex items-center justify-between border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800">
@@ -364,7 +452,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
         description={`Remaining balance: ${formatINR(payInvoice?.balanceDue || 0)}`}
       >
         <form onSubmit={handleRecordPayment} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Payment Date</Label>
               <Input
@@ -388,7 +476,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Payment Method</Label>
               <Select
@@ -698,7 +786,7 @@ export function InvoiceDetailsPage({
         title={`Record Payment — ${invoice.invoiceNumber}`}
       >
         <form onSubmit={handleRecordPayment} className="space-y-4">
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Date</Label>
               <Input
@@ -722,7 +810,7 @@ export function InvoiceDetailsPage({
               />
             </div>
           </div>
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Method</Label>
               <Select

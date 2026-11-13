@@ -139,10 +139,10 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3 flex-1 min-w-[240px] max-w-md">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
+        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3 flex-1 sm:min-w-[240px] sm:max-w-md">
           <div className="relative flex-1">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -155,13 +155,13 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
               type="checkbox"
               checked={showArchived}
               onChange={(e) => setShowArchived(e.target.checked)}
-              className="rounded accent-[#F57C00]"
+              className="h-4 w-4 rounded accent-[#F57C00]"
             />
             Show archived
           </label>
         </div>
 
-        <Button onClick={openCreate}>
+        <Button onClick={openCreate} className="w-full sm:w-auto">
           <Plus className="h-4 w-4" />
           Add Customer
         </Button>
@@ -182,83 +182,151 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
               />
             </div>
           ) : (
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead>Customer / Company</TableHead>
-                  <TableHead>Contact</TableHead>
-                  <TableHead>GSTIN & State</TableHead>
-                  <TableHead className="text-right">Total Sales</TableHead>
-                  <TableHead className="text-right">Outstanding</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+            <>
+              {/* Mobile Customer Cards */}
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
                 {customers.map((c) => (
-                  <TableRow key={c.id} className={c.archived ? 'opacity-60' : ''}>
-                    <TableCell>
+                  <div key={c.id} className={`p-4 space-y-2.5 ${c.archived ? 'opacity-60' : ''}`}>
+                    <div className="flex items-start justify-between gap-2">
                       <button
                         type="button"
                         onClick={() => navigate(`/customers/${c.id}`)}
-                        className="text-left hover:text-[#F57C00] cursor-pointer"
+                        className="text-left min-w-0 cursor-pointer"
                       >
-                        <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                        <div className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate">
                           {c.companyName || c.name}
                           {c.archived ? ' (Archived)' : ''}
                         </div>
                         {c.companyName ? (
-                          <div className="text-xs text-zinc-500">{c.name}</div>
+                          <div className="text-xs text-zinc-500 truncate">{c.name}</div>
                         ) : null}
+                        <div className="text-[11px] font-mono text-zinc-500 mt-1">
+                          {c.gstin || 'Unregistered'} · {c.state}
+                        </div>
                       </button>
-                    </TableCell>
-                    <TableCell className="text-xs text-zinc-600 dark:text-zinc-400">
-                      <div>{c.email || '—'}</div>
-                      <div className="font-mono">{c.phone || '—'}</div>
-                    </TableCell>
-                    <TableCell className="text-xs">
-                      <div className="font-mono">{c.gstin || 'Unregistered'}</div>
-                      <div className="text-zinc-500">{c.state}</div>
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums">
-                      {formatINR(c.totalSales || 0)}
-                    </TableCell>
-                    <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
-                      {formatINR(c.outstandingBalance || 0)}
-                    </TableCell>
-                    <TableCell className="text-right">
-                      <div className="inline-flex items-center gap-1">
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => navigate(`/customers/${c.id}`)}
-                          title="View Ledger"
-                        >
-                          <Eye className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          onClick={() => openEdit(c)}
-                          title="Edit Customer"
-                        >
-                          <Edit2 className="h-3.5 w-3.5" />
-                        </Button>
-                        {!c.archived ? (
-                          <Button
-                            size="sm"
-                            variant="ghost"
-                            onClick={() => handleArchive(c)}
-                            title="Archive / Delete"
-                          >
-                            <Archive className="h-3.5 w-3.5" />
-                          </Button>
-                        ) : null}
+                      <div className="text-right shrink-0">
+                        <div className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
+                          {formatINR(c.outstandingBalance || 0)}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 font-mono">
+                          Sales {formatINR(c.totalSales || 0)}
+                        </div>
                       </div>
-                    </TableCell>
-                  </TableRow>
+                    </div>
+
+                    <div className="flex items-center gap-2 pt-1">
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="flex-1"
+                        onClick={() => navigate(`/customers/${c.id}`)}
+                      >
+                        <Eye className="h-3.5 w-3.5" />
+                        Ledger
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => openEdit(c)}
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                        Edit
+                      </Button>
+                      {!c.archived ? (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleArchive(c)}
+                          aria-label="Archive customer"
+                        >
+                          <Archive className="h-3.5 w-3.5" />
+                        </Button>
+                      ) : null}
+                    </div>
+                  </div>
                 ))}
-              </TableBody>
-            </Table>
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Customer / Company</TableHead>
+                      <TableHead>Contact</TableHead>
+                      <TableHead>GSTIN & State</TableHead>
+                      <TableHead className="text-right">Total Sales</TableHead>
+                      <TableHead className="text-right">Outstanding</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {customers.map((c) => (
+                      <TableRow key={c.id} className={c.archived ? 'opacity-60' : ''}>
+                        <TableCell>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/customers/${c.id}`)}
+                            className="text-left hover:text-[#F57C00] cursor-pointer"
+                          >
+                            <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                              {c.companyName || c.name}
+                              {c.archived ? ' (Archived)' : ''}
+                            </div>
+                            {c.companyName ? (
+                              <div className="text-xs text-zinc-500">{c.name}</div>
+                            ) : null}
+                          </button>
+                        </TableCell>
+                        <TableCell className="text-xs text-zinc-600 dark:text-zinc-400">
+                          <div>{c.email || '—'}</div>
+                          <div className="font-mono">{c.phone || '—'}</div>
+                        </TableCell>
+                        <TableCell className="text-xs">
+                          <div className="font-mono">{c.gstin || 'Unregistered'}</div>
+                          <div className="text-zinc-500">{c.state}</div>
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums">
+                          {formatINR(c.totalSales || 0)}
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
+                          {formatINR(c.outstandingBalance || 0)}
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="inline-flex items-center gap-1">
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => navigate(`/customers/${c.id}`)}
+                              title="View Ledger"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => openEdit(c)}
+                              title="Edit Customer"
+                            >
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </Button>
+                            {!c.archived ? (
+                              <Button
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => handleArchive(c)}
+                                title="Archive / Delete"
+                              >
+                                <Archive className="h-3.5 w-3.5" />
+                              </Button>
+                            ) : null}
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -472,22 +540,22 @@ export function CustomerDetailsPage({
         </div>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <Card className="p-5">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 sm:gap-4">
+        <Card className="p-4 sm:p-5">
           <div className="text-xs text-zinc-500">Customer-Wise Sales</div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums">
+          <div className="mt-1.5 sm:mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums truncate">
             {formatINR(customer.totalSales || 0)}
           </div>
         </Card>
-        <Card className="p-5">
+        <Card className="p-4 sm:p-5">
           <div className="text-xs text-zinc-500">Total Collected</div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-emerald-600">
+          <div className="mt-1.5 sm:mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-emerald-600 truncate">
             {formatINR(customer.totalPaid || 0)}
           </div>
         </Card>
-        <Card className="p-5">
+        <Card className="p-4 sm:p-5">
           <div className="text-xs text-zinc-500">Outstanding Balance</div>
-          <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-[#F57C00]">
+          <div className="mt-1.5 sm:mt-2 text-xl sm:text-2xl font-bold font-mono tabular-nums text-[#F57C00] truncate">
             {formatINR(customer.outstandingBalance || 0)}
           </div>
         </Card>

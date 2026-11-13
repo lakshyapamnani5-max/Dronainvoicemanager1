@@ -88,27 +88,32 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
   };
 
   return (
-    <div className="min-h-screen bg-zinc-50 dark:bg-zinc-950 flex flex-col lg:flex-row">
-      {/* Left Brand Panel */}
-      <div className="lg:w-[44%] bg-zinc-950 text-zinc-100 p-8 sm:p-12 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-zinc-800">
+    <div className="min-h-dvh bg-zinc-50 dark:bg-zinc-950 flex flex-col lg:flex-row">
+      {/* Left Brand Panel (compact bar on mobile, full hero panel on desktop) */}
+      <div className="lg:w-[44%] bg-zinc-950 text-zinc-100 px-5 py-4 sm:px-8 sm:py-6 lg:p-12 flex flex-col justify-between border-b lg:border-b-0 lg:border-r border-zinc-800">
         <div>
-          <div className="flex items-center gap-3">
-            <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-[#F57C00] text-white font-display font-bold text-lg">
-              D
+          <div className="flex items-center justify-between lg:justify-start gap-3">
+            <div className="flex items-center gap-2.5 sm:gap-3">
+              <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-[#F57C00] text-white font-display font-bold text-base sm:text-lg">
+                D
+              </div>
+              <span className="font-display text-xl sm:text-2xl font-bold tracking-tight text-white">
+                DRONA
+              </span>
             </div>
-            <span className="font-display text-2xl font-bold tracking-tight text-white">
-              DRONA
+            <span className="lg:hidden text-[11px] font-medium text-zinc-400">
+              GST Invoice &amp; Billing SaaS
             </span>
           </div>
-          <h1 className="mt-12 text-3xl sm:text-4xl font-semibold tracking-tight text-white leading-tight max-w-md [text-wrap:balance]">
+          <h1 className="hidden lg:block mt-12 text-3xl sm:text-4xl font-semibold tracking-tight text-white leading-tight max-w-md [text-wrap:balance]">
             Precision GST Invoicing & Revenue Operations for Modern Indian Businesses
           </h1>
-          <p className="mt-4 text-sm text-zinc-400 max-w-md leading-relaxed">
+          <p className="hidden lg:block mt-4 text-sm text-zinc-400 max-w-md leading-relaxed">
             Isolated multi-tenant workspaces for creating compliant tax invoices, tracking customer quotations, reconciling partial payments, and exporting A4 GST documents.
           </p>
         </div>
 
-        <div className="mt-10 pt-8 border-t border-zinc-800/80 grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
+        <div className="hidden lg:grid mt-10 pt-8 border-t border-zinc-800/80 grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
           <div>
             <div className="font-semibold text-zinc-200">GST & Non-GST Ready</div>
             <p className="mt-1 text-zinc-400 leading-relaxed">
@@ -125,13 +130,13 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
       </div>
 
       {/* Right Auth Form */}
-      <div className="flex-1 flex items-center justify-center p-6 sm:p-12">
-        <div className="w-full max-w-md space-y-6">
-          <div className="flex items-center justify-between text-xs">
+      <div className="flex-1 flex items-center justify-center p-4 py-6 sm:p-12">
+        <div className="w-full max-w-md space-y-4 sm:space-y-6">
+          <div className="flex items-center justify-between gap-2 text-xs">
             <button
               type="button"
               onClick={() => navigate(mode === 'admin-login' ? '/login' : '/admin/login')}
-              className="inline-flex items-center gap-1.5 font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
+              className="inline-flex min-h-[36px] items-center gap-1.5 font-medium text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100 cursor-pointer"
             >
               {mode === 'admin-login' ? (
                 <>
@@ -150,7 +155,7 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
               <button
                 type="button"
                 onClick={() => navigate('/register')}
-                className="font-medium text-[#F57C00] hover:underline cursor-pointer"
+                className="min-h-[36px] font-medium text-[#F57C00] hover:underline cursor-pointer"
               >
                 Register Business
               </button>
@@ -158,8 +163,8 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
           </div>
 
           <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-xl">
+            <CardHeader className="p-4 pb-2 sm:p-5 sm:pb-3">
+              <CardTitle className="flex items-center gap-2 text-lg sm:text-xl">
                 {mode === 'admin-login' ? (
                   <ShieldCheck className="h-5 w-5 text-[#F57C00]" />
                 ) : mode === 'forgot' ? (

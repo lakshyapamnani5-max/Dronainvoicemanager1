@@ -237,7 +237,7 @@ export function BusinessProfilePage() {
       </Card>
 
       <div className="flex justify-end">
-        <Button type="submit" disabled={saving}>
+        <Button type="submit" disabled={saving} className="w-full sm:w-auto">
           {saving ? 'Saving...' : 'Save Business Profile'}
         </Button>
       </div>
@@ -415,11 +415,11 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
         })}
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
           Live A4 Preview — {TEMPLATES.find((t) => t.id === previewId)?.name}
         </div>
-        <Button disabled={saving || activeTemplate === previewId} onClick={handleSetDefault}>
+        <Button className="w-full sm:w-auto" disabled={saving || activeTemplate === previewId} onClick={handleSetDefault}>
           {activeTemplate === previewId
             ? 'Currently Default'
             : saving
@@ -588,7 +588,7 @@ export function CustomerSettingsPage() {
             </div>
 
             <div className="flex justify-end">
-              <Button type="submit" disabled={saving}>
+              <Button type="submit" disabled={saving} className="w-full sm:w-auto">
                 {saving ? 'Saving...' : 'Save Settings'}
               </Button>
             </div>
@@ -626,7 +626,7 @@ export function CustomerSettingsPage() {
                 </div>
               </div>
               <div className="flex justify-end">
-                <Button type="submit" variant="outline" disabled={changingPw}>
+                <Button type="submit" variant="outline" disabled={changingPw} className="w-full sm:w-auto">
                   {changingPw ? 'Updating...' : 'Update Password'}
                 </Button>
               </div>

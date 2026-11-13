@@ -116,10 +116,10 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 flex-1">
-          <div className="relative w-60">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <div className="flex flex-col lg:flex-row lg:items-center lg:justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex sm:flex-wrap items-center gap-2 flex-1">
+          <div className="relative col-span-2 sm:w-60">
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -127,7 +127,7 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
               className="pl-9"
             />
           </div>
-          <Select value={method} onChange={(e) => setMethod(e.target.value)} className="w-44">
+          <Select value={method} onChange={(e) => setMethod(e.target.value)} className="w-full sm:w-44">
             <option value="all">All Payment Modes</option>
             <option value="UPI">UPI</option>
             <option value="Bank Transfer">Bank Transfer</option>
@@ -139,7 +139,7 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
           <Select
             value={customerId}
             onChange={(e) => setCustomerId(e.target.value)}
-            className="w-48"
+            className="w-full sm:w-48"
           >
             <option value="all">All Customers</option>
             {customers.map((c) => (
@@ -152,20 +152,23 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
             type="date"
             value={startDate}
             onChange={(e) => setStartDate(e.target.value)}
-            className="w-36"
+            className="w-full sm:w-36"
+            aria-label="Start date"
           />
           <Input
             type="date"
             value={endDate}
             onChange={(e) => setEndDate(e.target.value)}
-            className="w-36"
+            className="w-full sm:w-36"
+            aria-label="End date"
           />
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 shrink-0">
           <Button
             variant="outline"
             size="sm"
+            className="w-full sm:w-auto"
             onClick={() =>
               exportToExcel(
                 `drona-payments-${new Date().toISOString().slice(0, 10)}`,
@@ -184,15 +187,15 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
           >
             Export Excel
           </Button>
-          <Button size="sm" onClick={openModal} disabled={unpaidInvoices.length === 0}>
+          <Button size="sm" className="w-full sm:w-auto" onClick={openModal} disabled={unpaidInvoices.length === 0}>
             <Plus className="h-4 w-4" />
             Record Payment
           </Button>
         </div>
       </div>
 
-      <div className="flex items-center justify-between rounded-xl border border-zinc-200 bg-white px-5 py-3.5 text-sm dark:border-zinc-800 dark:bg-zinc-900">
-        <span className="text-zinc-500">
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1.5 rounded-xl border border-zinc-200 bg-white px-4 sm:px-5 py-3.5 text-sm dark:border-zinc-800 dark:bg-zinc-900">
+        <span className="text-zinc-500 text-xs sm:text-sm">
           Showing {payments.length} recorded payment{payments.length === 1 ? '' : 's'}
         </span>
         <span className="font-mono font-semibold tabular-nums text-emerald-600 dark:text-emerald-400">
@@ -215,7 +218,60 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
               />
             </div>
           ) : (
-            <Table>
+            <>
+              {/* Mobile Payment Cards */}
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+                {payments.map((p) => (
+                  <div key={p.id} className="p-4 space-y-2">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                            {p.receiptNumber}
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => navigate(`/invoices/${p.invoiceId}`)}
+                            className="font-mono text-xs text-[#F57C00] hover:underline cursor-pointer"
+                          >
+                            {p.invoiceNumber}
+                          </button>
+                        </div>
+                        <div className="text-sm font-medium text-zinc-800 dark:text-zinc-200 truncate mt-0.5">
+                          {p.customerName}
+                        </div>
+                        <div className="text-[11px] text-zinc-500 font-mono mt-0.5">
+                          {formatDate(p.paymentDate)} · {p.paymentMethod}
+                          {p.referenceId ? ` · ${p.referenceId}` : ''}
+                        </div>
+                      </div>
+                      <div className="text-right shrink-0 space-y-1.5">
+                        <div className="font-mono text-sm font-bold tabular-nums text-emerald-600 dark:text-emerald-400">
+                          {formatINR(p.amount)}
+                        </div>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          className="h-8 px-2.5 text-xs"
+                          onClick={() =>
+                            generatePaymentReceiptPdf(
+                              p,
+                              session?.businessProfile?.businessName || 'DRONA Business',
+                              session?.businessProfile?.address || ''
+                            )
+                          }
+                        >
+                          <Download className="h-3.5 w-3.5" />
+                          Receipt
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="hidden md:block">
+                <Table>
               <TableHeader>
                 <TableRow>
                   <TableHead>Receipt #</TableHead>
@@ -274,6 +330,8 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
                 ))}
               </TableBody>
             </Table>
+            </div>
+            </>
           )}
         </CardContent>
       </Card>
@@ -308,7 +366,7 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
             </Select>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Payment Date *</Label>
               <Input
@@ -335,7 +393,7 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Payment Mode *</Label>
               <Select

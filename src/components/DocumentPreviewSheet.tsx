@@ -80,9 +80,9 @@ export function DocumentPreviewSheet({
       {isClassic ? <div className="h-1.5 w-full bg-[#F57C00] shrink-0" /> : null}
 
       <div
-        className={`${isCompact ? 'p-6' : 'p-8 md:p-10'} ${
-          a4Ratio ? 'flex-1 flex flex-col justify-between' : ''
-        }`}
+        className={`${
+          a4Ratio ? (isCompact ? 'p-6' : 'p-8 md:p-10') : isCompact ? 'p-4 sm:p-6' : 'p-4 sm:p-8 md:p-10'
+        } ${a4Ratio ? 'flex-1 flex flex-col justify-between' : ''}`}
       >
         <div>
         {/* Header */}
@@ -193,8 +193,8 @@ export function DocumentPreviewSheet({
         </div>
 
         {/* Itemized Table */}
-        <div className="py-5">
-          <table className="w-full border-collapse text-xs">
+        <div className="py-5 overflow-x-auto">
+          <table className="w-full min-w-[540px] border-collapse text-xs">
             <thead>
               <tr
                 className={

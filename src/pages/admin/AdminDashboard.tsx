@@ -78,7 +78,7 @@ export function AdminDashboardPage({
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-1 rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
+        <div className="flex items-center gap-1 overflow-x-auto no-scrollbar max-w-full rounded-lg bg-zinc-100 p-1 dark:bg-zinc-900 border border-zinc-200 dark:border-zinc-800">
           {[
             { id: 'today', label: 'Today' },
             { id: 'week', label: 'This Week' },
@@ -91,7 +91,7 @@ export function AdminDashboardPage({
               key={opt.id}
               type="button"
               onClick={() => setRange(opt.id)}
-              className={`rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+              className={`shrink-0 whitespace-nowrap rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
                 range === opt.id
                   ? 'bg-white text-zinc-900 shadow-xs dark:bg-zinc-800 dark:text-zinc-100'
                   : 'text-zinc-600 dark:text-zinc-400'
@@ -102,24 +102,24 @@ export function AdminDashboardPage({
           ))}
         </div>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
           {range === 'custom' ? (
-            <>
+            <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
               <Input
                 type="date"
                 value={customStart}
                 onChange={(e) => setCustomStart(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-sm sm:text-xs"
               />
               <Input
                 type="date"
                 value={customEnd}
                 onChange={(e) => setCustomEnd(e.target.value)}
-                className="w-36 h-9 text-xs"
+                className="w-full sm:w-36 h-10 sm:h-9 text-sm sm:text-xs"
               />
-            </>
+            </div>
           ) : null}
-          <Button size="sm" onClick={() => navigate('/admin/users/new')}>
+          <Button size="sm" onClick={() => navigate('/admin/users/new')} className="w-full sm:w-auto">
             <Plus className="h-4 w-4" />
             Create Customer Account
           </Button>
@@ -127,58 +127,60 @@ export function AdminDashboardPage({
       </div>
 
       {/* Metrics Grid */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-4">
+      <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
         {loading || !s ? (
           Array.from({ length: 8 }).map((_, i) => (
-            <Card key={i} className="p-5 space-y-2">
-              <Skeleton className="h-4 w-28" />
-              <Skeleton className="h-7 w-32" />
+            <Card key={i} className="p-3.5 sm:p-5 space-y-2">
+              <Skeleton className="h-4 w-24 sm:w-28" />
+              <Skeleton className="h-7 w-28 sm:w-32" />
             </Card>
           ))
         ) : (
           <>
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500">Registered Businesses</div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-[11px] sm:text-xs font-medium text-zinc-500">
+                Registered Businesses
+              </div>
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums truncate">
                 {s.totalBusinesses}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">
+              <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
                 {s.activeAccounts} active · {s.inactiveAccounts} inactive
               </div>
             </Card>
 
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-[11px] sm:text-xs font-medium text-zinc-500">
                 DRONA Subscription Revenue (MRR)
               </div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-[#F57C00]">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-[#F57C00] truncate">
                 {formatINR(s.dronaSubscriptionRevenue)}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">
+              <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
                 Actual platform SaaS revenue (active plans)
               </div>
             </Card>
 
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-[11px] sm:text-xs font-medium text-zinc-500">
                 Customer Invoiced GMV (Platform-Wide)
               </div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums truncate">
                 {formatINR(s.platformInvoicedValue)}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">
+              <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
                 Customer-billed volume (not DRONA revenue)
               </div>
             </Card>
 
-            <Card className="p-5">
-              <div className="text-xs font-medium text-zinc-500">
+            <Card className="p-3.5 sm:p-5">
+              <div className="text-[11px] sm:text-xs font-medium text-zinc-500">
                 Customer Payments Recorded
               </div>
-              <div className="mt-2 text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400">
+              <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 truncate">
                 {formatINR(s.platformPaymentsRecorded)}
               </div>
-              <div className="mt-1 text-xs text-zinc-500">
+              <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
                 {s.totalInvoicesGenerated} invoices · {s.totalQuotationsGenerated} quotations
               </div>
             </Card>
@@ -196,9 +198,9 @@ export function AdminDashboardPage({
         </CardHeader>
         <CardContent>
           {loading ? (
-            <Skeleton className="h-72 w-full" />
+            <Skeleton className="h-56 sm:h-72 w-full" />
           ) : data && data.usageSeries.length > 0 ? (
-            <div className="h-72 w-full">
+            <div className="h-56 sm:h-72 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={data.usageSeries}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" vertical={false} />
@@ -221,7 +223,7 @@ export function AdminDashboardPage({
               </ResponsiveContainer>
             </div>
           ) : (
-            <div className="h-64 flex items-center justify-center text-xs text-zinc-500">
+            <div className="h-56 sm:h-64 flex items-center justify-center text-xs text-zinc-500">
               No platform document volume in selected range.
             </div>
           )}
@@ -231,7 +233,7 @@ export function AdminDashboardPage({
       {!analyticsOnly && data ? (
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
           <Card className="lg:col-span-7">
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <CardTitle>Recently Registered Businesses</CardTitle>
                 <CardDescription>Tenant workspaces and billing volume</CardDescription>
@@ -241,48 +243,80 @@ export function AdminDashboardPage({
               </Button>
             </CardHeader>
             <CardContent className="p-0">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Business</TableHead>
-                    <TableHead>Status</TableHead>
-                    <TableHead className="text-right">Docs</TableHead>
-                    <TableHead className="text-right">Billed GMV</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {data.recentBusinesses.map((b) => (
-                    <TableRow
-                      key={b.uid}
-                      className="cursor-pointer"
-                      onClick={() => navigate(`/admin/users/${b.uid}`)}
-                    >
-                      <TableCell>
-                        <div className="font-medium text-zinc-900 dark:text-zinc-100">
+              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+                {data.recentBusinesses.map((b) => (
+                  <button
+                    key={b.uid}
+                    type="button"
+                    onClick={() => navigate(`/admin/users/${b.uid}`)}
+                    className="w-full text-left p-4 flex items-center justify-between gap-3 active:bg-zinc-50 dark:active:bg-zinc-900 cursor-pointer"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">
                           {b.businessName}
-                        </div>
-                        <div className="text-xs text-zinc-500">
-                          {b.ownerName} · {formatDate(b.createdAt)}
-                        </div>
-                      </TableCell>
-                      <TableCell>
+                        </span>
                         <AccountStatusLabel status={b.status} />
-                      </TableCell>
-                      <TableCell className="text-right font-mono text-xs tabular-nums">
-                        {b.invoiceCount} inv / {b.quotationCount} quo
-                      </TableCell>
-                      <TableCell className="text-right font-mono tabular-nums font-semibold">
+                      </div>
+                      <div className="text-xs text-zinc-500 mt-0.5 truncate">
+                        {b.ownerName} · {formatDate(b.createdAt)}
+                      </div>
+                    </div>
+                    <div className="text-right shrink-0">
+                      <div className="font-mono text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
                         {formatINR(b.totalSales)}
-                      </TableCell>
+                      </div>
+                      <div className="font-mono text-[11px] text-zinc-500">
+                        {b.invoiceCount} inv / {b.quotationCount} quo
+                      </div>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <div className="hidden md:block">
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Business</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Docs</TableHead>
+                      <TableHead className="text-right">Billed GMV</TableHead>
                     </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                  </TableHeader>
+                  <TableBody>
+                    {data.recentBusinesses.map((b) => (
+                      <TableRow
+                        key={b.uid}
+                        className="cursor-pointer"
+                        onClick={() => navigate(`/admin/users/${b.uid}`)}
+                      >
+                        <TableCell>
+                          <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                            {b.businessName}
+                          </div>
+                          <div className="text-xs text-zinc-500">
+                            {b.ownerName} · {formatDate(b.createdAt)}
+                          </div>
+                        </TableCell>
+                        <TableCell>
+                          <AccountStatusLabel status={b.status} />
+                        </TableCell>
+                        <TableCell className="text-right font-mono text-xs tabular-nums">
+                          {b.invoiceCount} inv / {b.quotationCount} quo
+                        </TableCell>
+                        <TableCell className="text-right font-mono tabular-nums font-semibold">
+                          {formatINR(b.totalSales)}
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             </CardContent>
           </Card>
 
           <Card className="lg:col-span-5">
-            <CardHeader className="flex flex-row items-center justify-between">
+            <CardHeader className="flex flex-wrap items-center justify-between gap-2">
               <div>
                 <CardTitle>Recent Platform Activity</CardTitle>
                 <CardDescription>Audited actions & impersonation events</CardDescription>

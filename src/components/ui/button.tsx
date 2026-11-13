@@ -18,10 +18,10 @@ const buttonVariants = cva(
           'bg-red-600 text-white hover:bg-red-700 dark:bg-red-700 dark:hover:bg-red-600',
       },
       size: {
-        default: 'h-10 px-4 py-2',
-        sm: 'h-9 px-3 text-xs',
-        lg: 'h-11 px-6',
-        icon: 'h-10 w-10',
+        default: 'h-11 sm:h-10 px-4 py-2',
+        sm: 'h-10 sm:h-9 px-3 text-xs',
+        lg: 'h-12 sm:h-11 px-6',
+        icon: 'h-11 w-11 sm:h-10 sm:w-10',
       },
     },
     defaultVariants: {

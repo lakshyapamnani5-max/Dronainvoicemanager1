@@ -56,10 +56,10 @@ export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) =>
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="relative w-64">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative col-span-2 sm:w-64">
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -67,7 +67,7 @@ export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) =>
               className="pl-9"
             />
           </div>
-          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-40">
+          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="col-span-2 sm:w-40">
             <option value="all">All Statuses</option>
             <option value="paid">Paid</option>
             <option value="partially_paid">Partially Paid</option>
@@ -81,6 +81,7 @@ export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) =>
           variant="outline"
           size="sm"
           onClick={() => exportToExcel('platform-invoices', 'Invoices', rows)}
+          className="w-full sm:w-auto"
         >
           Export Excel
         </Button>
@@ -88,48 +89,85 @@ export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) =>
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Business Tenant</TableHead>
-                <TableHead>Invoice #</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-                <TableHead className="text-right">Balance</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell>
+          <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+            {rows.map((r) => (
+              <div key={r.id} className="p-4 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                        {r.invoiceNumber}
+                      </span>
+                      <InvoiceStatusLabel status={r.status} />
+                    </div>
                     <button
                       type="button"
                       onClick={() => navigate(`/admin/users/${r.userUid}`)}
-                      className="font-medium text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                      className="text-xs font-medium text-[#F57C00] hover:underline mt-0.5 text-left truncate block cursor-pointer"
                     >
                       {r.tenantBusinessName}
                     </button>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{r.invoiceNumber}</TableCell>
-                  <TableCell>{r.customerName}</TableCell>
-                  <TableCell className="font-mono text-xs text-zinc-500">
-                    {formatDate(r.invoiceDate)}
-                  </TableCell>
-                  <TableCell>
-                    <InvoiceStatusLabel status={r.status} />
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums">
-                    {formatINR(r.grandTotal)}
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums font-semibold">
-                    {formatINR(r.balanceDue)}
-                  </TableCell>
+                    <div className="text-xs text-zinc-500 truncate">
+                      {r.customerName} · {formatDate(r.invoiceDate)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono text-sm font-semibold tabular-nums">
+                      {formatINR(r.grandTotal)}
+                    </div>
+                    <div className="font-mono text-[11px] text-zinc-500">
+                      Bal {formatINR(r.balanceDue)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Business Tenant</TableHead>
+                  <TableHead>Invoice #</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
+                  <TableHead className="text-right">Balance</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/admin/users/${r.userUid}`)}
+                        className="font-medium text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                      >
+                        {r.tenantBusinessName}
+                      </button>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{r.invoiceNumber}</TableCell>
+                    <TableCell>{r.customerName}</TableCell>
+                    <TableCell className="font-mono text-xs text-zinc-500">
+                      {formatDate(r.invoiceDate)}
+                    </TableCell>
+                    <TableCell>
+                      <InvoiceStatusLabel status={r.status} />
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums">
+                      {formatINR(r.grandTotal)}
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums font-semibold">
+                      {formatINR(r.balanceDue)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -179,10 +217,10 @@ export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) 
 
   return (
     <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-2">
-          <div className="relative w-64">
-            <Search className="absolute left-3 top-2.5 h-4 w-4 text-zinc-400" />
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center justify-between gap-3">
+        <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+          <div className="relative col-span-2 sm:w-64">
+            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
               onChange={(e) => setSearch(e.target.value)}
@@ -190,7 +228,7 @@ export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) 
               className="pl-9"
             />
           </div>
-          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="w-40">
+          <Select value={status} onChange={(e) => setStatus(e.target.value)} className="col-span-2 sm:w-40">
             <option value="all">All Statuses</option>
             <option value="draft">Draft</option>
             <option value="sent">Sent</option>
@@ -204,6 +242,7 @@ export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) 
           variant="outline"
           size="sm"
           onClick={() => exportToExcel('platform-quotations', 'Quotations', rows)}
+          className="w-full sm:w-auto"
         >
           Export Excel
         </Button>
@@ -211,44 +250,76 @@ export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) 
 
       <Card>
         <CardContent className="p-0">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Business Tenant</TableHead>
-                <TableHead>Quotation #</TableHead>
-                <TableHead>Customer</TableHead>
-                <TableHead>Date</TableHead>
-                <TableHead>Status</TableHead>
-                <TableHead className="text-right">Total</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {rows.map((r) => (
-                <TableRow key={r.id}>
-                  <TableCell>
+          <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+            {rows.map((r) => (
+              <div key={r.id} className="p-4 space-y-1.5">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                        {r.quotationNumber}
+                      </span>
+                      <QuotationStatusLabel status={r.status} />
+                    </div>
                     <button
                       type="button"
                       onClick={() => navigate(`/admin/users/${r.userUid}`)}
-                      className="font-medium text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                      className="text-xs font-medium text-[#F57C00] hover:underline mt-0.5 text-left truncate block cursor-pointer"
                     >
                       {r.tenantBusinessName}
                     </button>
-                  </TableCell>
-                  <TableCell className="font-mono text-xs">{r.quotationNumber}</TableCell>
-                  <TableCell>{r.customerName}</TableCell>
-                  <TableCell className="font-mono text-xs text-zinc-500">
-                    {formatDate(r.quotationDate)}
-                  </TableCell>
-                  <TableCell>
-                    <QuotationStatusLabel status={r.status} />
-                  </TableCell>
-                  <TableCell className="text-right font-mono tabular-nums font-semibold">
+                    <div className="text-xs text-zinc-500 truncate">
+                      {r.customerName} · {formatDate(r.quotationDate)}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0 font-mono text-sm font-semibold tabular-nums">
                     {formatINR(r.grandTotal)}
-                  </TableCell>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+
+          <div className="hidden md:block">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Business Tenant</TableHead>
+                  <TableHead>Quotation #</TableHead>
+                  <TableHead>Customer</TableHead>
+                  <TableHead>Date</TableHead>
+                  <TableHead>Status</TableHead>
+                  <TableHead className="text-right">Total</TableHead>
                 </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+              </TableHeader>
+              <TableBody>
+                {rows.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/admin/users/${r.userUid}`)}
+                        className="font-medium text-zinc-900 hover:text-[#F57C00] dark:text-zinc-100 cursor-pointer"
+                      >
+                        {r.tenantBusinessName}
+                      </button>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">{r.quotationNumber}</TableCell>
+                    <TableCell>{r.customerName}</TableCell>
+                    <TableCell className="font-mono text-xs text-zinc-500">
+                      {formatDate(r.quotationDate)}
+                    </TableCell>
+                    <TableCell>
+                      <QuotationStatusLabel status={r.status} />
+                    </TableCell>
+                    <TableCell className="text-right font-mono tabular-nums font-semibold">
+                      {formatINR(r.grandTotal)}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         </CardContent>
       </Card>
     </div>
@@ -275,39 +346,65 @@ export function AdminActivityLogsPage() {
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Timestamp</TableHead>
-              <TableHead>Actor</TableHead>
-              <TableHead>Action</TableHead>
-              <TableHead>Summary</TableHead>
-              <TableHead>Mode</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {logs.map((l) => (
-              <TableRow key={l.id}>
-                <TableCell className="font-mono text-xs text-zinc-500 whitespace-nowrap">
-                  {formatDateTime(l.createdAt)}
-                </TableCell>
-                <TableCell className="text-xs">{l.actorEmail}</TableCell>
-                <TableCell className="font-mono text-xs">{l.action}</TableCell>
-                <TableCell className="text-xs">{l.summary}</TableCell>
-                <TableCell className="text-xs">
-                  {l.impersonationSessionId ? (
-                    <span className="inline-flex items-center gap-1 text-amber-600 font-medium">
-                      <ShieldAlert className="h-3.5 w-3.5" />
-                      Impersonated
-                    </span>
-                  ) : (
-                    <span className="text-zinc-500">Direct</span>
-                  )}
-                </TableCell>
+        <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+          {logs.map((l) => (
+            <div key={l.id} className="p-4 space-y-1">
+              <div className="flex items-start justify-between gap-2">
+                <div className="text-xs font-medium text-zinc-900 dark:text-zinc-100">
+                  {l.summary}
+                </div>
+                {l.impersonationSessionId ? (
+                  <span className="inline-flex items-center gap-1 text-[11px] text-amber-600 font-medium shrink-0">
+                    <ShieldAlert className="h-3 w-3" />
+                    Impersonated
+                  </span>
+                ) : (
+                  <span className="text-[11px] text-zinc-400 shrink-0">Direct</span>
+                )}
+              </div>
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] text-zinc-500">
+                <span className="truncate">{l.actorEmail}</span>
+                <span className="font-mono">{formatDateTime(l.createdAt)}</span>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden md:block">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Timestamp</TableHead>
+                <TableHead>Actor</TableHead>
+                <TableHead>Action</TableHead>
+                <TableHead>Summary</TableHead>
+                <TableHead>Mode</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {logs.map((l) => (
+                <TableRow key={l.id}>
+                  <TableCell className="font-mono text-xs text-zinc-500 whitespace-nowrap">
+                    {formatDateTime(l.createdAt)}
+                  </TableCell>
+                  <TableCell className="text-xs">{l.actorEmail}</TableCell>
+                  <TableCell className="font-mono text-xs">{l.action}</TableCell>
+                  <TableCell className="text-xs">{l.summary}</TableCell>
+                  <TableCell className="text-xs">
+                    {l.impersonationSessionId ? (
+                      <span className="inline-flex items-center gap-1 text-amber-600 font-medium">
+                        <ShieldAlert className="h-3.5 w-3.5" />
+                        Impersonated
+                      </span>
+                    ) : (
+                      <span className="text-zinc-500">Direct</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   );
@@ -333,38 +430,66 @@ export function AdminImpersonationHistoryPage() {
         </CardDescription>
       </CardHeader>
       <CardContent className="p-0">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Admin Identity</TableHead>
-              <TableHead>Target Business</TableHead>
-              <TableHead>Started At</TableHead>
-              <TableHead>Ended At</TableHead>
-              <TableHead>State</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {sessions.map((s) => (
-              <TableRow key={s.id}>
-                <TableCell className="text-xs font-medium">{s.adminEmail}</TableCell>
-                <TableCell className="text-xs">{s.targetBusinessName}</TableCell>
-                <TableCell className="font-mono text-xs text-zinc-500">
-                  {formatDateTime(s.startedAt)}
-                </TableCell>
-                <TableCell className="font-mono text-xs text-zinc-500">
-                  {s.endedAt ? formatDateTime(s.endedAt) : 'Active / Pending'}
-                </TableCell>
-                <TableCell className="text-xs">
-                  {s.active ? (
-                    <span className="text-amber-600 font-semibold">Active</span>
-                  ) : (
-                    <span className="text-zinc-500">Ended</span>
-                  )}
-                </TableCell>
+        <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
+          {sessions.map((s) => (
+            <div key={s.id} className="p-4 space-y-1">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                    {s.targetBusinessName}
+                  </div>
+                  <div className="text-xs text-zinc-500 truncate">{s.adminEmail}</div>
+                </div>
+                {s.active ? (
+                  <span className="text-xs text-amber-600 font-semibold shrink-0">Active</span>
+                ) : (
+                  <span className="text-xs text-zinc-500 shrink-0">Ended</span>
+                )}
+              </div>
+              <div className="text-[11px] font-mono text-zinc-500">
+                Started: {formatDateTime(s.startedAt)}
+              </div>
+              <div className="text-[11px] font-mono text-zinc-500">
+                Ended: {s.endedAt ? formatDateTime(s.endedAt) : 'Active / Pending'}
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="hidden md:block">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Admin Identity</TableHead>
+                <TableHead>Target Business</TableHead>
+                <TableHead>Started At</TableHead>
+                <TableHead>Ended At</TableHead>
+                <TableHead>State</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {sessions.map((s) => (
+                <TableRow key={s.id}>
+                  <TableCell className="text-xs font-medium">{s.adminEmail}</TableCell>
+                  <TableCell className="text-xs">{s.targetBusinessName}</TableCell>
+                  <TableCell className="font-mono text-xs text-zinc-500">
+                    {formatDateTime(s.startedAt)}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs text-zinc-500">
+                    {s.endedAt ? formatDateTime(s.endedAt) : 'Active / Pending'}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {s.active ? (
+                      <span className="text-amber-600 font-semibold">Active</span>
+                    ) : (
+                      <span className="text-zinc-500">Ended</span>
+                    )}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       </CardContent>
     </Card>
   );
