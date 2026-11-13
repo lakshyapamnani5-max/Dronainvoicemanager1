@@ -35,3 +35,11 @@ npm run lint     # TypeScript strict check
 npm run build    # Vite production bundle -> dist/
 npm start        # Serves production app on port 3000
 ```
+
+## 5. Deploying to Vercel
+The repository includes `/vercel.json` configured for Vite (`dist/` output) with SPA history fallback rewrites (`/(.*) -> /index.html`) for all customer and admin routes (`/dashboard`, `/invoices/*`, `/quotations/*`, `/customers/*`, `/admin/*`).
+
+1. Import the repository in Vercel or run `vercel --prod`.
+2. Vercel will automatically detect `framework: vite`, run `npm run build`, and serve `dist/`.
+3. Add your production Vercel domain (`*.vercel.app` or custom domain) to **Firebase Console → Authentication → Settings → Authorized domains**.
+

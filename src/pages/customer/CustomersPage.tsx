@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Archive, Edit2, Eye, Plus, Search, Users } from 'lucide-react';
+import { Archive, ArchiveRestore, Edit2, Eye, Plus, Search, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { customersApi, subscribeRtdbPath } from '../../lib/api';
 import { formatINR } from '../../shared/gstCalculator';
@@ -137,6 +137,16 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
     }
   };
 
+  const handleUnarchive = async (c: Customer) => {
+    try {
+      await customersApi.update(c.id, { archived: false });
+      notify('success', `${c.companyName || c.name} unarchived`);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to unarchive customer');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
@@ -238,10 +248,23 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
                           variant="outline"
                           onClick={() => handleArchive(c)}
                           aria-label="Archive customer"
+                          title="Archive / Delete"
                         >
                           <Archive className="h-3.5 w-3.5" />
                         </Button>
-                      ) : null}
+                      ) : (
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => handleUnarchive(c)}
+                          aria-label="Unarchive customer"
+                          title="Unarchive Customer"
+                          className="text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
+                        >
+                          <ArchiveRestore className="h-3.5 w-3.5" />
+                          Unarchive
+                        </Button>
+                      )}
                     </div>
                   </div>
                 ))}
@@ -318,7 +341,18 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
                               >
                                 <Archive className="h-3.5 w-3.5" />
                               </Button>
-                            ) : null}
+                            ) : (
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => handleUnarchive(c)}
+                                title="Unarchive Customer"
+                                className="h-8 text-xs px-2.5 text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
+                              >
+                                <ArchiveRestore className="h-3.5 w-3.5" />
+                                Unarchive
+                              </Button>
+                            )}
                           </div>
                         </TableCell>
                       </TableRow>
@@ -517,19 +551,41 @@ export function CustomerDetailsPage({
 
   const { customer, invoices, quotations, payments } = data;
 
+  const handleUnarchiveDetail = async () => {
+    try {
+      await customersApi.update(customer.id, { archived: false });
+      notify('success', `${customer.companyName || customer.name} unarchived`);
+      loadDetails(false);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to unarchive customer');
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h2 className="text-xl font-semibold text-zinc-900 dark:text-zinc-100">
             {customer.companyName || customer.name}
+            {customer.archived ? ' (Archived)' : ''}
           </h2>
           <div className="text-xs text-zinc-500 mt-0.5">
             {customer.name} · {customer.email || 'No email'} · {customer.phone || 'No phone'} ·{' '}
             <span className="font-mono">{customer.gstin || 'Unregistered'}</span> ({customer.state})
           </div>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center gap-2">
+          {customer.archived ? (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleUnarchiveDetail}
+              className="text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
+            >
+              <ArchiveRestore className="h-4 w-4" />
+              Unarchive Customer
+            </Button>
+          ) : null}
           <Button variant="outline" size="sm" onClick={() => navigate('/customers')}>
             All Customers
           </Button>

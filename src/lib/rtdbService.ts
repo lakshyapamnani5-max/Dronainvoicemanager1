@@ -1964,14 +1964,15 @@ export const rtdbService = {
     };
 
     await set(custRef, stripUndefined(updated));
+    const isUnarchiving = existing.archived && !updated.archived;
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
-      action: 'CUSTOMER_UPDATED',
+      action: isUnarchiving ? 'CUSTOMER_UNARCHIVED' : 'CUSTOMER_UPDATED',
       entityType: 'customer',
       entityId: customerId,
-      summary: `Updated customer ${name}`,
+      summary: isUnarchiving ? `Unarchived customer ${name}` : `Updated customer ${name}`,
     });
 
     const refreshed = (await listTenantCustomersRaw(tenantUid, { includeArchived: true })).find(
