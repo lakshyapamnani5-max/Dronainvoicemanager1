@@ -3,6 +3,7 @@ import { ArrowLeft, KeyRound, Lock, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { authApi, subscribeRtdbPath } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
+import { PWAInstallButton } from '../../components/PWAComponents';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input, Label, Select } from '../../components/ui/input';
@@ -24,6 +25,7 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
   const [phone, setPhone] = React.useState('');
   const [gstin, setGstin] = React.useState('');
   const [state, setState] = React.useState('Maharashtra');
+  const [defaultIsGst, setDefaultIsGst] = React.useState(true);
 
   const [resetSent, setResetSent] = React.useState(false);
 
@@ -62,7 +64,16 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
     setError(null);
     setSubmitting(true);
     try {
-      await register({ email, password, ownerName, businessName, phone, gstin, state });
+      await register({
+        email,
+        password,
+        ownerName,
+        businessName,
+        phone,
+        gstin: defaultIsGst ? gstin : '',
+        state,
+        defaultIsGst,
+      });
       notify('success', 'Business workspace provisioned');
       navigate('/dashboard');
     } catch (err) {
@@ -94,16 +105,21 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
         <div>
           <div className="flex items-center justify-between lg:justify-start gap-3">
             <div className="flex items-center gap-2.5 sm:gap-3">
-              <div className="flex h-9 w-9 sm:h-10 sm:w-10 items-center justify-center rounded-lg bg-[#F57C00] text-white font-display font-bold text-base sm:text-lg">
-                D
-              </div>
+              <img
+                src="/drona-logo.png"
+                alt="DRONA Invoice"
+                className="h-9 w-9 sm:h-11 sm:w-11 rounded-xl object-contain shrink-0"
+              />
               <span className="font-display text-xl sm:text-2xl font-bold tracking-tight text-white">
                 DRONA
               </span>
             </div>
-            <span className="lg:hidden text-[11px] font-medium text-zinc-400">
-              GST Invoice &amp; Billing SaaS
-            </span>
+            <div className="lg:hidden flex items-center gap-2">
+              <span className="text-[11px] font-medium text-zinc-400 hidden sm:inline">
+                GST Invoice &amp; Billing SaaS
+              </span>
+              <PWAInstallButton variant="header" />
+            </div>
           </div>
           <h1 className="hidden lg:block mt-12 text-3xl sm:text-4xl font-semibold tracking-tight text-white leading-tight max-w-md [text-wrap:balance]">
             Precision GST Invoicing & Revenue Operations for Modern Indian Businesses
@@ -111,6 +127,9 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
           <p className="hidden lg:block mt-4 text-sm text-zinc-400 max-w-md leading-relaxed">
             Isolated multi-tenant workspaces for creating compliant tax invoices, tracking customer quotations, reconciling partial payments, and exporting A4 GST documents.
           </p>
+          <div className="hidden lg:block mt-6 max-w-xs">
+            <PWAInstallButton variant="sidebar" />
+          </div>
         </div>
 
         <div className="hidden lg:grid mt-10 pt-8 border-t border-zinc-800/80 grid-cols-1 sm:grid-cols-2 gap-4 text-xs">
@@ -271,16 +290,45 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
                       placeholder="Acme Industries Pvt Ltd"
                     />
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <div className="space-y-1">
-                      <Label>GSTIN (Optional)</Label>
-                      <Input
-                        value={gstin}
-                        onChange={(e) => setGstin(e.target.value.toUpperCase())}
-                        placeholder="27AABCU9603R1ZM"
-                        className="font-mono uppercase"
-                      />
+                  <div className="space-y-1.5">
+                    <Label>Business Tax Type</Label>
+                    <div className="grid grid-cols-2 gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setDefaultIsGst(true)}
+                        className={`rounded-lg border px-3 py-2 text-xs font-medium text-left transition-colors cursor-pointer ${
+                          defaultIsGst
+                            ? 'border-[#F57C00] bg-orange-50/70 text-[#F57C00] dark:bg-orange-950/20'
+                            : 'border-zinc-200 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300'
+                        }`}
+                      >
+                        GST Registered
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setDefaultIsGst(false)}
+                        className={`rounded-lg border px-3 py-2 text-xs font-medium text-left transition-colors cursor-pointer ${
+                          !defaultIsGst
+                            ? 'border-[#F57C00] bg-orange-50/70 text-[#F57C00] dark:bg-orange-950/20'
+                            : 'border-zinc-200 text-zinc-700 hover:bg-zinc-50 dark:border-zinc-800 dark:text-zinc-300'
+                        }`}
+                      >
+                        Non-GST Business
+                      </button>
                     </div>
+                  </div>
+                  <div className={`grid grid-cols-1 ${defaultIsGst ? 'sm:grid-cols-2' : ''} gap-3`}>
+                    {defaultIsGst ? (
+                      <div className="space-y-1">
+                        <Label>GSTIN (Optional)</Label>
+                        <Input
+                          value={gstin}
+                          onChange={(e) => setGstin(e.target.value.toUpperCase())}
+                          placeholder="27AABCU9603R1ZM"
+                          className="font-mono uppercase"
+                        />
+                      </div>
+                    ) : null}
                     <div className="space-y-1">
                       <Label>Registered State</Label>
                       <Select value={state} onChange={(e) => setState(e.target.value)}>
@@ -374,6 +422,10 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
               ) : null}
             </CardContent>
           </Card>
+
+          <p className="text-center text-xs text-zinc-400 pt-1">
+            Generated by DronaInvoice
+          </p>
         </div>
       </div>
     </div>

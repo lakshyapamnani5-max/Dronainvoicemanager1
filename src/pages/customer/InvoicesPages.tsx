@@ -1,5 +1,6 @@
 import * as React from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
   Ban,
   CheckCircle2,
@@ -12,13 +13,14 @@ import {
   Receipt,
   Search,
   Share2,
+  Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { customersApi, invoicesApi, paymentsApi, subscribeRtdbPath } from '../../lib/api';
-import { generateDocumentPdf } from '../../lib/pdfGenerator';
+import { generateDocumentPdf, generatePaymentReceiptPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
-import type { Customer, Invoice, PaymentMethod } from '../../shared/types';
+import type { Customer, Invoice, Payment, PaymentMethod } from '../../shared/types';
 import { EmptyState } from '../../components/AppShell';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
 import { InvoiceStatusLabel } from '../../components/StatusText';
@@ -266,6 +268,10 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                           <div className="font-mono text-xs font-semibold text-[#F57C00] tabular-nums">
                             Due {formatINR(inv.balanceDue)}
                           </div>
+                        ) : inv.amountPaid > inv.grandTotal ? (
+                          <div className="font-mono text-[11px] text-amber-600 tabular-nums">
+                            Overpaid +{formatINR(inv.amountPaid - inv.grandTotal)}
+                          </div>
                         ) : (
                           <div className="font-mono text-[11px] text-emerald-600 tabular-nums">
                             Paid {formatINR(inv.amountPaid)}
@@ -466,9 +472,9 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               <Label>Amount (INR)</Label>
               <Input
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 min="0.01"
-                max={payInvoice?.balanceDue || undefined}
                 required
                 value={payForm.amount}
                 onChange={(e) => setPayForm({ ...payForm, amount: Number(e.target.value) })}
@@ -476,6 +482,15 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               />
             </div>
           </div>
+          {payInvoice && payForm.amount > payInvoice.balanceDue ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+              Exceeds remaining balance ({formatINR(payInvoice.balanceDue)}) by{' '}
+              <span className="font-mono font-semibold">
+                {formatINR(payForm.amount - payInvoice.balanceDue)}
+              </span>
+              . Excess will be saved as advance / overpayment.
+            </div>
+          ) : null}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Payment Method</Label>
@@ -552,6 +567,18 @@ export function InvoiceDetailsPage({
     referenceId: '',
     notes: '',
   });
+
+  const [editingPayment, setEditingPayment] = React.useState<Payment | null>(null);
+  const [editPayForm, setEditPayForm] = React.useState({
+    paymentDate: '',
+    amount: 0,
+    paymentMethod: 'UPI' as PaymentMethod,
+    referenceId: '',
+    notes: '',
+  });
+  const [savingPayEdit, setSavingPayEdit] = React.useState(false);
+  const [deletingPayment, setDeletingPayment] = React.useState<Payment | null>(null);
+  const [deletingPay, setDeletingPay] = React.useState(false);
 
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -630,6 +657,48 @@ export function InvoiceDetailsPage({
       load();
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'Failed to record payment');
+    }
+  };
+
+  const openEditPayment = (p: Payment) => {
+    setEditingPayment(p);
+    setEditPayForm({
+      paymentDate: p.paymentDate,
+      amount: p.amount,
+      paymentMethod: p.paymentMethod,
+      referenceId: p.referenceId || '',
+      notes: p.notes || '',
+    });
+  };
+
+  const handleUpdatePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPayment) return;
+    setSavingPayEdit(true);
+    try {
+      await paymentsApi.update(editingPayment.id, editPayForm);
+      notify('success', `Payment ${editingPayment.receiptNumber} updated`);
+      setEditingPayment(null);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update payment');
+    } finally {
+      setSavingPayEdit(false);
+    }
+  };
+
+  const handleDeletePayment = async () => {
+    if (!deletingPayment) return;
+    setDeletingPay(true);
+    try {
+      await paymentsApi.remove(deletingPayment.id);
+      notify('success', `Payment ${deletingPayment.receiptNumber} deleted`);
+      setDeletingPayment(null);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete payment');
+    } finally {
+      setDeletingPay(false);
     }
   };
 
@@ -718,40 +787,108 @@ export function InvoiceDetailsPage({
         </div>
       ) : null}
 
+      {invoice.amountPaid > invoice.grandTotal ? (
+        <div className="no-print flex flex-col sm:flex-row sm:items-center justify-between gap-2 rounded-xl border border-amber-200 bg-amber-50 p-4 text-xs text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+            <div>
+              <span className="font-semibold">Excess / Overpayment Recorded:</span> Total payments received (
+              <span className="font-mono font-semibold">{formatINR(invoice.amountPaid)}</span>) exceed the invoice grand total (
+              <span className="font-mono font-semibold">{formatINR(invoice.grandTotal)}</span>) by{' '}
+              <span className="font-mono font-semibold">
+                {formatINR(invoice.amountPaid - invoice.grandTotal)}
+              </span>
+              . You can edit or remove a recorded payment below or update the invoice items.
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       <DocumentPreviewSheet docType="invoice" record={invoice} />
 
       {/* Payments & Audit Trail */}
       <div className="no-print grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-[820px] mx-auto">
         <Card>
-          <CardHeader>
+          <CardHeader className="flex flex-row items-center justify-between gap-2">
             <CardTitle>Recorded Payments ({invoice.payments?.length || 0})</CardTitle>
+            {invoice.status !== 'draft' && invoice.status !== 'cancelled' ? (
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => {
+                  setPayForm({
+                    paymentDate: new Date().toISOString().slice(0, 10),
+                    amount: invoice.balanceDue > 0 ? invoice.balanceDue : 0,
+                    paymentMethod: 'UPI',
+                    referenceId: '',
+                    notes: '',
+                  });
+                  setPayOpen(true);
+                }}
+              >
+                <Plus className="h-3.5 w-3.5" />
+                Add
+              </Button>
+            ) : null}
           </CardHeader>
           <CardContent className="p-0">
             {!invoice.payments || invoice.payments.length === 0 ? (
               <div className="p-5 text-xs text-zinc-500">No payments recorded yet.</div>
             ) : (
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Receipt</TableHead>
-                    <TableHead>Date</TableHead>
-                    <TableHead>Mode</TableHead>
-                    <TableHead className="text-right">Amount</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {invoice.payments.map((p) => (
-                    <TableRow key={p.id}>
-                      <TableCell className="font-mono text-xs">{p.receiptNumber}</TableCell>
-                      <TableCell className="font-mono text-xs">{formatDate(p.paymentDate)}</TableCell>
-                      <TableCell className="text-xs">{p.paymentMethod}</TableCell>
-                      <TableCell className="text-right font-mono tabular-nums font-semibold text-emerald-600">
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                {invoice.payments.map((p) => (
+                  <div key={p.id} className="flex items-center justify-between gap-2 px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                          {p.receiptNumber}
+                        </span>
+                        <span className="text-xs text-zinc-500">{p.paymentMethod}</span>
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                        {formatDate(p.paymentDate)}
+                        {p.referenceId ? ` · ${p.referenceId}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-mono text-xs sm:text-sm font-semibold tabular-nums text-emerald-600 mr-1">
                         {formatINR(p.amount)}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
+                      </span>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => openEditPayment(p)}
+                        title="Edit Payment"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() =>
+                          generatePaymentReceiptPdf(
+                            p,
+                            invoice.businessSnapshot.businessName,
+                            invoice.businessSnapshot.address
+                          )
+                        }
+                        title="Download Receipt PDF"
+                      >
+                        <Download className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => setDeletingPayment(p)}
+                        title="Delete Payment"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
             )}
           </CardContent>
         </Card>
@@ -797,12 +934,12 @@ export function InvoiceDetailsPage({
               />
             </div>
             <div className="space-y-1">
-              <Label>Amount (Max {formatINR(invoice.balanceDue)})</Label>
+              <Label>Amount (Due {formatINR(invoice.balanceDue)})</Label>
               <Input
                 type="number"
+                inputMode="decimal"
                 step="0.01"
                 min="0.01"
-                max={invoice.balanceDue}
                 required
                 value={payForm.amount}
                 onChange={(e) => setPayForm({ ...payForm, amount: Number(e.target.value) })}
@@ -810,6 +947,15 @@ export function InvoiceDetailsPage({
               />
             </div>
           </div>
+          {payForm.amount > invoice.balanceDue ? (
+            <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/30 dark:text-amber-300">
+              Exceeds remaining balance ({formatINR(invoice.balanceDue)}) by{' '}
+              <span className="font-mono font-semibold">
+                {formatINR(payForm.amount - invoice.balanceDue)}
+              </span>
+              . Excess will be recorded as overpayment/advance.
+            </div>
+          ) : null}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
               <Label>Method</Label>
@@ -877,6 +1023,113 @@ export function InvoiceDetailsPage({
             </Button>
           </div>
         </form>
+      </Dialog>
+
+      {/* Edit Recorded Payment Dialog */}
+      <Dialog
+        open={Boolean(editingPayment)}
+        onClose={() => setEditingPayment(null)}
+        title={`Edit Payment — ${editingPayment?.receiptNumber || ''}`}
+        description={`Invoice ${invoice.invoiceNumber} · Grand Total ${formatINR(invoice.grandTotal)}`}
+      >
+        <form onSubmit={handleUpdatePayment} className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Payment Date *</Label>
+              <Input
+                type="date"
+                required
+                value={editPayForm.paymentDate}
+                onChange={(e) => setEditPayForm({ ...editPayForm, paymentDate: e.target.value })}
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Amount (INR) *</Label>
+              <Input
+                type="number"
+                inputMode="decimal"
+                step="0.01"
+                min="0.01"
+                required
+                value={editPayForm.amount}
+                onChange={(e) => setEditPayForm({ ...editPayForm, amount: Number(e.target.value) })}
+                className="font-mono"
+              />
+            </div>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-1">
+              <Label>Method *</Label>
+              <Select
+                value={editPayForm.paymentMethod}
+                onChange={(e) =>
+                  setEditPayForm({ ...editPayForm, paymentMethod: e.target.value as PaymentMethod })
+                }
+              >
+                <option value="UPI">UPI</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+                <option value="Cash">Cash</option>
+                <option value="Credit/Debit Card">Credit/Debit Card</option>
+                <option value="Cheque">Cheque</option>
+                <option value="Other">Other</option>
+              </Select>
+            </div>
+            <div className="space-y-1">
+              <Label>Reference ID</Label>
+              <Input
+                value={editPayForm.referenceId}
+                onChange={(e) => setEditPayForm({ ...editPayForm, referenceId: e.target.value })}
+                className="font-mono"
+              />
+            </div>
+          </div>
+          <div className="space-y-1">
+            <Label>Notes</Label>
+            <Input
+              value={editPayForm.notes}
+              onChange={(e) => setEditPayForm({ ...editPayForm, notes: e.target.value })}
+            />
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setEditingPayment(null)}>
+              Cancel
+            </Button>
+            <Button type="submit" disabled={savingPayEdit}>
+              {savingPayEdit ? 'Saving...' : 'Save Payment Changes'}
+            </Button>
+          </div>
+        </form>
+      </Dialog>
+
+      {/* Delete Recorded Payment Dialog */}
+      <Dialog
+        open={Boolean(deletingPayment)}
+        onClose={() => setDeletingPayment(null)}
+        title={`Delete Payment ${deletingPayment?.receiptNumber || ''}`}
+        description="Invoice paid amount and balance due will be recalculated automatically."
+      >
+        <div className="space-y-4">
+          <p className="text-sm text-zinc-600 dark:text-zinc-300">
+            Delete recorded payment of{' '}
+            <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+              {deletingPayment ? formatINR(deletingPayment.amount) : ''}
+            </span>
+            ?
+          </p>
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setDeletingPayment(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletingPay}
+              onClick={handleDeletePayment}
+            >
+              {deletingPay ? 'Deleting...' : 'Delete Payment'}
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

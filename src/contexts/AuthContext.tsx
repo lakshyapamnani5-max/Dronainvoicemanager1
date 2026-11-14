@@ -18,6 +18,7 @@ interface AuthContextValue {
     phone: string;
     gstin: string;
     state: string;
+    defaultIsGst?: boolean;
   }) => Promise<AuthSessionState>;
   logout: () => Promise<void>;
   impersonate: (uid: string) => Promise<void>;
@@ -115,7 +116,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             return;
           }
           if (snap.exists()) {
-            const prof = snap.val() as BusinessProfile;
+            const raw = snap.val() as Record<string, unknown>;
+            const prof = {
+              ...(raw as unknown as BusinessProfile),
+              defaultIsGst: raw.defaultIsGst !== false,
+            };
             setSession((prev) => (prev ? { ...prev, businessProfile: prof } : prev));
           }
         })
@@ -151,6 +156,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       phone: string;
       gstin: string;
       state: string;
+      defaultIsGst?: boolean;
     }) => {
       authBusyRef.current = true;
       try {

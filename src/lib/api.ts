@@ -14,6 +14,7 @@ import type {
   PaymentMethod,
   PlatformSettings,
   Quotation,
+  RateCardItem,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
@@ -98,6 +99,7 @@ export const authApi = {
     phone: string;
     gstin: string;
     state: string;
+    defaultIsGst?: boolean;
   }) => {
     const session = await rtdbService.register(payload);
     setStoredToken(session.actorUser.uid);
@@ -186,6 +188,25 @@ export const paymentsApi = {
     referenceId?: string;
     notes?: string;
   }) => rtdbService.recordPayment(payload),
+  update: (
+    id: string,
+    payload: {
+      paymentDate?: string;
+      amount?: number;
+      paymentMethod?: PaymentMethod;
+      referenceId?: string;
+      notes?: string;
+    }
+  ) => rtdbService.updatePayment(id, payload),
+  remove: (id: string) => rtdbService.deletePayment(id),
+};
+
+export const rateCardApi = {
+  list: (params?: { search?: string; activeOnly?: boolean; category?: string }) =>
+    rtdbService.listRateCard(params),
+  create: (payload: Partial<RateCardItem>) => rtdbService.createRateCardItem(payload),
+  update: (id: string, payload: Partial<RateCardItem>) => rtdbService.updateRateCardItem(id, payload),
+  remove: (id: string) => rtdbService.deleteRateCardItem(id),
 };
 
 export const analyticsApi = {

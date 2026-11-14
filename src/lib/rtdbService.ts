@@ -33,6 +33,7 @@ import type {
   Customer,
   CustomerAnalyticsData,
   CustomerSnapshot,
+  DiscountType,
   ImpersonationSession,
   Invoice,
   InvoiceStatus,
@@ -44,6 +45,7 @@ import type {
   PlatformSettings,
   Quotation,
   QuotationStatus,
+  RateCardItem,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
@@ -229,6 +231,7 @@ function normalizeBusinessProfile(uid: string, raw: Record<string, unknown>): Bu
         '1. Goods/services once billed will not be taken back.\n2. Interest @18% p.a. will be charged on delayed payments beyond due date.\n3. Subject to local jurisdiction.'
     ),
     signatureLabel: String(raw.signatureLabel || `For ${String(raw.businessName || 'Business')}`),
+    signatureDataUrl: String(raw.signatureDataUrl || ''),
     updatedAt: String(raw.updatedAt || new Date().toISOString()),
   };
 }
@@ -273,6 +276,7 @@ function normalizeInvoice(raw: Record<string, unknown>): Invoice {
       upiId: '',
       upiQrDataUrl: '',
       signatureLabel: 'Authorized Signatory',
+      signatureDataUrl: '',
     },
     invoiceDate: String(raw.invoiceDate || ''),
     dueDate: String(raw.dueDate || ''),
@@ -367,6 +371,25 @@ function normalizeCustomer(raw: Record<string, unknown>): Customer {
     state: String(raw.state || 'Maharashtra'),
     notes: String(raw.notes || ''),
     archived: Boolean(raw.archived),
+    createdAt: String(raw.createdAt || ''),
+    updatedAt: String(raw.updatedAt || ''),
+  };
+}
+
+function normalizeRateCardItem(raw: Record<string, unknown>): RateCardItem {
+  return {
+    id: String(raw.id || ''),
+    userUid: String(raw.userUid || ''),
+    name: String(raw.name || ''),
+    description: String(raw.description || ''),
+    hsnSac: String(raw.hsnSac || ''),
+    unit: String(raw.unit || 'Nos'),
+    rate: Number(raw.rate ?? 0),
+    discountType: raw.discountType === 'fixed' ? 'fixed' : 'percent',
+    discountValue: Number(raw.discountValue ?? 0),
+    taxRate: Number(raw.taxRate ?? 18),
+    category: String(raw.category || 'General'),
+    isActive: raw.isActive !== false,
     createdAt: String(raw.createdAt || ''),
     updatedAt: String(raw.updatedAt || ''),
   };
@@ -573,6 +596,7 @@ async function seedDemoBusinessWorkspace(
     termsAndConditions:
       '1. Goods/services once billed will not be taken back.\n2. Interest @18% p.a. will be charged on delayed payments beyond due date.\n3. Subject to local jurisdiction.',
     signatureLabel: `For ${cfg.businessName}`,
+    signatureDataUrl: '',
     updatedAt: now,
   };
 
@@ -674,6 +698,7 @@ async function seedDemoBusinessWorkspace(
     upiId: profileRec.upiId,
     upiQrDataUrl: '',
     signatureLabel: profileRec.signatureLabel,
+    signatureDataUrl: profileRec.signatureDataUrl,
   };
 
   const today = todayISO();
@@ -900,6 +925,112 @@ async function seedDemoBusinessWorkspace(
   };
   await set(ref(rtdb, `tenants/${uid}/quotations/${quoId}`), stripUndefined(quo));
   await set(ref(rtdb, `tenants/${uid}/counters/QUO_${year}`), 1);
+
+  const seedRateItems: RateCardItem[] = isBiz1
+    ? [
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'Cloud ERP Implementation',
+          description: 'Multi-warehouse inventory & GST billing setup',
+          hsnSac: '998314',
+          unit: 'Project',
+          rate: 75000,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Software & ERP',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'Annual SaaS Telemetry License',
+          description: 'Per-branch cloud telemetry & support seat',
+          hsnSac: '998313',
+          unit: 'Units',
+          rate: 22000,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Subscriptions',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'Dedicated Technical Consulting',
+          description: 'On-site or remote systems engineering',
+          hsnSac: '998314',
+          unit: 'Hrs',
+          rate: 3500,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Consulting',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ]
+    : [
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'CNC Machined Housing Batch',
+          description: 'SS316 precision tolerance batch',
+          hsnSac: '848340',
+          unit: 'Nos',
+          rate: 48000,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Manufacturing',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'Hydraulic Valve Assembly',
+          description: 'High-pressure tested industrial valve set',
+          hsnSac: '848120',
+          unit: 'Units',
+          rate: 18500,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Components',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+        {
+          id: generateId('rc'),
+          userUid: uid,
+          name: 'Preventive Plant Maintenance',
+          description: 'Quarterly calibration & inspection visit',
+          hsnSac: '998719',
+          unit: 'Visit',
+          rate: 12000,
+          discountType: 'percent',
+          discountValue: 0,
+          taxRate: 18,
+          category: 'Services',
+          isActive: true,
+          createdAt: now,
+          updatedAt: now,
+        },
+      ];
+
+  for (const rcItem of seedRateItems) {
+    await set(ref(rtdb, `tenants/${uid}/rateCard/${rcItem.id}`), stripUndefined(rcItem));
+  }
 
   await createNotification({
     userUid: uid,
@@ -1191,6 +1322,82 @@ async function listTenantCustomersRaw(
       );
     })
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+async function listTenantRateCardRaw(
+  tenantUid: string,
+  opts?: { search?: string; activeOnly?: boolean; category?: string }
+): Promise<RateCardItem[]> {
+  const snap = await get(ref(rtdb, `tenants/${tenantUid}/rateCard`));
+  if (!snap.exists()) return [];
+  const rawList = Object.values(snap.val() as Record<string, Record<string, unknown>>).map(
+    normalizeRateCardItem
+  );
+
+  const search = (opts?.search || '').trim().toLowerCase();
+  const activeOnly = Boolean(opts?.activeOnly);
+  const category = (opts?.category || '').trim();
+
+  return rawList
+    .filter((item) => (!activeOnly || item.isActive))
+    .filter((item) => (!category || category === 'all' || item.category === category))
+    .filter((item) => {
+      if (!search) return true;
+      return (
+        item.name.toLowerCase().includes(search) ||
+        item.description.toLowerCase().includes(search) ||
+        item.hsnSac.toLowerCase().includes(search) ||
+        item.category.toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+async function reconcileInvoicePayments(
+  tenantUid: string,
+  invoiceId: string,
+  nowIso: string
+): Promise<Invoice | null> {
+  const invRef = ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`);
+  const invSnap = await get(invRef);
+  if (!invSnap.exists()) return null;
+
+  const inv = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+  if (inv.status === 'draft' || inv.status === 'cancelled') return inv;
+
+  const allPayments = await listTenantPaymentsRaw(tenantUid);
+  const paidPaise = allPayments
+    .filter((p) => p.invoiceId === invoiceId)
+    .reduce((sum, p) => sum + toPaise(p.amount), 0);
+
+  const grandPaise = toPaise(inv.grandTotal);
+  const balancePaise = Math.max(0, grandPaise - paidPaise);
+  const nextStatus: InvoiceStatus =
+    balancePaise === 0
+      ? 'paid'
+      : inv.dueDate < todayISO()
+        ? 'overdue'
+        : paidPaise > 0
+          ? 'partially_paid'
+          : 'unpaid';
+
+  const amountPaid = fromPaise(paidPaise);
+  const balanceDue = fromPaise(balancePaise);
+
+  await update(invRef, {
+    amountPaid,
+    balanceDue,
+    status: nextStatus,
+    updatedAt: nowIso,
+  });
+
+  return {
+    ...inv,
+    amountPaid,
+    balanceDue,
+    status: nextStatus,
+    updatedAt: nowIso,
+  };
 }
 
 function validateLineItems(items: LineItemInput[]): LineItemInput[] {
@@ -1637,6 +1844,7 @@ export const rtdbService = {
     phone: string;
     gstin: string;
     state: string;
+    defaultIsGst?: boolean;
   }): Promise<AuthSessionState> => {
     try {
       const settings = await ensurePlatformSettings();
@@ -1649,6 +1857,7 @@ export const rtdbService = {
       const phone = sanitizeStr(payload.phone, 32);
       const gstin = sanitizeStr(payload.gstin, 20).toUpperCase();
       const state = sanitizeStr(payload.state, 64) || 'Maharashtra';
+      const defaultIsGst = payload.defaultIsGst !== false;
 
       if (!email || !email.includes('@')) throw new Error('Valid email is required');
       if ((payload.password || '').length < 8) {
@@ -1686,6 +1895,7 @@ export const rtdbService = {
         phone,
         gstin,
         state,
+        defaultIsGst,
         invoicePrefix: settings.defaultInvoicePrefix,
         quotationPrefix: settings.defaultQuotationPrefix,
         signatureLabel: `For ${businessName}`,
@@ -1832,6 +2042,10 @@ export const rtdbService = {
       signatureLabel:
         sanitizeStr(input.signatureLabel ?? existing.signatureLabel, 120) ||
         `For ${existing.businessName}`,
+      signatureDataUrl:
+        typeof input.signatureDataUrl === 'string' && input.signatureDataUrl.length < 1_000_000
+          ? input.signatureDataUrl
+          : existing.signatureDataUrl,
       updatedAt: now,
     };
 
@@ -2141,6 +2355,7 @@ export const rtdbService = {
       upiId: resolvedUpiId,
       upiQrDataUrl: resolvedUpiId ? '' : profile.upiQrDataUrl,
       signatureLabel: profile.signatureLabel,
+      signatureDataUrl: profile.signatureDataUrl,
     };
 
     const invoiceDate = sanitizeStr(input.invoiceDate, 10) || todayISO();
@@ -2225,12 +2440,7 @@ export const rtdbService = {
         amountPaid = existing.amountPaid || 0;
         const paidPaise = toPaise(amountPaid);
         const grandPaise = toPaise(calc.grandTotal);
-        if (paidPaise > grandPaise) {
-          throw new Error(
-            `Invoice total cannot be less than recorded payments (INR ${amountPaid.toFixed(2)})`
-          );
-        }
-        balanceDue = fromPaise(grandPaise - paidPaise);
+        balanceDue = fromPaise(Math.max(0, grandPaise - paidPaise));
         status =
           balanceDue === 0
             ? 'paid'
@@ -2522,6 +2732,7 @@ export const rtdbService = {
       upiId: resolvedUpiId,
       upiQrDataUrl: resolvedUpiId ? '' : profile.upiQrDataUrl,
       signatureLabel: profile.signatureLabel,
+      signatureDataUrl: profile.signatureDataUrl,
     };
 
     const quotationDate = sanitizeStr(input.quotationDate, 10) || todayISO();
@@ -2849,13 +3060,6 @@ export const rtdbService = {
     if (inv.status === 'draft') throw new Error('Cannot record payment on a draft invoice');
     if (inv.status === 'cancelled') throw new Error('Cannot record payment on a cancelled invoice');
 
-    const balancePaise = toPaise(inv.balanceDue);
-    if (amountPaise > balancePaise) {
-      throw new Error(
-        `Payment exceeds remaining balance due (${inv.balanceDue.toFixed(2)})`
-      );
-    }
-
     const refId = sanitizeStr(input.referenceId, 80);
     if (refId) {
       const existingPayments = await listTenantPaymentsRaw(tenantUid);
@@ -2868,15 +3072,6 @@ export const rtdbService = {
     const receiptNumber = await allocateDocumentNumber(tenantUid, 'RCP', 'RCP', paymentDate);
     const payId = generateId('pay');
     const now = new Date().toISOString();
-
-    const newPaidPaise = toPaise(inv.amountPaid) + amountPaise;
-    const newBalancePaise = Math.max(0, toPaise(inv.grandTotal) - newPaidPaise);
-    const nextStatus: InvoiceStatus =
-      newBalancePaise === 0
-        ? 'paid'
-        : inv.dueDate < todayISO()
-          ? 'overdue'
-          : 'partially_paid';
 
     const payment: Payment = {
       id: payId,
@@ -2895,12 +3090,7 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/payments/${payId}`), stripUndefined(payment));
-    await update(invRef, {
-      amountPaid: fromPaise(newPaidPaise),
-      balanceDue: fromPaise(newBalancePaise),
-      status: nextStatus,
-      updatedAt: now,
-    });
+    await reconcileInvoicePayments(tenantUid, inv.id, now);
 
     await createNotification({
       userUid: tenantUid,
@@ -2922,6 +3112,213 @@ export const rtdbService = {
     });
 
     return { payment };
+  },
+
+  updatePayment: async (
+    paymentId: string,
+    input: {
+      paymentDate?: string;
+      amount?: number;
+      paymentMethod?: PaymentMethod;
+      referenceId?: string;
+      notes?: string;
+    }
+  ) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const payRef = ref(rtdb, `tenants/${tenantUid}/payments/${paymentId}`);
+    const snap = await get(payRef);
+    if (!snap.exists()) throw new Error('Payment record not found');
+    const existing = normalizePayment(snap.val() as Record<string, unknown>);
+
+    const nextAmount = input.amount !== undefined ? Number(input.amount) : existing.amount;
+    const amountPaise = toPaise(nextAmount);
+    if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+      throw new Error('Payment amount must be greater than zero');
+    }
+
+    const refId =
+      input.referenceId !== undefined ? sanitizeStr(input.referenceId, 80) : existing.referenceId;
+    if (refId) {
+      const existingPayments = await listTenantPaymentsRaw(tenantUid);
+      if (existingPayments.some((p) => p.id !== paymentId && p.referenceId && p.referenceId === refId)) {
+        throw new Error(`Duplicate payment reference ID "${refId}" detected`);
+      }
+    }
+
+    const now = new Date().toISOString();
+    const updated: Payment = {
+      ...existing,
+      paymentDate:
+        input.paymentDate !== undefined
+          ? sanitizeStr(input.paymentDate, 10) || existing.paymentDate
+          : existing.paymentDate,
+      amount: fromPaise(amountPaise),
+      paymentMethod: input.paymentMethod || existing.paymentMethod,
+      referenceId: refId,
+      notes: input.notes !== undefined ? sanitizeStr(input.notes, 300) : existing.notes,
+    };
+
+    await set(payRef, stripUndefined(updated));
+    await reconcileInvoicePayments(tenantUid, existing.invoiceId, now);
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'PAYMENT_UPDATED',
+      entityType: 'payment',
+      entityId: paymentId,
+      summary: `Updated payment ${existing.receiptNumber} (${existing.invoiceNumber || existing.invoiceId}) to INR ${updated.amount.toFixed(2)}`,
+    });
+
+    return { payment: updated };
+  },
+
+  deletePayment: async (paymentId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const payRef = ref(rtdb, `tenants/${tenantUid}/payments/${paymentId}`);
+    const snap = await get(payRef);
+    if (!snap.exists()) throw new Error('Payment record not found');
+    const existing = normalizePayment(snap.val() as Record<string, unknown>);
+
+    const now = new Date().toISOString();
+    await remove(payRef);
+    await reconcileInvoicePayments(tenantUid, existing.invoiceId, now);
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'PAYMENT_DELETED',
+      entityType: 'payment',
+      entityId: paymentId,
+      summary: `Deleted payment ${existing.receiptNumber} (INR ${existing.amount.toFixed(2)}) from ${existing.invoiceNumber || existing.invoiceId}`,
+    });
+
+    return { ok: true };
+  },
+
+  // ==================== RATE CARD ====================
+  listRateCard: async (params?: { search?: string; activeOnly?: boolean; category?: string }) => {
+    const ctx = await requireTenantContext();
+    const items = await listTenantRateCardRaw(ctx.effectiveUser.uid, params);
+    return { items };
+  },
+
+  createRateCardItem: async (input: Partial<RateCardItem>) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const name = sanitizeStr(input.name, 160);
+    if (!name) throw new Error('Item name is required');
+    const rate = Number(input.rate ?? 0);
+    if (!Number.isFinite(rate) || rate < 0) {
+      throw new Error('Default rate must be 0 or greater');
+    }
+
+    const id = generateId('rc');
+    const now = new Date().toISOString();
+    const item: RateCardItem = {
+      id,
+      userUid: tenantUid,
+      name,
+      description: sanitizeStr(input.description, 400),
+      hsnSac: sanitizeStr(input.hsnSac, 16),
+      unit: sanitizeStr(input.unit, 24) || 'Nos',
+      rate: fromPaise(toPaise(rate)),
+      discountType: (input.discountType === 'fixed' ? 'fixed' : 'percent') as DiscountType,
+      discountValue: Math.max(0, Number(input.discountValue) || 0),
+      taxRate: Math.min(28, Math.max(0, Number(input.taxRate ?? 18) || 0)),
+      category: sanitizeStr(input.category, 80) || 'General',
+      isActive: input.isActive !== false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await set(ref(rtdb, `tenants/${tenantUid}/rateCard/${id}`), stripUndefined(item));
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'RATE_CARD_CREATED',
+      entityType: 'rate_card',
+      entityId: id,
+      summary: `Added rate card item ${item.name} (INR ${item.rate.toFixed(2)}/${item.unit})`,
+    });
+
+    return { item };
+  },
+
+  updateRateCardItem: async (itemId: string, input: Partial<RateCardItem>) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const itemRef = ref(rtdb, `tenants/${tenantUid}/rateCard/${itemId}`);
+    const snap = await get(itemRef);
+    if (!snap.exists()) throw new Error('Rate card item not found');
+    const existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+
+    const name = sanitizeStr(input.name ?? existing.name, 160);
+    if (!name) throw new Error('Item name is required');
+    const rate = input.rate !== undefined ? Number(input.rate) : existing.rate;
+    if (!Number.isFinite(rate) || rate < 0) {
+      throw new Error('Default rate must be 0 or greater');
+    }
+
+    const updated: RateCardItem = {
+      ...existing,
+      name,
+      description: sanitizeStr(input.description ?? existing.description, 400),
+      hsnSac: sanitizeStr(input.hsnSac ?? existing.hsnSac, 16),
+      unit: sanitizeStr(input.unit ?? existing.unit, 24) || 'Nos',
+      rate: fromPaise(toPaise(rate)),
+      discountType:
+        input.discountType !== undefined
+          ? input.discountType === 'fixed'
+            ? 'fixed'
+            : 'percent'
+          : existing.discountType,
+      discountValue: Math.max(0, Number(input.discountValue ?? existing.discountValue) || 0),
+      taxRate: Math.min(28, Math.max(0, Number(input.taxRate ?? existing.taxRate) || 0)),
+      category: sanitizeStr(input.category ?? existing.category, 80) || 'General',
+      isActive: input.isActive !== undefined ? Boolean(input.isActive) : existing.isActive,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await set(itemRef, stripUndefined(updated));
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'RATE_CARD_UPDATED',
+      entityType: 'rate_card',
+      entityId: itemId,
+      summary: `Updated rate card item ${updated.name} (INR ${updated.rate.toFixed(2)}/${updated.unit})`,
+    });
+
+    return { item: updated };
+  },
+
+  deleteRateCardItem: async (itemId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const itemRef = ref(rtdb, `tenants/${tenantUid}/rateCard/${itemId}`);
+    const snap = await get(itemRef);
+    if (!snap.exists()) throw new Error('Rate card item not found');
+    const existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+
+    await remove(itemRef);
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'RATE_CARD_DELETED',
+      entityType: 'rate_card',
+      entityId: itemId,
+      summary: `Deleted rate card item ${existing.name}`,
+    });
+
+    return { ok: true };
   },
 
   // ==================== ANALYTICS & REPORTS ====================

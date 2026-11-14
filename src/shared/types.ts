@@ -72,6 +72,7 @@ export interface BusinessProfile {
   defaultQuotationTemplate: TemplateId;
   termsAndConditions: string;
   signatureLabel: string;
+  signatureDataUrl?: string;
   updatedAt: string;
 }
 
@@ -108,6 +109,23 @@ export interface LineItemInput {
   discountType: DiscountType;
   discountValue: number;
   taxRate: number;
+}
+
+export interface RateCardItem {
+  id: string;
+  userUid: string;
+  name: string;
+  description: string;
+  hsnSac: string;
+  unit: string;
+  rate: number;
+  discountType: DiscountType;
+  discountValue: number;
+  taxRate: number;
+  category: string;
+  isActive: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface ComputedLineItem extends LineItemInput {
@@ -150,6 +168,7 @@ export interface BusinessSnapshot {
   upiId: string;
   upiQrDataUrl: string;
   signatureLabel: string;
+  signatureDataUrl?: string;
 }
 
 export interface Invoice {

@@ -18,6 +18,7 @@ import { useToast } from '../../components/ui/toast';
 export function CustomersPage({ navigate }: { navigate: (path: string) => void }) {
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
+  const isGstBusiness = session?.businessProfile?.defaultIsGst !== false;
   const { notify } = useToast();
   const [customers, setCustomers] = React.useState<Customer[]>([]);
   const [search, setSearch] = React.useState('');
@@ -413,7 +414,7 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="space-y-1">
-              <Label>GSTIN</Label>
+              <Label>{isGstBusiness ? 'GSTIN' : 'GSTIN (Optional — Non-GST Workspace)'}</Label>
               <Input
                 value={form.gstin}
                 onChange={(e) => {

@@ -1,6 +1,7 @@
 import * as React from 'react';
 import { AppShell } from './components/AppShell';
 import { DocumentEditor } from './components/DocumentEditor';
+import { OfflineIndicator } from './components/PWAComponents';
 import { ToastProvider } from './components/ui/toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { ThemeProvider } from './contexts/ThemeContext';
@@ -23,6 +24,7 @@ import { CustomerDetailsPage, CustomersPage } from './pages/customer/CustomersPa
 import { InvoiceDetailsPage, InvoicesListPage } from './pages/customer/InvoicesPages';
 import { PaymentsPage } from './pages/customer/PaymentsPage';
 import { QuotationDetailsPage, QuotationsListPage } from './pages/customer/QuotationsPages';
+import { RateCardPage } from './pages/customer/RateCardPage';
 import { OutstandingReportPage, SalesReportsPage } from './pages/customer/ReportsPages';
 import {
   BusinessProfilePage,
@@ -76,9 +78,11 @@ function AppRouter() {
     return (
       <div className="min-h-screen flex items-center justify-center bg-zinc-50 dark:bg-zinc-950">
         <div className="flex items-center gap-3 text-sm font-medium text-zinc-600 dark:text-zinc-300">
-          <div className="h-8 w-8 rounded-lg bg-[#F57C00] text-white flex items-center justify-center font-display font-bold">
-            D
-          </div>
+          <img
+            src="/drona-logo.png"
+            alt="DRONA Invoice"
+            className="h-9 w-9 rounded-lg object-contain shrink-0"
+          />
           <span>Loading DRONA Workspace...</span>
         </div>
       </div>
@@ -404,6 +408,19 @@ function AppRouter() {
     );
   }
 
+  if (path === '/rate-card') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Rate Card"
+        breadcrumbs={[bizName, 'Rate Card']}
+      >
+        <RateCardPage />
+      </AppShell>
+    );
+  }
+
   if (path === '/payments') {
     return (
       <AppShell
@@ -513,6 +530,7 @@ export default function App() {
       <ToastProvider>
         <AuthProvider>
           <AppRouter />
+          <OfflineIndicator />
         </AuthProvider>
       </ToastProvider>
     </ThemeProvider>

@@ -1,20 +1,34 @@
 import * as React from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
+  BookmarkPlus,
+  Check,
   Columns2,
+  CreditCard,
   Download,
+  Edit2,
   FileText,
   ImagePlus,
   Maximize2,
+  Package,
   Pencil,
   Plus,
+  Search,
   Trash2,
   X,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import { customersApi, invoicesApi, quotationsApi } from '../lib/api';
+import {
+  customersApi,
+  invoicesApi,
+  paymentsApi,
+  quotationsApi,
+  rateCardApi,
+  subscribeRtdbPath,
+} from '../lib/api';
 import { generateDocumentPdf } from '../lib/pdfGenerator';
-import { processLogoFile } from '../lib/utils';
+import { formatDate, processLogoFile } from '../lib/utils';
 import { computeDocumentTotals, formatINR } from '../shared/gstCalculator';
 import { INDIAN_STATES, getStateFromGstin } from '../shared/indianStates';
 import type {
@@ -23,7 +37,10 @@ import type {
   CustomerSnapshot,
   Invoice,
   LineItemInput,
+  Payment,
+  PaymentMethod,
   Quotation,
+  RateCardItem,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
@@ -158,6 +175,34 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const [existingDocNumber, setExistingDocNumber] = React.useState<string>('');
   const [existingStatus, setExistingStatus] = React.useState<string | null>(null);
   const [existingAmountPaid, setExistingAmountPaid] = React.useState<number>(0);
+  const [invoicePayments, setInvoicePayments] = React.useState<Payment[]>([]);
+
+  // Rate card state
+  const [rateCardItems, setRateCardItems] = React.useState<RateCardItem[]>([]);
+  const [ratePickerOpen, setRatePickerOpen] = React.useState(false);
+  const [rateSearch, setRateSearch] = React.useState('');
+  const [rateCategory, setRateCategory] = React.useState('all');
+  const [selectedRateIds, setSelectedRateIds] = React.useState<string[]>([]);
+  const [savingToRateCardIdx, setSavingToRateCardIdx] = React.useState<number | null>(null);
+
+  // Inline payment management state when editing a finalized invoice
+  const [paymentsModalOpen, setPaymentsModalOpen] = React.useState(false);
+  const [editingPayId, setEditingPayId] = React.useState<string | null>(null);
+  const [editPayForm, setEditPayForm] = React.useState({
+    paymentDate: '',
+    amount: 0,
+    paymentMethod: 'UPI' as PaymentMethod,
+    referenceId: '',
+    notes: '',
+  });
+  const [savingPayEdit, setSavingPayEdit] = React.useState(false);
+  const [deletingPayId, setDeletingPayId] = React.useState<string | null>(null);
+
+  // Guard user-initiated overrides on new documents so async profile loads still apply cleanly
+  const userTouchedGstRef = React.useRef(false);
+  const userTouchedTaxModeRef = React.useRef(false);
+  const userTouchedTemplateRef = React.useRef(false);
+  const userTouchedTermsRef = React.useRef(false);
 
   const [items, setItems] = React.useState<LineItemInput[]>([
     {
@@ -169,7 +214,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       rate: 0,
       discountType: 'percent',
       discountValue: 0,
-      taxRate: profile?.defaultTaxRate ?? 18,
+      taxRate: profile?.defaultIsGst === false ? 0 : (profile?.defaultTaxRate ?? 18),
     },
   ]);
 
@@ -184,6 +229,45 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     billingAddress: '',
     state: 'Maharashtra',
   });
+
+  // Sync profile defaults onto untouched new documents whenever profile changes
+  React.useEffect(() => {
+    if (editId || !profile) return;
+    if (!userTouchedGstRef.current) {
+      setIsGst(profile.defaultIsGst !== false);
+    }
+    if (!userTouchedTaxModeRef.current) {
+      setTaxMode(profile.defaultTaxMode || 'exclusive');
+    }
+    if (!userTouchedTemplateRef.current) {
+      setTemplateId(
+        docType === 'invoice'
+          ? profile.defaultInvoiceTemplate || 'classic_gst'
+          : profile.defaultQuotationTemplate || 'classic_gst'
+      );
+    }
+    if (!userTouchedTermsRef.current) {
+      setTerms(profile.termsAndConditions || '');
+    }
+  }, [editId, docType, profile]);
+
+  const tenantUid = session?.effectiveUser.uid;
+  const loadRateCard = React.useCallback(async () => {
+    try {
+      const res = await rateCardApi.list({ activeOnly: true });
+      setRateCardItems(res.items);
+    } catch {
+      // ignore transient
+    }
+  }, []);
+
+  React.useEffect(() => {
+    loadRateCard();
+    if (!tenantUid) return;
+    return subscribeRtdbPath(`tenants/${tenantUid}/rateCard`, () => {
+      loadRateCard();
+    });
+  }, [tenantUid, loadRateCard]);
 
   React.useEffect(() => {
     let active = true;
@@ -208,6 +292,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             setExistingDocNumber(inv.invoiceNumber);
             setExistingStatus(inv.status);
             setExistingAmountPaid(inv.amountPaid || 0);
+            setInvoicePayments(inv.payments || []);
             setCustomerId(inv.customerId);
             setDocDate(inv.invoiceDate);
             setDueDate(inv.dueDate);
@@ -308,6 +393,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       upiId: upiId.trim(),
       upiQrDataUrl: upiId.trim() ? '' : profile?.upiQrDataUrl || '',
       signatureLabel: profile?.signatureLabel || 'Authorized Signatory',
+      signatureDataUrl: profile?.signatureDataUrl || '',
     };
 
     const customerSnapshot: CustomerSnapshot = selectedCustomer
@@ -432,7 +518,32 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   ]);
 
   const updateItem = (idx: number, patch: Partial<LineItemInput>) => {
-    setItems((prev) => prev.map((it, i) => (i === idx ? { ...it, ...patch } : it)));
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+        const next = { ...it, ...patch };
+        // Auto-fill from Rate Card when matching name is selected on a fresh row
+        if (patch.name !== undefined && it.rate === 0) {
+          const match = rateCardItems.find(
+            (rc) => rc.name.toLowerCase() === patch.name!.trim().toLowerCase()
+          );
+          if (match) {
+            return {
+              ...next,
+              name: match.name,
+              description: next.description || match.description,
+              hsnSac: next.hsnSac || match.hsnSac,
+              unit: match.unit || next.unit,
+              rate: match.rate,
+              discountType: match.discountType,
+              discountValue: match.discountValue,
+              taxRate: isGst ? match.taxRate : 0,
+            };
+          }
+        }
+        return next;
+      })
+    );
   };
 
   const addItem = () => {
@@ -447,9 +558,97 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         rate: 0,
         discountType: 'percent',
         discountValue: 0,
-        taxRate: profile?.defaultTaxRate ?? 18,
+        taxRate: isGst ? (profile?.defaultTaxRate ?? 18) : 0,
       },
     ]);
+  };
+
+  const insertRateCardItems = (selected: RateCardItem[]) => {
+    if (selected.length === 0) return;
+    const mapped: LineItemInput[] = selected.map((rc) => ({
+      name: rc.name,
+      description: rc.description,
+      hsnSac: isGst ? rc.hsnSac : '',
+      quantity: 1,
+      unit: rc.unit || 'Nos',
+      rate: rc.rate,
+      discountType: rc.discountType || 'percent',
+      discountValue: rc.discountValue || 0,
+      taxRate: isGst ? rc.taxRate : 0,
+    }));
+    setItems((prev) => {
+      const onlyEmptyPlaceholder =
+        prev.length === 1 && !prev[0].name.trim() && Number(prev[0].rate) === 0;
+      return onlyEmptyPlaceholder ? mapped : [...prev, ...mapped];
+    });
+    notify('success', `Added ${selected.length} item${selected.length === 1 ? '' : 's'} from Rate Card`);
+  };
+
+  const handleSaveLineItemToRateCard = async (idx: number) => {
+    const item = items[idx];
+    if (!item || !item.name.trim()) return;
+    setSavingToRateCardIdx(idx);
+    try {
+      await rateCardApi.create({
+        name: item.name.trim(),
+        description: item.description.trim(),
+        hsnSac: item.hsnSac.trim(),
+        unit: item.unit.trim() || 'Nos',
+        rate: Number(item.rate) || 0,
+        discountType: item.discountType,
+        discountValue: Number(item.discountValue) || 0,
+        taxRate: isGst ? Number(item.taxRate) : 0,
+        category: 'Services',
+        isActive: true,
+      });
+      await loadRateCard();
+      notify('success', `"${item.name.trim()}" saved to Rate Card`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to save to Rate Card');
+    } finally {
+      setSavingToRateCardIdx(null);
+    }
+  };
+
+  const refreshInvoicePayments = async () => {
+    if (!editId || docType !== 'invoice') return;
+    try {
+      const res = await invoicesApi.get(editId);
+      setInvoicePayments(res.invoice.payments || []);
+      setExistingAmountPaid(res.invoice.amountPaid || 0);
+      setExistingStatus(res.invoice.status);
+    } catch {
+      // ignore
+    }
+  };
+
+  const handleSaveInlinePayment = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editingPayId) return;
+    setSavingPayEdit(true);
+    try {
+      await paymentsApi.update(editingPayId, editPayForm);
+      notify('success', 'Payment updated and invoice totals synced');
+      setEditingPayId(null);
+      await refreshInvoicePayments();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update payment');
+    } finally {
+      setSavingPayEdit(false);
+    }
+  };
+
+  const handleDeleteInlinePayment = async (paymentId: string) => {
+    setDeletingPayId(paymentId);
+    try {
+      await paymentsApi.remove(paymentId);
+      notify('success', 'Payment deleted');
+      await refreshInvoicePayments();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete payment');
+    } finally {
+      setDeletingPayId(null);
+    }
   };
 
   const removeItem = (idx: number) => {
@@ -858,12 +1057,27 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
 
             {/* Metadata & GST Rules */}
             <Card>
-              <CardHeader className="pb-3">
+              <CardHeader className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3">
                 <CardTitle>
                   {docType === 'invoice'
                     ? 'Invoice Metadata & GST Rules'
                     : 'Quotation Metadata & GST Rules'}
                 </CardTitle>
+                <div className="flex items-center gap-2 text-[11px]">
+                  <span className="text-zinc-500">
+                    Business Profile:{' '}
+                    <span className="font-semibold text-zinc-800 dark:text-zinc-200">
+                      {profile?.defaultIsGst === false ? 'Non-GST' : 'GST Registered'}
+                    </span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/business-profile')}
+                    className="text-[#F57C00] hover:underline font-medium cursor-pointer"
+                  >
+                    Change
+                  </button>
+                </div>
               </CardHeader>
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
@@ -911,7 +1125,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     <Label>A4 Template</Label>
                     <Select
                       value={templateId}
-                      onChange={(e) => setTemplateId(e.target.value as TemplateId)}
+                      onChange={(e) => {
+                        userTouchedTemplateRef.current = true;
+                        setTemplateId(e.target.value as TemplateId);
+                      }}
                     >
                       <option value="classic_gst">Classic GST Ledger</option>
                       <option value="executive_minimal">Executive Minimal</option>
@@ -935,7 +1152,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     <input
                       type="checkbox"
                       checked={isGst}
-                      onChange={(e) => setIsGst(e.target.checked)}
+                      onChange={(e) => {
+                        userTouchedGstRef.current = true;
+                        setIsGst(e.target.checked);
+                      }}
                       className="h-4 w-4 accent-[#F57C00]"
                     />
                     GST Document
@@ -944,7 +1164,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                   <Select
                     value={taxMode}
                     disabled={!isGst}
-                    onChange={(e) => setTaxMode(e.target.value as TaxPricingMode)}
+                    onChange={(e) => {
+                      userTouchedTaxModeRef.current = true;
+                      setTaxMode(e.target.value as TaxPricingMode);
+                    }}
                     className="h-11 sm:h-9 text-base sm:text-xs"
                   >
                     <option value="exclusive">GST Exclusive</option>
@@ -979,13 +1202,35 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
 
             {/* Line Items Table (Desktop) + Card Builder (Mobile) */}
             <Card>
-              <CardHeader className="flex flex-row items-center justify-between pb-3">
+              <CardHeader className="flex flex-wrap flex-row items-center justify-between gap-2 pb-3">
                 <CardTitle>Line Items ({items.length})</CardTitle>
-                <Button size="sm" variant="outline" onClick={addItem}>
-                  <Plus className="h-3.5 w-3.5" />
-                  Add Item
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setRateSearch('');
+                      setRateCategory('all');
+                      setSelectedRateIds([]);
+                      setRatePickerOpen(true);
+                    }}
+                  >
+                    <Package className="h-3.5 w-3.5 text-[#F57C00]" />
+                    <span className="hidden sm:inline">Add from Rate Card</span>
+                    <span className="sm:hidden">Rate Card</span>
+                  </Button>
+                  <Button type="button" size="sm" variant="outline" onClick={addItem}>
+                    <Plus className="h-3.5 w-3.5" />
+                    Add Item
+                  </Button>
+                </div>
               </CardHeader>
+              <datalist id="drona-rate-card-names">
+                {rateCardItems.map((rc) => (
+                  <option key={rc.id} value={rc.name} />
+                ))}
+              </datalist>
               <CardContent className="p-0">
                 {/* Mobile Line Items Card Builder */}
                 <div className="md:hidden p-3.5 space-y-3.5 border-t border-zinc-100 dark:border-zinc-800">
@@ -1017,8 +1262,25 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                         </div>
 
                         <div className="space-y-1">
-                          <Label>Item / Service Name *</Label>
+                          <div className="flex items-center justify-between gap-2">
+                            <Label>Item / Service Name *</Label>
+                            {item.name.trim() &&
+                            !rateCardItems.some(
+                              (rc) => rc.name.toLowerCase() === item.name.trim().toLowerCase()
+                            ) ? (
+                              <button
+                                type="button"
+                                disabled={savingToRateCardIdx === idx}
+                                onClick={() => handleSaveLineItemToRateCard(idx)}
+                                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#F57C00] hover:underline cursor-pointer"
+                              >
+                                <BookmarkPlus className="h-3 w-3" />
+                                {savingToRateCardIdx === idx ? 'Saving...' : 'Save to Rate Card'}
+                              </button>
+                            ) : null}
+                          </div>
                           <Input
+                            list="drona-rate-card-names"
                             value={item.name}
                             onChange={(e) => updateItem(idx, { name: e.target.value })}
                             placeholder="Service or product name"
@@ -1148,10 +1410,25 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     );
                   })}
 
-                  <Button type="button" variant="outline" className="w-full" onClick={addItem}>
-                    <Plus className="h-4 w-4" />
-                    Add Another Item
-                  </Button>
+                  <div className="grid grid-cols-2 gap-2.5">
+                    <Button
+                      type="button"
+                      variant="outline"
+                      onClick={() => {
+                        setRateSearch('');
+                        setRateCategory('all');
+                        setSelectedRateIds([]);
+                        setRatePickerOpen(true);
+                      }}
+                    >
+                      <Package className="h-4 w-4 text-[#F57C00]" />
+                      From Rate Card
+                    </Button>
+                    <Button type="button" variant="outline" onClick={addItem}>
+                      <Plus className="h-4 w-4" />
+                      Add Blank Item
+                    </Button>
+                  </div>
                 </div>
 
                 {/* Desktop Line Items Table */}
@@ -1183,6 +1460,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                           <tr key={idx} className="align-top">
                             <td className="px-3 py-2.5 space-y-1.5">
                               <Input
+                                list="drona-rate-card-names"
                                 value={item.name}
                                 onChange={(e) => updateItem(idx, { name: e.target.value })}
                                 placeholder="Service or product name"
@@ -1277,15 +1555,32 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                               {formatINR(computed?.totalAmount || 0)}
                             </td>
                             <td className="px-2 py-2.5 text-center">
-                              <button
-                                type="button"
-                                onClick={() => removeItem(idx)}
-                                disabled={items.length <= 1}
-                                className="p-1.5 text-zinc-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
-                                aria-label="Remove item"
-                              >
-                                <Trash2 className="h-3.5 w-3.5" />
-                              </button>
+                              <div className="inline-flex items-center gap-0.5">
+                                {item.name.trim() &&
+                                !rateCardItems.some(
+                                  (rc) => rc.name.toLowerCase() === item.name.trim().toLowerCase()
+                                ) ? (
+                                  <button
+                                    type="button"
+                                    disabled={savingToRateCardIdx === idx}
+                                    onClick={() => handleSaveLineItemToRateCard(idx)}
+                                    className="p-1.5 text-zinc-400 hover:text-[#F57C00] cursor-pointer"
+                                    title="Save item to Rate Card"
+                                    aria-label="Save item to Rate Card"
+                                  >
+                                    <BookmarkPlus className="h-3.5 w-3.5" />
+                                  </button>
+                                ) : null}
+                                <button
+                                  type="button"
+                                  onClick={() => removeItem(idx)}
+                                  disabled={items.length <= 1}
+                                  className="p-1.5 text-zinc-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
+                                  aria-label="Remove item"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              </div>
                             </td>
                           </tr>
                         );
@@ -1314,7 +1609,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     <Textarea
                       rows={3}
                       value={terms}
-                      onChange={(e) => setTerms(e.target.value)}
+                      onChange={(e) => {
+                        userTouchedTermsRef.current = true;
+                        setTerms(e.target.value);
+                      }}
                     />
                   </div>
                 </CardContent>
@@ -1368,6 +1666,45 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     </span>
                   </div>
                   <div className="pt-1 text-xs text-zinc-500">{calc.amountInWords}</div>
+
+                  {editId && docType === 'invoice' && existingStatus && existingStatus !== 'draft' ? (
+                    <div className="mt-3 pt-3 border-t border-zinc-200 dark:border-zinc-800 space-y-2 text-xs">
+                      <div className="flex justify-between text-emerald-600 dark:text-emerald-400">
+                        <span>Recorded Payments ({invoicePayments.length})</span>
+                        <span className="font-mono tabular-nums font-semibold">
+                          {formatINR(existingAmountPaid)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between font-semibold text-zinc-900 dark:text-zinc-100">
+                        <span>Updated Balance Due</span>
+                        <span className="font-mono tabular-nums">
+                          {formatINR(Math.max(0, calc.grandTotal - existingAmountPaid))}
+                        </span>
+                      </div>
+                      {existingAmountPaid > calc.grandTotal ? (
+                        <div className="rounded-lg border border-amber-200 bg-amber-50 p-2.5 text-amber-900 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200 flex items-start gap-2">
+                          <AlertTriangle className="h-3.5 w-3.5 text-amber-600 shrink-0 mt-0.5" />
+                          <span>
+                            Payments exceed invoice total by{' '}
+                            <span className="font-mono font-semibold">
+                              {formatINR(existingAmountPaid - calc.grandTotal)}
+                            </span>
+                            . Edit payments below if needed.
+                          </span>
+                        </div>
+                      ) : null}
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        className="w-full"
+                        onClick={() => setPaymentsModalOpen(true)}
+                      >
+                        <CreditCard className="h-3.5 w-3.5 text-[#F57C00]" />
+                        Edit / Manage Recorded Payments ({invoicePayments.length})
+                      </Button>
+                    </div>
+                  ) : null}
                 </CardContent>
               </Card>
             </div>
@@ -1615,6 +1952,342 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             <Button type="submit">Add Customer</Button>
           </div>
         </form>
+      </Dialog>
+
+      {/* Rate Card Picker Modal */}
+      <Dialog
+        open={ratePickerOpen}
+        onClose={() => setRatePickerOpen(false)}
+        title="Add Items from Rate Card"
+        description="Select one or more preset items to add directly to this document."
+        maxWidthClass="max-w-2xl"
+      >
+        <div className="space-y-4">
+          <div className="flex flex-col sm:flex-row gap-2">
+            <div className="relative flex-1">
+              <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
+              <Input
+                value={rateSearch}
+                onChange={(e) => setRateSearch(e.target.value)}
+                placeholder="Search rate card items..."
+                className="pl-9"
+              />
+            </div>
+            <Select
+              value={rateCategory}
+              onChange={(e) => setRateCategory(e.target.value)}
+              className="sm:w-44"
+            >
+              <option value="all">All Categories</option>
+              {Array.from(new Set(rateCardItems.map((i) => i.category || 'General'))).map((cat) => (
+                <option key={cat} value={cat}>
+                  {cat}
+                </option>
+              ))}
+            </Select>
+          </div>
+
+          {(() => {
+            const q = rateSearch.trim().toLowerCase();
+            const filtered = rateCardItems.filter((rc) => {
+              if (rateCategory !== 'all' && (rc.category || 'General') !== rateCategory) {
+                return false;
+              }
+              if (q) {
+                const hay = `${rc.name} ${rc.description} ${rc.hsnSac} ${rc.category}`.toLowerCase();
+                if (!hay.includes(q)) return false;
+              }
+              return true;
+            });
+
+            if (filtered.length === 0) {
+              return (
+                <div className="rounded-xl border border-dashed border-zinc-200 p-8 text-center space-y-3 dark:border-zinc-800">
+                  <p className="text-xs text-zinc-500">
+                    {rateCardItems.length === 0
+                      ? 'Your Rate Card is empty. Add default items once to reuse them across invoices and quotations.'
+                      : 'No Rate Card items match your filter.'}
+                  </p>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      setRatePickerOpen(false);
+                      navigate('/rate-card');
+                    }}
+                  >
+                    <Package className="h-3.5 w-3.5" />
+                    Open Rate Card
+                  </Button>
+                </div>
+              );
+            }
+
+            return (
+              <div className="max-h-[52vh] overflow-y-auto divide-y divide-zinc-100 rounded-xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+                {filtered.map((rc) => {
+                  const checked = selectedRateIds.includes(rc.id);
+                  return (
+                    <div
+                      key={rc.id}
+                      className={`flex items-center justify-between gap-3 p-3.5 transition-colors ${
+                        checked ? 'bg-orange-50/50 dark:bg-orange-950/15' : ''
+                      }`}
+                    >
+                      <label className="flex items-start gap-3 min-w-0 flex-1 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              setSelectedRateIds((prev) => [...prev, rc.id]);
+                            } else {
+                              setSelectedRateIds((prev) => prev.filter((x) => x !== rc.id));
+                            }
+                          }}
+                          className="mt-1 h-4 w-4 accent-[#F57C00] shrink-0"
+                        />
+                        <div className="min-w-0">
+                          <div className="font-medium text-sm text-zinc-900 dark:text-zinc-100 truncate">
+                            {rc.name}
+                          </div>
+                          {rc.description ? (
+                            <div className="text-xs text-zinc-500 line-clamp-1">{rc.description}</div>
+                          ) : null}
+                          <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                            {rc.category || 'General'} · Unit: {rc.unit}
+                            {isGst && rc.hsnSac ? ` · HSN: ${rc.hsnSac}` : ''}
+                            {isGst ? ` · GST ${rc.taxRate}%` : ''}
+                          </div>
+                        </div>
+                      </label>
+
+                      <div className="flex items-center gap-2.5 shrink-0">
+                        <div className="text-right">
+                          <div className="font-mono text-sm font-semibold tabular-nums text-zinc-900 dark:text-zinc-100">
+                            {formatINR(rc.rate)}
+                          </div>
+                          {rc.discountValue > 0 ? (
+                            <div className="text-[10px] font-mono text-zinc-500">
+                              -{rc.discountValue}
+                              {rc.discountType === 'percent' ? '%' : '₹'}
+                            </div>
+                          ) : null}
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            insertRateCardItems([rc]);
+                            setRatePickerOpen(false);
+                          }}
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          Add
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            );
+          })()}
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+            <button
+              type="button"
+              onClick={() => {
+                setRatePickerOpen(false);
+                navigate('/rate-card');
+              }}
+              className="text-xs font-medium text-[#F57C00] hover:underline cursor-pointer"
+            >
+              Manage Rate Card →
+            </button>
+            <div className="flex items-center gap-2">
+              <Button type="button" variant="outline" onClick={() => setRatePickerOpen(false)}>
+                Close
+              </Button>
+              {selectedRateIds.length > 0 ? (
+                <Button
+                  type="button"
+                  onClick={() => {
+                    const chosen = rateCardItems.filter((rc) => selectedRateIds.includes(rc.id));
+                    insertRateCardItems(chosen);
+                    setRatePickerOpen(false);
+                  }}
+                >
+                  <Check className="h-3.5 w-3.5" />
+                  Add Selected ({selectedRateIds.length})
+                </Button>
+              ) : null}
+            </div>
+          </div>
+        </div>
+      </Dialog>
+
+      {/* Inline Manage Recorded Payments Dialog (when editing finalized invoice) */}
+      <Dialog
+        open={paymentsModalOpen}
+        onClose={() => {
+          setPaymentsModalOpen(false);
+          setEditingPayId(null);
+        }}
+        title={`Recorded Payments — ${existingDocNumber}`}
+        description={`Invoice Grand Total: ${formatINR(calc.grandTotal)} · Total Paid: ${formatINR(existingAmountPaid)}`}
+        maxWidthClass="max-w-xl"
+      >
+        <div className="space-y-4">
+          {invoicePayments.length === 0 ? (
+            <div className="rounded-lg border border-dashed border-zinc-200 p-6 text-center text-xs text-zinc-500 dark:border-zinc-800">
+              No payments recorded for this invoice.
+            </div>
+          ) : (
+            <div className="divide-y divide-zinc-100 rounded-xl border border-zinc-200 dark:divide-zinc-800 dark:border-zinc-800">
+              {invoicePayments.map((p) =>
+                editingPayId === p.id ? (
+                  <form key={p.id} onSubmit={handleSaveInlinePayment} className="p-3.5 space-y-3 bg-zinc-50 dark:bg-zinc-950">
+                    <div className="flex items-center justify-between text-xs font-semibold">
+                      <span className="font-mono">{p.receiptNumber}</span>
+                      <button
+                        type="button"
+                        onClick={() => setEditingPayId(null)}
+                        className="text-zinc-500 hover:text-zinc-800 cursor-pointer"
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <Label>Date</Label>
+                        <Input
+                          type="date"
+                          required
+                          value={editPayForm.paymentDate}
+                          onChange={(e) =>
+                            setEditPayForm({ ...editPayForm, paymentDate: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Amount (INR)</Label>
+                        <Input
+                          type="number"
+                          inputMode="decimal"
+                          step="0.01"
+                          min="0.01"
+                          required
+                          value={editPayForm.amount}
+                          onChange={(e) =>
+                            setEditPayForm({ ...editPayForm, amount: Number(e.target.value) })
+                          }
+                          className="font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                      <div className="space-y-1">
+                        <Label>Method</Label>
+                        <Select
+                          value={editPayForm.paymentMethod}
+                          onChange={(e) =>
+                            setEditPayForm({
+                              ...editPayForm,
+                              paymentMethod: e.target.value as PaymentMethod,
+                            })
+                          }
+                        >
+                          <option value="UPI">UPI</option>
+                          <option value="Bank Transfer">Bank Transfer</option>
+                          <option value="Cash">Cash</option>
+                          <option value="Credit/Debit Card">Credit/Debit Card</option>
+                          <option value="Cheque">Cheque</option>
+                          <option value="Other">Other</option>
+                        </Select>
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Reference ID</Label>
+                        <Input
+                          value={editPayForm.referenceId}
+                          onChange={(e) =>
+                            setEditPayForm({ ...editPayForm, referenceId: e.target.value })
+                          }
+                          className="font-mono"
+                        />
+                      </div>
+                    </div>
+                    <div className="flex justify-end gap-2">
+                      <Button type="submit" size="sm" disabled={savingPayEdit}>
+                        {savingPayEdit ? 'Saving...' : 'Update Payment'}
+                      </Button>
+                    </div>
+                  </form>
+                ) : (
+                  <div key={p.id} className="flex items-center justify-between gap-2 p-3.5">
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-xs font-semibold">{p.receiptNumber}</span>
+                        <span className="text-xs text-zinc-500">{p.paymentMethod}</span>
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500">
+                        {formatDate(p.paymentDate)}
+                        {p.referenceId ? ` · ${p.referenceId}` : ''}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      <span className="font-mono text-sm font-semibold tabular-nums text-emerald-600 mr-1">
+                        {formatINR(p.amount)}
+                      </span>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setEditingPayId(p.id);
+                          setEditPayForm({
+                            paymentDate: p.paymentDate,
+                            amount: p.amount,
+                            paymentMethod: p.paymentMethod,
+                            referenceId: p.referenceId || '',
+                            notes: p.notes || '',
+                          });
+                        }}
+                        title="Edit Payment"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="text-red-600 hover:text-red-700"
+                        disabled={deletingPayId === p.id}
+                        onClick={() => handleDeleteInlinePayment(p.id)}
+                        title="Delete Payment"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </div>
+                )
+              )}
+            </div>
+          )}
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => {
+                setPaymentsModalOpen(false);
+                setEditingPayId(null);
+              }}
+            >
+              Done
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

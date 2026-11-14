@@ -5,6 +5,8 @@ import { authApi, businessApi, subscribeRtdbPath } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type { BusinessProfile, Invoice, TemplateId } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
+import { PWAInstallButton } from '../../components/PWAComponents';
+import { SignatureControl } from '../../components/SignatureControl';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
 import { Input, Label, Select, Textarea } from '../../components/ui/input';
@@ -140,12 +142,68 @@ export function BusinessProfilePage() {
             </div>
           </div>
 
+          <div className="space-y-2 pt-1">
+            <Label>Business Tax Registration (Saved App-Wide) *</Label>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <button
+                type="button"
+                onClick={() =>
+                  setForm({
+                    ...form,
+                    defaultIsGst: true,
+                    defaultTaxRate: form.defaultTaxRate === 0 ? 18 : form.defaultTaxRate,
+                  })
+                }
+                className={`rounded-xl border p-3.5 text-left transition-colors cursor-pointer ${
+                  form.defaultIsGst !== false
+                    ? 'border-[#F57C00] bg-orange-50/50 dark:bg-orange-950/15'
+                    : 'border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    GST Registered Business
+                  </span>
+                  {form.defaultIsGst !== false ? (
+                    <CheckCircle2 className="h-4 w-4 text-[#F57C00] shrink-0" />
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Issues Tax Invoices with HSN/SAC, CGST/SGST &amp; IGST breakdowns by default.
+                </p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setForm({ ...form, defaultIsGst: false })}
+                className={`rounded-xl border p-3.5 text-left transition-colors cursor-pointer ${
+                  form.defaultIsGst === false
+                    ? 'border-[#F57C00] bg-orange-50/50 dark:bg-orange-950/15'
+                    : 'border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    Non-GST Business
+                  </span>
+                  {form.defaultIsGst === false ? (
+                    <CheckCircle2 className="h-4 w-4 text-[#F57C00] shrink-0" />
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-zinc-500">
+                  Issues Bills of Supply without GST columns or tax calculations across the app.
+                </p>
+              </button>
+            </div>
+          </div>
+
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="space-y-1">
-              <Label>GSTIN</Label>
+              <Label>{form.defaultIsGst === false ? 'GSTIN (Optional — Non-GST)' : 'GSTIN'}</Label>
               <Input
                 value={form.gstin}
                 onChange={(e) => setForm({ ...form, gstin: e.target.value.toUpperCase() })}
+                placeholder={form.defaultIsGst === false ? 'Not applicable / Optional' : '27AABCU9603R1ZM'}
                 className="font-mono uppercase"
               />
             </div>
@@ -215,23 +273,23 @@ export function BusinessProfilePage() {
             </div>
           </div>
 
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div className="space-y-1">
-              <Label>UPI ID (Dynamic QR generated automatically on PDFs)</Label>
-              <Input
-                value={form.upiId}
-                onChange={(e) => setForm({ ...form, upiId: e.target.value })}
-                placeholder="business@okaxis"
-                className="font-mono"
-              />
-            </div>
-            <div className="space-y-1">
-              <Label>Authorized Signature Label</Label>
-              <Input
-                value={form.signatureLabel}
-                onChange={(e) => setForm({ ...form, signatureLabel: e.target.value })}
-              />
-            </div>
+          <div className="space-y-1">
+            <Label>UPI ID (Dynamic QR generated automatically on PDFs)</Label>
+            <Input
+              value={form.upiId}
+              onChange={(e) => setForm({ ...form, upiId: e.target.value })}
+              placeholder="business@okaxis"
+              className="font-mono"
+            />
+          </div>
+
+          <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
+            <SignatureControl
+              signatureDataUrl={form.signatureDataUrl || ''}
+              signatureLabel={form.signatureLabel || ''}
+              onChangeDataUrl={(url) => setForm({ ...form, signatureDataUrl: url })}
+              onChangeLabel={(label) => setForm({ ...form, signatureLabel: label })}
+            />
           </div>
         </CardContent>
       </Card>
@@ -275,6 +333,7 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
   const [previewId, setPreviewId] = React.useState<TemplateId>(activeTemplate);
   const [saving, setSaving] = React.useState(false);
 
+  const isGstDefault = profile?.defaultIsGst !== false;
   const sampleRecord: Invoice = {
     id: 'preview',
     userUid: profile?.userUid || 'preview',
@@ -287,7 +346,7 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
       companyName: 'Sahyadri Logistics LLP',
       email: 'accounts@sahyadrilogistics.in',
       phone: '+91 98192 33410',
-      gstin: '27AADFS9021C1Z2',
+      gstin: isGstDefault ? '27AADFS9021C1Z2' : '',
       billingAddress: 'Plot 14, MIDC Taloja, Navi Mumbai - 410208',
       shippingAddress: 'Plot 14, MIDC Taloja, Navi Mumbai - 410208',
       state: 'Maharashtra',
@@ -299,7 +358,7 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
       address: profile?.address || 'Mumbai, Maharashtra',
       email: profile?.email || 'billing@business.in',
       phone: profile?.phone || '+91 98000 00000',
-      gstin: profile?.gstin || '27AABCV4812N1Z5',
+      gstin: isGstDefault ? (profile?.gstin || '27AABCV4812N1Z5') : (profile?.gstin || ''),
       pan: profile?.pan || '',
       state: profile?.state || 'Maharashtra',
       bankName: profile?.bankName || 'HDFC Bank Ltd',
@@ -308,13 +367,14 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
       upiId: profile?.upiId || 'business@hdfcbank',
       upiQrDataUrl: profile?.upiQrDataUrl || '',
       signatureLabel: profile?.signatureLabel || 'Authorized Signatory',
+      signatureDataUrl: profile?.signatureDataUrl || '',
     },
     invoiceDate: new Date().toISOString().slice(0, 10),
     dueDate: new Date().toISOString().slice(0, 10),
     paymentTerms: 'Net 15',
     referenceNumber: 'PO-2026-101',
     placeOfSupply: 'Maharashtra',
-    isGst: true,
+    isGst: isGstDefault,
     taxMode: 'exclusive',
     taxSupplyMode: 'auto',
     isInterState: false,
@@ -322,15 +382,15 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
     subtotal: 50000,
     totalDiscount: 0,
     taxableAmount: 50000,
-    cgstTotal: 4500,
-    sgstTotal: 4500,
+    cgstTotal: isGstDefault ? 4500 : 0,
+    sgstTotal: isGstDefault ? 4500 : 0,
     igstTotal: 0,
-    totalTax: 9000,
+    totalTax: isGstDefault ? 9000 : 0,
     roundOff: 0,
-    grandTotal: 59000,
+    grandTotal: isGstDefault ? 59000 : 50000,
     amountPaid: 0,
-    balanceDue: 59000,
-    amountInWords: 'Rupees Fifty Nine Thousand Only',
+    balanceDue: isGstDefault ? 59000 : 50000,
+    amountInWords: isGstDefault ? 'Rupees Fifty Nine Thousand Only' : 'Rupees Fifty Thousand Only',
     templateId: previewId,
     notes: 'Sample preview using your live business profile.',
     terms: profile?.termsAndConditions || 'Payment due within 15 days.',
@@ -345,21 +405,21 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
         sortOrder: 0,
         name: 'Enterprise Annual Subscription',
         description: 'Multi-branch billing and analytics',
-        hsnSac: '998314',
+        hsnSac: isGstDefault ? '998314' : '',
         quantity: 1,
         unit: 'Year',
         rate: 50000,
         discountType: 'percent',
         discountValue: 0,
-        taxRate: 18,
+        taxRate: isGstDefault ? 18 : 0,
         grossAmount: 50000,
         discountAmount: 0,
         taxableAmount: 50000,
-        cgstAmount: 4500,
-        sgstAmount: 4500,
+        cgstAmount: isGstDefault ? 4500 : 0,
+        sgstAmount: isGstDefault ? 4500 : 0,
         igstAmount: 0,
-        taxAmount: 9000,
-        totalAmount: 59000,
+        taxAmount: isGstDefault ? 9000 : 0,
+        totalAmount: isGstDefault ? 59000 : 50000,
       },
     ],
   };
@@ -441,6 +501,7 @@ export function CustomerSettingsPage() {
 
   const [pwForm, setPwForm] = React.useState({ currentPassword: '', newPassword: '' });
   const [changingPw, setChangingPw] = React.useState(false);
+  const [savingSig, setSavingSig] = React.useState(false);
 
   const tenantUid = session?.effectiveUser.uid;
   React.useEffect(() => {
@@ -468,6 +529,8 @@ export function CustomerSettingsPage() {
         defaultTaxMode: form.defaultTaxMode,
         defaultPaymentTermsDays: form.defaultPaymentTermsDays,
         termsAndConditions: form.termsAndConditions,
+        signatureLabel: form.signatureLabel,
+        signatureDataUrl: form.signatureDataUrl,
       });
       setForm(res.profile);
       updateLocalBusinessProfile(res.profile);
@@ -476,6 +539,23 @@ export function CustomerSettingsPage() {
       notify('error', err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveSignature = async () => {
+    setSavingSig(true);
+    try {
+      const res = await businessApi.updateProfile({
+        signatureLabel: form.signatureLabel,
+        signatureDataUrl: form.signatureDataUrl,
+      });
+      setForm(res.profile);
+      updateLocalBusinessProfile(res.profile);
+      notify('success', 'Authorized signature saved');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to save signature');
+    } finally {
+      setSavingSig(false);
     }
   };
 
@@ -595,6 +675,45 @@ export function CustomerSettingsPage() {
           </CardContent>
         </Card>
       </form>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Authorized Signature</CardTitle>
+          <CardDescription>
+            Draw your signature or upload a signature image to print on every invoice and quotation PDF
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <SignatureControl
+            signatureDataUrl={form.signatureDataUrl || ''}
+            signatureLabel={form.signatureLabel || ''}
+            onChangeDataUrl={(url) => setForm({ ...form, signatureDataUrl: url })}
+            onChangeLabel={(label) => setForm({ ...form, signatureLabel: label })}
+          />
+          <div className="flex justify-end">
+            <Button
+              type="button"
+              disabled={savingSig}
+              onClick={handleSaveSignature}
+              className="w-full sm:w-auto"
+            >
+              {savingSig ? 'Saving Signature...' : 'Save Signature'}
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Install App (Mobile &amp; PC)</CardTitle>
+          <CardDescription>
+            Install DRONA Invoice as a standalone desktop or mobile app for faster access and offline resilience
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <PWAInstallButton variant="card" className="w-full sm:w-auto" />
+        </CardContent>
+      </Card>
 
       {!session?.isImpersonating ? (
         <form onSubmit={handlePasswordChange}>
