@@ -1,4 +1,5 @@
 import * as React from 'react';
+import { Analytics } from '@vercel/analytics/react';
 import { AppShell } from './components/AppShell';
 import { DocumentEditor } from './components/DocumentEditor';
 import { OfflineIndicator } from './components/PWAComponents';
@@ -531,6 +532,7 @@ export default function App() {
         <AuthProvider>
           <AppRouter />
           <OfflineIndicator />
+          <Analytics />
         </AuthProvider>
       </ToastProvider>
     </ThemeProvider>
