@@ -13,9 +13,9 @@ import {
 } from 'recharts';
 import { ArrowDownRight, ArrowUpRight, Plus, Receipt } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { analyticsApi, subscribeRtdbPath } from '../../lib/api';
+import { analyticsApi, cachedRead } from '../../lib/api';
 import { formatINR } from '../../shared/gstCalculator';
-import type { CustomerAnalyticsData } from '../../shared/types';
+import type { Customer, CustomerAnalyticsData, Invoice, Payment, Quotation } from '../../shared/types';
 import { formatDate } from '../../lib/utils';
 import { EmptyState } from '../../components/AppShell';
 import { InvoiceStatusLabel } from '../../components/StatusText';
@@ -39,45 +39,94 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
   const [range, setRange] = React.useState('all');
   const [customStart, setCustomStart] = React.useState('');
   const [customEnd, setCustomEnd] = React.useState('');
-  const [data, setData] = React.useState<CustomerAnalyticsData | null>(null);
-  const [loading, setLoading] = React.useState(true);
+
+  const readCacheSnapshot = React.useCallback((uid?: string) => {
+    if (
+      !uid ||
+      !cachedRead.hasTenantCollectionData(uid, 'invoices') ||
+      !cachedRead.hasTenantCollectionData(uid, 'quotations') ||
+      !cachedRead.hasTenantCollectionData(uid, 'payments') ||
+      !cachedRead.hasTenantCollectionData(uid, 'customers')
+    ) {
+      return null;
+    }
+    const e = cachedRead.getTenantEntry(uid);
+    return {
+      invoices: e.invoices as Invoice[],
+      quotations: e.quotations as Quotation[],
+      payments: e.payments as Payment[],
+      customers: e.customers as Customer[],
+    };
+  }, []);
+
+  const initialSnap = React.useMemo(() => readCacheSnapshot(tenantUid), [tenantUid, readCacheSnapshot]);
+  const [snapshot, setSnapshot] = React.useState<{
+    invoices: Invoice[];
+    quotations: Quotation[];
+    payments: Payment[];
+    customers: Customer[];
+  } | null>(initialSnap);
+  const [loading, setLoading] = React.useState(() => !initialSnap);
   const [error, setError] = React.useState<string | null>(null);
+  const lastAnalyticsRef = React.useRef<CustomerAnalyticsData | null>(null);
 
   const load = React.useCallback(async (silent = false) => {
+    if (!tenantUid) return;
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const res = await analyticsApi.getDashboard({
-        range,
-        startDate: range === 'custom' ? customStart : undefined,
-        endDate: range === 'custom' ? customEnd : undefined,
-      });
-      setData(res);
+      await analyticsApi.getDashboard({ range: 'all' });
+      const next = readCacheSnapshot(tenantUid);
+      if (next) setSnapshot(next);
     } catch (err) {
       if (!silent) setError(err instanceof Error ? err.message : 'Failed to load analytics');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [range, customStart, customEnd]);
+  }, [tenantUid, readCacheSnapshot]);
 
   React.useEffect(() => {
-    if (range === 'custom' && (!customStart || !customEnd)) return;
-    load(false);
-  }, [load, range, customStart, customEnd]);
+    if (initialSnap) {
+      setSnapshot(initialSnap);
+      setLoading(false);
+    }
+    void load(Boolean(initialSnap));
+  }, [initialSnap, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    if (range === 'custom' && (!customStart || !customEnd)) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (
+        changed.has('invoices') ||
+        changed.has('quotations') ||
+        changed.has('payments') ||
+        changed.has('customers')
+      ) {
+        const next = readCacheSnapshot(tenantUid);
+        if (next) setSnapshot(next);
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, load, range, customStart, customEnd]);
+  }, [tenantUid, readCacheSnapshot]);
+
+  const data = React.useMemo(() => {
+    if (!snapshot) return null;
+    if (range === 'custom' && (!customStart || !customEnd)) {
+      return lastAnalyticsRef.current;
+    }
+    const computed = cachedRead.computeCustomerAnalyticsFromData(
+      snapshot.invoices,
+      snapshot.quotations,
+      snapshot.payments,
+      snapshot.customers,
+      {
+        range,
+        startDate: range === 'custom' ? customStart : undefined,
+        endDate: range === 'custom' ? customEnd : undefined,
+      }
+    );
+    lastAnalyticsRef.current = computed;
+    return computed;
+  }, [snapshot, range, customStart, customEnd]);
 
   const s = data?.summary;
 

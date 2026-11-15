@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { CreditCard, Download, Edit2, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { customersApi, invoicesApi, paymentsApi, subscribeRtdbPath } from '../../lib/api';
+import { cachedRead, customersApi, invoicesApi, paymentsApi } from '../../lib/api';
 import { generatePaymentReceiptPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
@@ -17,10 +17,32 @@ import { useToast } from '../../components/ui/toast';
 export function PaymentsPage({ navigate }: { navigate: (path: string) => void }) {
   const { session } = useAuth();
   const { notify } = useToast();
-  const [payments, setPayments] = React.useState<Payment[]>([]);
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [eligibleInvoices, setEligibleInvoices] = React.useState<Invoice[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const tenantUid = session?.effectiveUser.uid;
+  const initialHydrated = React.useMemo(() => {
+    if (!tenantUid) return null;
+    const hasPay = cachedRead.hasTenantCollectionData(tenantUid, 'payments');
+    const hasCust = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    const hasInv = cachedRead.hasTenantCollectionData(tenantUid, 'invoices');
+    if (!hasPay && !hasCust && !hasInv) return null;
+    const e = cachedRead.getTenantEntry(tenantUid);
+    return {
+      payments: e.payments,
+      customers: e.customers.filter((c) => !c.archived),
+      invoices: e.invoices,
+      complete: hasPay && hasCust && hasInv,
+    };
+  }, [tenantUid]);
+
+  const [allPayments, setAllPayments] = React.useState<Payment[]>(
+    () => initialHydrated?.payments || []
+  );
+  const [customers, setCustomers] = React.useState<Customer[]>(
+    () => initialHydrated?.customers || []
+  );
+  const [allInvoices, setAllInvoices] = React.useState<Invoice[]>(
+    () => initialHydrated?.invoices || []
+  );
+  const [loading, setLoading] = React.useState(() => !initialHydrated?.complete);
 
   const [search, setSearch] = React.useState('');
   const [method, setMethod] = React.useState('all');
@@ -52,53 +74,73 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
   const [deletingPayment, setDeletingPayment] = React.useState<Payment | null>(null);
   const [deleting, setDeleting] = React.useState(false);
 
-  const tenantUid = session?.effectiveUser.uid;
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
       const [payRes, custRes, invRes] = await Promise.all([
-        paymentsApi.list({ search, method, customerId, startDate, endDate }),
+        paymentsApi.list(),
         customersApi.list(),
         invoicesApi.list(),
       ]);
-      setPayments(payRes.payments);
+      setAllPayments(payRes.payments);
       setCustomers(custRes.customers);
-      const issued = invRes.invoices
-        .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
-        .sort((a, b) => {
-          const aDue = a.balanceDue > 0 ? 1 : 0;
-          const bDue = b.balanceDue > 0 ? 1 : 0;
-          if (aDue !== bDue) return bDue - aDue;
-          return b.invoiceDate.localeCompare(a.invoiceDate);
-        });
-      setEligibleInvoices(issued);
+      setAllInvoices(invRes.invoices);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load payments');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [search, method, customerId, startDate, endDate, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
-    const t = setTimeout(() => load(false), 180);
-    return () => clearTimeout(t);
-  }, [load]);
+    if (initialHydrated) {
+      setAllPayments(initialHydrated.payments);
+      setCustomers(initialHydrated.customers);
+      setAllInvoices(initialHydrated.invoices);
+      setLoading(!initialHydrated.complete);
+    }
+    void load(Boolean(initialHydrated?.complete));
+  }, [initialHydrated, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath(`tenants/${tenantUid}/payments`, schedule);
-    const u2 = subscribeRtdbPath(`tenants/${tenantUid}/invoices`, schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
-  }, [tenantUid, load]);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('payments') || changed.has('invoices') || changed.has('customers')) {
+        const entry = cachedRead.getTenantEntry(tenantUid);
+        if (changed.has('payments')) setAllPayments(entry.payments);
+        if (changed.has('invoices')) setAllInvoices(entry.invoices);
+        if (changed.has('customers')) setCustomers(entry.customers.filter((c) => !c.archived));
+      }
+    });
+  }, [tenantUid]);
+
+  const payments = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allPayments.filter((p) => {
+      if (method && method !== 'all' && p.paymentMethod !== method) return false;
+      if (customerId && customerId !== 'all' && p.customerId !== customerId) return false;
+      if (startDate && p.paymentDate < startDate) return false;
+      if (endDate && p.paymentDate > endDate) return false;
+      if (q) {
+        const hay = [p.receiptNumber, p.invoiceNumber, p.customerName, p.referenceId, p.notes]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allPayments, search, method, customerId, startDate, endDate]);
+
+  const eligibleInvoices = React.useMemo(() => {
+    return allInvoices
+      .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
+      .sort((a, b) => {
+        const aDue = a.balanceDue > 0 ? 1 : 0;
+        const bDue = b.balanceDue > 0 ? 1 : 0;
+        if (aDue !== bDue) return bDue - aDue;
+        return b.invoiceDate.localeCompare(a.invoiceDate);
+      });
+  }, [allInvoices]);
 
   const openModal = () => {
     const first = eligibleInvoices.find((i) => i.balanceDue > 0) || eligibleInvoices[0];

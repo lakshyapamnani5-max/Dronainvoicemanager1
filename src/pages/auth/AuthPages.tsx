@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { ArrowLeft, KeyRound, Lock, ShieldCheck } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { authApi, subscribeRtdbPath } from '../../lib/api';
+import { authApi, cachedRead } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import { PWAInstallButton } from '../../components/PWAComponents';
 import { Button } from '../../components/ui/button';
@@ -29,19 +29,17 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
 
   const [resetSent, setResetSent] = React.useState(false);
 
-  const [allowSelfReg, setAllowSelfReg] = React.useState(true);
+  const [allowSelfReg, setAllowSelfReg] = React.useState(
+    () => cachedRead.getCachedPublicSettings()?.allowSelfRegistration ?? true
+  );
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
 
   React.useEffect(() => {
-    const fetchSettings = () => {
-      authApi
-        .getPublicSettings()
-        .then((s) => setAllowSelfReg(s.allowSelfRegistration))
-        .catch(() => {});
-    };
-    fetchSettings();
-    return subscribeRtdbPath('platformSettings', fetchSettings);
+    authApi
+      .getPublicSettings()
+      .then((s) => setAllowSelfReg(s.allowSelfRegistration))
+      .catch(() => {});
   }, []);
 
   const handleLogin = async (e: React.FormEvent) => {

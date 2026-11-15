@@ -20,12 +20,12 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  cachedRead,
   customersApi,
   invoicesApi,
   paymentsApi,
   quotationsApi,
   rateCardApi,
-  subscribeRtdbPath,
 } from '../lib/api';
 import { generateDocumentPdf } from '../lib/pdfGenerator';
 import { formatDate, processLogoFile } from '../lib/utils';
@@ -130,8 +130,57 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const { notify } = useToast();
   const profile = session?.businessProfile;
 
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const tenantUid = session?.effectiveUser.uid;
+  const cachedEntry = React.useMemo(
+    () => (tenantUid ? cachedRead.getTenantEntry(tenantUid) : null),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [tenantUid, docType, editId]
+  );
+
+  const initialHydrated = React.useMemo(() => {
+    if (!tenantUid || !cachedEntry) return null;
+    const hasCusts = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    if (!hasCusts) return null;
+    if (!editId) {
+      const activeCusts = cachedEntry.customers.filter((c) => !c.archived);
+      return {
+        customers: activeCusts,
+        inv: null as (Invoice & { payments?: Payment[] }) | null,
+        quo: null as Quotation | null,
+      };
+    }
+    if (docType === 'invoice') {
+      if (!cachedRead.hasTenantCollectionData(tenantUid, 'invoices')) return null;
+      const foundInv = cachedEntry.invoices.find((i) => i.id === editId);
+      if (!foundInv || foundInv.status === 'cancelled') return null;
+      const pays = cachedEntry.payments
+        .filter((p) => p.invoiceId === editId)
+        .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
+      return {
+        customers: cachedEntry.customers.filter(
+          (c) => !c.archived || c.id === foundInv.customerId
+        ),
+        inv: { ...foundInv, payments: pays },
+        quo: null as Quotation | null,
+      };
+    } else {
+      if (!cachedRead.hasTenantCollectionData(tenantUid, 'quotations')) return null;
+      const foundQuo = cachedEntry.quotations.find((q) => q.id === editId);
+      if (!foundQuo || foundQuo.status !== 'draft') return null;
+      return {
+        customers: cachedEntry.customers.filter(
+          (c) => !c.archived || c.id === foundQuo.customerId
+        ),
+        inv: null as (Invoice & { payments?: Payment[] }) | null,
+        quo: foundQuo,
+      };
+    }
+  }, [tenantUid, cachedEntry, editId, docType]);
+
+  const [customers, setCustomers] = React.useState<Customer[]>(
+    () => initialHydrated?.customers || []
+  );
+  const [loading, setLoading] = React.useState(() => !initialHydrated);
   const [savingMode, setSavingMode] = React.useState<'draft' | 'issue' | 'download' | null>(null);
   const [viewMode, setViewMode] = React.useState<ViewMode>(() =>
     typeof window !== 'undefined' && window.innerWidth < 1280 ? 'editor' : 'split'
@@ -146,39 +195,89 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     return d.toISOString().slice(0, 10);
   })();
 
-  const [customerId, setCustomerId] = React.useState('');
-  const [docDate, setDocDate] = React.useState(today);
-  const [dueDate, setDueDate] = React.useState(defaultDue);
-  const [paymentTerms, setPaymentTerms] = React.useState(`Net ${defaultTermsDays}`);
-  const [referenceNumber, setReferenceNumber] = React.useState('');
-  const [placeOfSupply, setPlaceOfSupply] = React.useState(profile?.state || 'Maharashtra');
-  const [isGst, setIsGst] = React.useState(profile?.defaultIsGst ?? true);
+  const hydratedDoc = initialHydrated?.inv || initialHydrated?.quo;
+
+  const [customerId, setCustomerId] = React.useState(
+    () =>
+      hydratedDoc?.customerId ||
+      (!editId && initialHydrated?.customers.length ? initialHydrated.customers[0].id : '')
+  );
+  const [docDate, setDocDate] = React.useState(
+    () =>
+      initialHydrated?.inv?.invoiceDate ||
+      initialHydrated?.quo?.quotationDate ||
+      today
+  );
+  const [dueDate, setDueDate] = React.useState(
+    () =>
+      initialHydrated?.inv?.dueDate ||
+      initialHydrated?.quo?.validUntil ||
+      defaultDue
+  );
+  const [paymentTerms, setPaymentTerms] = React.useState(
+    () => initialHydrated?.inv?.paymentTerms || `Net ${defaultTermsDays}`
+  );
+  const [referenceNumber, setReferenceNumber] = React.useState(
+    () => hydratedDoc?.referenceNumber || ''
+  );
+  const [placeOfSupply, setPlaceOfSupply] = React.useState(
+    () =>
+      hydratedDoc?.placeOfSupply ||
+      (!editId && initialHydrated?.customers[0]?.state) ||
+      profile?.state ||
+      'Maharashtra'
+  );
+  const [isGst, setIsGst] = React.useState(
+    () => hydratedDoc?.isGst ?? (profile?.defaultIsGst ?? true)
+  );
   const [taxMode, setTaxMode] = React.useState<TaxPricingMode>(
-    profile?.defaultTaxMode || 'exclusive'
+    () => hydratedDoc?.taxMode || profile?.defaultTaxMode || 'exclusive'
   );
-  const [taxSupplyMode, setTaxSupplyMode] = React.useState<TaxSupplyMode>('auto');
-  const [roundOffEnabled, setRoundOffEnabled] = React.useState(true);
+  const [taxSupplyMode, setTaxSupplyMode] = React.useState<TaxSupplyMode>(
+    () => hydratedDoc?.taxSupplyMode || 'auto'
+  );
+  const [roundOffEnabled, setRoundOffEnabled] = React.useState(
+    () => hydratedDoc?.roundOffEnabled ?? true
+  );
   const [templateId, setTemplateId] = React.useState<TemplateId>(
-    docType === 'invoice'
-      ? profile?.defaultInvoiceTemplate || 'classic_gst'
-      : profile?.defaultQuotationTemplate || 'classic_gst'
+    () =>
+      hydratedDoc?.templateId ||
+      (docType === 'invoice'
+        ? profile?.defaultInvoiceTemplate || 'classic_gst'
+        : profile?.defaultQuotationTemplate || 'classic_gst')
   );
-  const [notes, setNotes] = React.useState('');
-  const [terms, setTerms] = React.useState(profile?.termsAndConditions || '');
+  const [notes, setNotes] = React.useState(() => hydratedDoc?.notes || '');
+  const [terms, setTerms] = React.useState(
+    () => hydratedDoc?.terms ?? profile?.termsAndConditions ?? ''
+  );
 
   // Logo & UPI state (asked right inside invoice creation)
-  const [logoDataUrl, setLogoDataUrl] = React.useState<string>(profile?.logoDataUrl || '');
+  const [logoDataUrl, setLogoDataUrl] = React.useState<string>(
+    () => hydratedDoc?.businessSnapshot.logoDataUrl || profile?.logoDataUrl || ''
+  );
   const [saveLogoToProfile, setSaveLogoToProfile] = React.useState<boolean>(true);
-  const [upiId, setUpiId] = React.useState<string>(profile?.upiId || '');
+  const [upiId, setUpiId] = React.useState<string>(
+    () => hydratedDoc?.businessSnapshot.upiId ?? profile?.upiId ?? ''
+  );
   const [saveUpiToProfile, setSaveUpiToProfile] = React.useState<boolean>(true);
   const [uploadingLogo, setUploadingLogo] = React.useState(false);
-  const [existingDocNumber, setExistingDocNumber] = React.useState<string>('');
-  const [existingStatus, setExistingStatus] = React.useState<string | null>(null);
-  const [existingAmountPaid, setExistingAmountPaid] = React.useState<number>(0);
-  const [invoicePayments, setInvoicePayments] = React.useState<Payment[]>([]);
+  const [existingDocNumber, setExistingDocNumber] = React.useState<string>(
+    () => initialHydrated?.inv?.invoiceNumber || initialHydrated?.quo?.quotationNumber || ''
+  );
+  const [existingStatus, setExistingStatus] = React.useState<string | null>(
+    () => hydratedDoc?.status || null
+  );
+  const [existingAmountPaid, setExistingAmountPaid] = React.useState<number>(
+    () => initialHydrated?.inv?.amountPaid || 0
+  );
+  const [invoicePayments, setInvoicePayments] = React.useState<Payment[]>(
+    () => initialHydrated?.inv?.payments || []
+  );
 
   // Rate card state
-  const [rateCardItems, setRateCardItems] = React.useState<RateCardItem[]>([]);
+  const [rateCardItems, setRateCardItems] = React.useState<RateCardItem[]>(() =>
+    tenantUid ? cachedRead.getTenantEntry(tenantUid).rateCard.filter((r) => r.isActive) : []
+  );
   const [ratePickerOpen, setRatePickerOpen] = React.useState(false);
   const [rateSearch, setRateSearch] = React.useState('');
   const [rateCategory, setRateCategory] = React.useState('all');
@@ -204,19 +303,23 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const userTouchedTemplateRef = React.useRef(false);
   const userTouchedTermsRef = React.useRef(false);
 
-  const [items, setItems] = React.useState<LineItemInput[]>([
-    {
-      name: '',
-      description: '',
-      hsnSac: '',
-      quantity: 1,
-      unit: 'Nos',
-      rate: 0,
-      discountType: 'percent',
-      discountValue: 0,
-      taxRate: profile?.defaultIsGst === false ? 0 : (profile?.defaultTaxRate ?? 18),
-    },
-  ]);
+  const [items, setItems] = React.useState<LineItemInput[]>(() =>
+    hydratedDoc?.items?.length
+      ? hydratedDoc.items
+      : [
+          {
+            name: '',
+            description: '',
+            hsnSac: '',
+            quantity: 1,
+            unit: 'Nos',
+            rate: 0,
+            discountType: 'percent',
+            discountValue: 0,
+            taxRate: profile?.defaultIsGst === false ? 0 : (profile?.defaultTaxRate ?? 18),
+          },
+        ]
+  );
 
   // Quick Add Customer Modal
   const [quickCustOpen, setQuickCustOpen] = React.useState(false);
@@ -251,7 +354,6 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     }
   }, [editId, docType, profile]);
 
-  const tenantUid = session?.effectiveUser.uid;
   const loadRateCard = React.useCallback(async () => {
     try {
       const res = await rateCardApi.list({ activeOnly: true });
@@ -262,17 +364,20 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   }, []);
 
   React.useEffect(() => {
-    loadRateCard();
+    void loadRateCard();
     if (!tenantUid) return;
-    return subscribeRtdbPath(`tenants/${tenantUid}/rateCard`, () => {
-      loadRateCard();
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('rateCard')) {
+        setRateCardItems(cachedRead.getTenantEntry(tenantUid).rateCard.filter((r) => r.isActive));
+      }
     });
   }, [tenantUid, loadRateCard]);
 
   React.useEffect(() => {
     let active = true;
+    const wasHydrated = Boolean(initialHydrated);
     async function init() {
-      setLoading(true);
+      if (!wasHydrated) setLoading(true);
       try {
         const custRes = await customersApi.list({ includeArchived: Boolean(editId) });
         if (!active) return;
@@ -280,6 +385,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         if (editId) {
           if (docType === 'invoice') {
             const res = await invoicesApi.get(editId);
+            if (!active) return;
             const inv: Invoice = res.invoice;
             if (inv.status === 'cancelled') {
               notify('error', 'Cancelled invoices cannot be edited');
@@ -293,24 +399,27 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             setExistingStatus(inv.status);
             setExistingAmountPaid(inv.amountPaid || 0);
             setInvoicePayments(inv.payments || []);
-            setCustomerId(inv.customerId);
-            setDocDate(inv.invoiceDate);
-            setDueDate(inv.dueDate);
-            setPaymentTerms(inv.paymentTerms);
-            setReferenceNumber(inv.referenceNumber);
-            setPlaceOfSupply(inv.placeOfSupply);
-            setIsGst(inv.isGst);
-            setTaxMode(inv.taxMode);
-            setTaxSupplyMode(inv.taxSupplyMode);
-            setRoundOffEnabled(inv.roundOffEnabled);
-            setTemplateId(inv.templateId);
-            setNotes(inv.notes);
-            setTerms(inv.terms);
-            setLogoDataUrl(inv.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
-            setUpiId(inv.businessSnapshot.upiId ?? profile?.upiId ?? '');
-            setItems(inv.items);
+            if (!wasHydrated) {
+              setCustomerId(inv.customerId);
+              setDocDate(inv.invoiceDate);
+              setDueDate(inv.dueDate);
+              setPaymentTerms(inv.paymentTerms);
+              setReferenceNumber(inv.referenceNumber);
+              setPlaceOfSupply(inv.placeOfSupply);
+              setIsGst(inv.isGst);
+              setTaxMode(inv.taxMode);
+              setTaxSupplyMode(inv.taxSupplyMode);
+              setRoundOffEnabled(inv.roundOffEnabled);
+              setTemplateId(inv.templateId);
+              setNotes(inv.notes);
+              setTerms(inv.terms);
+              setLogoDataUrl(inv.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
+              setUpiId(inv.businessSnapshot.upiId ?? profile?.upiId ?? '');
+              setItems(inv.items);
+            }
           } else {
             const res = await quotationsApi.get(editId);
+            if (!active) return;
             const quo: Quotation = res.quotation;
             if (quo.status !== 'draft') {
               notify('error', 'Only draft quotations can be edited');
@@ -322,42 +431,49 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             );
             setExistingDocNumber(quo.quotationNumber);
             setExistingStatus(quo.status);
-            setCustomerId(quo.customerId);
-            setDocDate(quo.quotationDate);
-            setDueDate(quo.validUntil);
-            setReferenceNumber(quo.referenceNumber);
-            setPlaceOfSupply(quo.placeOfSupply);
-            setIsGst(quo.isGst);
-            setTaxMode(quo.taxMode);
-            setTaxSupplyMode(quo.taxSupplyMode);
-            setRoundOffEnabled(quo.roundOffEnabled);
-            setTemplateId(quo.templateId);
-            setNotes(quo.notes);
-            setTerms(quo.terms);
-            setLogoDataUrl(quo.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
-            setUpiId(quo.businessSnapshot.upiId ?? profile?.upiId ?? '');
-            setItems(quo.items);
+            if (!wasHydrated) {
+              setCustomerId(quo.customerId);
+              setDocDate(quo.quotationDate);
+              setDueDate(quo.validUntil);
+              setReferenceNumber(quo.referenceNumber);
+              setPlaceOfSupply(quo.placeOfSupply);
+              setIsGst(quo.isGst);
+              setTaxMode(quo.taxMode);
+              setTaxSupplyMode(quo.taxSupplyMode);
+              setRoundOffEnabled(quo.roundOffEnabled);
+              setTemplateId(quo.templateId);
+              setNotes(quo.notes);
+              setTerms(quo.terms);
+              setLogoDataUrl(quo.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
+              setUpiId(quo.businessSnapshot.upiId ?? profile?.upiId ?? '');
+              setItems(quo.items);
+            }
           }
         } else {
           setCustomers(custRes.customers);
-          setLogoDataUrl(profile?.logoDataUrl || '');
-          setUpiId(profile?.upiId || '');
-          if (custRes.customers.length > 0) {
-            setCustomerId(custRes.customers[0].id);
-            setPlaceOfSupply(custRes.customers[0].state || profile?.state || 'Maharashtra');
+          if (!wasHydrated) {
+            setLogoDataUrl(profile?.logoDataUrl || '');
+            setUpiId(profile?.upiId || '');
+            if (custRes.customers.length > 0) {
+              setCustomerId((prev) => prev || custRes.customers[0].id);
+              setPlaceOfSupply(custRes.customers[0].state || profile?.state || 'Maharashtra');
+            }
           }
         }
       } catch (err) {
-        notify('error', err instanceof Error ? err.message : 'Failed to load editor');
+        if (!wasHydrated) {
+          notify('error', err instanceof Error ? err.message : 'Failed to load editor');
+        }
       } finally {
         if (active) setLoading(false);
       }
     }
-    init();
+    void init();
     return () => {
       active = false;
     };
-  }, [docType, editId, navigate, notify, profile?.state, profile?.logoDataUrl, profile?.upiId]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [docType, editId, tenantUid]);
 
   const selectedCustomer = customers.find((c) => c.id === customerId);
 

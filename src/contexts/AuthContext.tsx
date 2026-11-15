@@ -1,7 +1,15 @@
 import * as React from 'react';
 import { onAuthStateChanged, signOut } from 'firebase/auth';
 import { onValue, ref } from 'firebase/database';
-import { adminApi, authApi, setStoredToken } from '../lib/api';
+import {
+  adminApi,
+  authApi,
+  cachedRead,
+  ensureTenantMetaListener,
+  getStoredToken,
+  setStoredToken,
+  updateRuntimeSessionCache,
+} from '../lib/api';
 import { firebaseAuth, initFirebaseAnalytics, rtdb } from '../lib/firebase';
 import type { AuthSessionState, BusinessProfile } from '../shared/types';
 
@@ -29,22 +37,31 @@ interface AuthContextValue {
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
 export function AuthProvider({ children }: { children: React.ReactNode }) {
-  const [session, setSession] = React.useState<AuthSessionState | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const initialCachedSession = React.useMemo(() => {
+    if (!getStoredToken()) return null;
+    return cachedRead.getCachedSession();
+  }, []);
+
+  const [session, setSession] = React.useState<AuthSessionState | null>(initialCachedSession);
+  const [loading, setLoading] = React.useState(!initialCachedSession);
   const authBusyRef = React.useRef(false);
 
-  const refreshSession = React.useCallback(async () => {
+  const runRefreshSession = React.useCallback(async (forceRefresh = true) => {
     try {
-      const res = await authApi.me();
+      const res = await authApi.me(forceRefresh);
       setStoredToken(res.session.actorUser.uid);
+      updateRuntimeSessionCache(res.session);
       setSession(res.session);
     } catch {
       setStoredToken(null);
+      updateRuntimeSessionCache(null);
       setSession(null);
     } finally {
       setLoading(false);
     }
   }, []);
+
+  const refreshSession = React.useCallback(() => runRefreshSession(true), [runRefreshSession]);
 
   React.useEffect(() => {
     initFirebaseAnalytics();
@@ -52,16 +69,25 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (authBusyRef.current) return;
       if (!fbUser) {
         setStoredToken(null);
+        updateRuntimeSessionCache(null);
         setSession(null);
         setLoading(false);
         return;
       }
-      await refreshSession();
+      const cached = cachedRead.getCachedSession();
+      if (cached && cached.actorUser.uid === fbUser.uid) {
+        setSession(cached);
+        setLoading(false);
+        // Validate against cache TTL silently without blocking initial render
+        await runRefreshSession(false);
+      } else {
+        await runRefreshSession(true);
+      }
     });
     return () => unsub();
-  }, [refreshSession]);
+  }, [runRefreshSession]);
 
-  // Live RTDB sync for active user record, effective user record, and business profile
+  // Live RTDB sync for active user record, effective user record, business profile, and lightweight _meta
   const actorUid = session?.actorUser.uid;
   const effectiveUid = session?.effectiveUser.uid;
   const effectiveRole = session?.effectiveUser.role;
@@ -80,6 +106,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         if (!snap.exists()) {
           await signOut(firebaseAuth);
+          updateRuntimeSessionCache(null);
           setSession(null);
           return;
         }
@@ -87,10 +114,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         if (val.status && val.status !== 'active') {
           await signOut(firebaseAuth);
           setStoredToken(null);
+          updateRuntimeSessionCache(null);
           setSession(null);
           return;
         }
-        refreshSession();
+        void runRefreshSession(true);
       })
     );
 
@@ -102,7 +130,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
             initializedEff = true;
             return;
           }
-          refreshSession();
+          void runRefreshSession(true);
         })
       );
     }
@@ -117,26 +145,35 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           }
           if (snap.exists()) {
             const raw = snap.val() as Record<string, unknown>;
-            const prof = {
+            const prof: BusinessProfile = {
               ...(raw as unknown as BusinessProfile),
               defaultIsGst: raw.defaultIsGst !== false,
             };
-            setSession((prev) => (prev ? { ...prev, businessProfile: prof } : prev));
+            cachedRead.setTenantProfileCache(effectiveUid, prof);
+            setSession((prev) => {
+              if (!prev) return prev;
+              const next = { ...prev, businessProfile: prof };
+              updateRuntimeSessionCache(next);
+              return next;
+            });
           }
         })
       );
+
+      unsubs.push(ensureTenantMetaListener(effectiveUid));
     }
 
     return () => {
       for (const u of unsubs) u();
     };
-  }, [actorUid, effectiveUid, effectiveRole, refreshSession]);
+  }, [actorUid, effectiveUid, effectiveRole, runRefreshSession]);
 
   const login = React.useCallback(
     async (email: string, password: string, portal?: 'admin' | 'customer') => {
       authBusyRef.current = true;
       try {
         const next = await authApi.login(email, password, portal);
+        updateRuntimeSessionCache(next);
         setSession(next);
         setLoading(false);
         return next;
@@ -161,6 +198,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       authBusyRef.current = true;
       try {
         const next = await authApi.register(payload);
+        updateRuntimeSessionCache(next);
         setSession(next);
         setLoading(false);
         return next;
@@ -173,21 +211,30 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
   const logout = React.useCallback(async () => {
     await authApi.logout();
+    updateRuntimeSessionCache(null);
     setSession(null);
   }, []);
 
   const impersonate = React.useCallback(async (uid: string) => {
     const res = await adminApi.impersonate(uid);
+    updateRuntimeSessionCache(res.session);
     setSession(res.session);
   }, []);
 
   const exitImpersonation = React.useCallback(async () => {
     const res = await adminApi.exitImpersonation();
+    updateRuntimeSessionCache(res.session);
     setSession(res.session);
   }, []);
 
   const updateLocalBusinessProfile = React.useCallback((profile: BusinessProfile) => {
-    setSession((prev) => (prev ? { ...prev, businessProfile: profile } : prev));
+    setSession((prev) => {
+      if (!prev) return prev;
+      cachedRead.setTenantProfileCache(prev.effectiveUser.uid, profile);
+      const next = { ...prev, businessProfile: profile };
+      updateRuntimeSessionCache(next);
+      return next;
+    });
   }, []);
 
   return (

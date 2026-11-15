@@ -10,9 +10,9 @@ import {
   UserCheck,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { adminApi, subscribeRtdbPath, type AdminUserRow } from '../../lib/api';
+import { adminApi, cachedRead, type AdminUserRow } from '../../lib/api';
 import { formatDate, formatDateTime } from '../../lib/utils';
-import { formatINR } from '../../shared/gstCalculator';
+import { formatINR, fromPaise, toPaise } from '../../shared/gstCalculator';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type { ActivityLog, BusinessProfile, CustomerAnalyticsData, Invoice, Quotation, UserRecord } from '../../shared/types';
 import { AccountStatusLabel, InvoiceStatusLabel, QuotationStatusLabel } from '../../components/StatusText';
@@ -23,11 +23,34 @@ import { Input, Label, Select } from '../../components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { useToast } from '../../components/ui/toast';
 
+function readCachedAdminUsers(): AdminUserRow[] | null {
+  const cache = cachedRead.getAdminCache();
+  if (!cache.syncedAt.users || !cache.syncedAt.tenants) return null;
+  return cache.users
+    .filter((u) => u.role === 'business')
+    .map((u) => {
+      const t = cache.tenants[u.uid] || { invoices: [], quotations: [], payments: [] };
+      const salesPaise = t.invoices
+        .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
+        .reduce((s, i) => s + toPaise(i.grandTotal), 0);
+      const collectedPaise = t.payments.reduce((s, p) => s + toPaise(p.amount), 0);
+      return {
+        ...u,
+        invoiceCount: t.invoices.length,
+        quotationCount: t.quotations.length,
+        totalSales: fromPaise(salesPaise),
+        totalCollected: fromPaise(collectedPaise),
+      };
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
 export function AdminUsersListPage({ navigate }: { navigate: (path: string) => void }) {
   const { impersonate } = useAuth();
   const { notify } = useToast();
-  const [users, setUsers] = React.useState<AdminUserRow[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const initialUsers = React.useMemo(() => readCachedAdminUsers(), []);
+  const [allUsers, setAllUsers] = React.useState<AdminUserRow[]>(initialUsers || []);
+  const [loading, setLoading] = React.useState(!initialUsers);
   const [search, setSearch] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [sortKey, setSortKey] = React.useState<'createdAt' | 'totalSales' | 'businessName'>('createdAt');
@@ -37,42 +60,45 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const res = await adminApi.listUsers({ search, status: statusFilter });
-      setUsers(res.users);
+      const res = await adminApi.listUsers();
+      setAllUsers(res.users);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load businesses');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [search, statusFilter, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
-    const t = setTimeout(() => load(false), 180);
-    return () => clearTimeout(t);
-  }, [load]);
-
-  React.useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRefresh = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath('users', scheduleRefresh);
-    const u2 = subscribeRtdbPath('tenants', scheduleRefresh);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
-  }, [load]);
+    load(Boolean(initialUsers));
+    return cachedRead.subscribeAdminCache(() => {
+      const next = readCachedAdminUsers();
+      if (next) {
+        setAllUsers(next);
+        setLoading(false);
+      }
+    });
+  }, [load, initialUsers]);
 
   const sorted = React.useMemo(() => {
-    return [...users].sort((a, b) => {
+    const q = search.trim().toLowerCase();
+    const filtered = allUsers.filter((u) => {
+      if (statusFilter !== 'all' && u.status !== statusFilter) return false;
+      if (!q) return true;
+      return (
+        u.businessName.toLowerCase().includes(q) ||
+        u.ownerName.toLowerCase().includes(q) ||
+        u.email.toLowerCase().includes(q) ||
+        u.gstin.toLowerCase().includes(q) ||
+        (u.phone && u.phone.toLowerCase().includes(q))
+      );
+    });
+    return [...filtered].sort((a, b) => {
       if (sortKey === 'totalSales') return b.totalSales - a.totalSales;
       if (sortKey === 'businessName') return a.businessName.localeCompare(b.businessName);
       return b.createdAt.localeCompare(a.createdAt);
     });
-  }, [users, sortKey]);
+  }, [allUsers, search, statusFilter, sortKey]);
 
   const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
   const paginated = sorted.slice((page - 1) * pageSize, page * pageSize);
@@ -521,6 +547,60 @@ export function AdminCreateUserPage({ navigate }: { navigate: (path: string) => 
   );
 }
 
+function readCachedUserDetails(uid: string): {
+  user: UserRecord;
+  profile: BusinessProfile | null;
+  invoices: Invoice[];
+  quotations: Quotation[];
+  analytics: CustomerAnalyticsData;
+  logs: ActivityLog[];
+} | null {
+  const adminCache = cachedRead.getAdminCache();
+  const user = adminCache.users.find((u) => u.uid === uid);
+  if (!user) return null;
+  const tenantEntry = cachedRead.getTenantEntry(uid);
+  const adminTenant = adminCache.tenants[uid];
+  const invoices =
+    tenantEntry.syncedAt.invoices
+      ? tenantEntry.invoices
+      : adminTenant?.invoices || [];
+  const quotations =
+    tenantEntry.syncedAt.quotations
+      ? tenantEntry.quotations
+      : adminTenant?.quotations || [];
+  const payments =
+    tenantEntry.syncedAt.payments
+      ? tenantEntry.payments
+      : adminTenant?.payments || [];
+  if (!tenantEntry.syncedAt.invoices && !adminCache.syncedAt.tenants) return null;
+
+  const sortedInvoices = [...invoices].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const sortedQuotations = [...quotations].sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+  const analytics = cachedRead.computeCustomerAnalyticsFromData(
+    sortedInvoices,
+    sortedQuotations,
+    payments,
+    tenantEntry.customers
+  );
+  const logs = (
+    tenantEntry.syncedAt.activityLogs
+      ? tenantEntry.activityLogs
+      : adminCache.activityLogs.filter((l) => l.targetTenantUid === uid)
+  )
+    .slice()
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 30);
+
+  return {
+    user,
+    profile: tenantEntry.profile || null,
+    invoices: sortedInvoices,
+    quotations: sortedQuotations,
+    analytics,
+    logs,
+  };
+}
+
 export function AdminUserDetailsPage({
   uid,
   navigate,
@@ -530,6 +610,7 @@ export function AdminUserDetailsPage({
 }) {
   const { impersonate } = useAuth();
   const { notify } = useToast();
+  const initialData = React.useMemo(() => readCachedUserDetails(uid), [uid]);
   const [data, setData] = React.useState<{
     user: UserRecord;
     profile: BusinessProfile | null;
@@ -537,18 +618,18 @@ export function AdminUserDetailsPage({
     quotations: Quotation[];
     analytics: CustomerAnalyticsData;
     logs: ActivityLog[];
-  } | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  } | null>(initialData);
+  const [loading, setLoading] = React.useState(!initialData);
 
   const [editOpen, setEditOpen] = React.useState(false);
-  const [editForm, setEditForm] = React.useState({
-    businessName: '',
-    ownerName: '',
-    phone: '',
-    gstin: '',
-    subscriptionPlan: 'Growth',
-    subscriptionAmount: 1999,
-  });
+  const [editForm, setEditForm] = React.useState(() => ({
+    businessName: initialData?.user.businessName || '',
+    ownerName: initialData?.user.ownerName || '',
+    phone: initialData?.user.phone || '',
+    gstin: initialData?.user.gstin || '',
+    subscriptionPlan: initialData?.user.subscriptionPlan || 'Growth',
+    subscriptionAmount: initialData?.user.subscriptionAmount ?? 1999,
+  }));
 
   const [pwOpen, setPwOpen] = React.useState(false);
   const [sendingReset, setSendingReset] = React.useState(false);
@@ -558,39 +639,33 @@ export function AdminUserDetailsPage({
     try {
       const res = await adminApi.getUserDetails(uid);
       setData(res);
-      setEditForm({
-        businessName: res.user.businessName,
-        ownerName: res.user.ownerName,
-        phone: res.user.phone,
-        gstin: res.user.gstin,
-        subscriptionPlan: res.user.subscriptionPlan,
-        subscriptionAmount: res.user.subscriptionAmount,
-      });
+      if (!editOpen) {
+        setEditForm({
+          businessName: res.user.businessName,
+          ownerName: res.user.ownerName,
+          phone: res.user.phone,
+          gstin: res.user.gstin,
+          subscriptionPlan: res.user.subscriptionPlan,
+          subscriptionAmount: res.user.subscriptionAmount,
+        });
+      }
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load user details');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [uid, notify]);
+  }, [uid, notify, editOpen]);
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    load(Boolean(initialData));
+  }, [load, initialData]);
 
   React.useEffect(() => {
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRefresh = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath(`users/${uid}`, scheduleRefresh);
-    const u2 = subscribeRtdbPath(`businessProfiles/${uid}`, scheduleRefresh);
-    const u3 = subscribeRtdbPath(`tenants/${uid}`, scheduleRefresh);
+    const u1 = cachedRead.subscribeAdminCache(() => load(true));
+    const u2 = cachedRead.subscribeTenantCache(uid, () => load(true));
     return () => {
-      if (timer) clearTimeout(timer);
       u1();
       u2();
-      u3();
     };
   }, [uid, load]);
 

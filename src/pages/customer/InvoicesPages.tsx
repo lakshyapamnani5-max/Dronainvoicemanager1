@@ -16,7 +16,7 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { customersApi, invoicesApi, paymentsApi, subscribeRtdbPath } from '../../lib/api';
+import { cachedRead, customersApi, invoicesApi, paymentsApi } from '../../lib/api';
 import { generateDocumentPdf, generatePaymentReceiptPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
@@ -35,9 +35,26 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
-  const [invoices, setInvoices] = React.useState<Invoice[]>([]);
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const initialHydrated = React.useMemo(() => {
+    if (!tenantUid) return null;
+    const hasInv = cachedRead.hasTenantCollectionData(tenantUid, 'invoices');
+    const hasCust = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    if (!hasInv && !hasCust) return null;
+    const e = cachedRead.getTenantEntry(tenantUid);
+    return {
+      invoices: e.invoices,
+      customers: e.customers.filter((c) => !c.archived),
+      complete: hasInv && hasCust,
+    };
+  }, [tenantUid]);
+
+  const [allInvoices, setAllInvoices] = React.useState<Invoice[]>(
+    () => initialHydrated?.invoices || []
+  );
+  const [customers, setCustomers] = React.useState<Customer[]>(
+    () => initialHydrated?.customers || []
+  );
+  const [loading, setLoading] = React.useState(() => !initialHydrated?.complete);
 
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState('all');
@@ -62,38 +79,60 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
     if (!silent) setLoading(true);
     try {
       const [invRes, custRes] = await Promise.all([
-        invoicesApi.list({ search, status, customerId, startDate, endDate }),
+        invoicesApi.list(),
         customersApi.list(),
       ]);
-      setInvoices(invRes.invoices);
+      setAllInvoices(invRes.invoices);
       setCustomers(custRes.customers);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load invoices');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [search, status, customerId, startDate, endDate, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
-    const t = setTimeout(() => load(false), 180);
-    return () => clearTimeout(t);
-  }, [load]);
+    if (initialHydrated) {
+      setAllInvoices(initialHydrated.invoices);
+      setCustomers(initialHydrated.customers);
+      setLoading(!initialHydrated.complete);
+    }
+    void load(Boolean(initialHydrated?.complete));
+  }, [initialHydrated, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath(`tenants/${tenantUid}/invoices`, schedule);
-    const u2 = subscribeRtdbPath(`tenants/${tenantUid}/customers`, schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
-  }, [tenantUid, load]);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('invoices') || changed.has('customers')) {
+        const entry = cachedRead.getTenantEntry(tenantUid);
+        if (changed.has('invoices')) setAllInvoices(entry.invoices);
+        if (changed.has('customers')) setCustomers(entry.customers.filter((c) => !c.archived));
+      }
+    });
+  }, [tenantUid]);
+
+  const invoices = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allInvoices.filter((inv) => {
+      if (status && status !== 'all' && inv.status !== status) return false;
+      if (customerId && customerId !== 'all' && inv.customerId !== customerId) return false;
+      if (startDate && inv.invoiceDate < startDate) return false;
+      if (endDate && inv.invoiceDate > endDate) return false;
+      if (q) {
+        const hay = [
+          inv.invoiceNumber,
+          inv.customerSnapshot.name,
+          inv.customerSnapshot.companyName,
+          inv.customerSnapshot.gstin,
+          inv.referenceNumber,
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allInvoices, search, status, customerId, startDate, endDate]);
 
   const totalPages = Math.max(1, Math.ceil(invoices.length / pageSize));
   const paginated = invoices.slice((page - 1) * pageSize, page * pageSize);
@@ -550,11 +589,22 @@ export function InvoiceDetailsPage({
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
-  const [invoice, setInvoice] = React.useState<Invoice | null>(null);
+  const initialDetail = React.useMemo(() => {
+    if (!tenantUid || !cachedRead.hasTenantCollectionData(tenantUid, 'invoices')) return null;
+    const entry = cachedRead.getTenantEntry(tenantUid);
+    const found = entry.invoices.find((i) => i.id === invoiceId);
+    if (!found) return null;
+    const pays = entry.payments
+      .filter((p) => p.invoiceId === invoiceId)
+      .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
+    return { ...found, payments: pays };
+  }, [tenantUid, invoiceId]);
+
+  const [invoice, setInvoice] = React.useState<Invoice | null>(initialDetail);
   const [auditLogs, setAuditLogs] = React.useState<
     Array<{ id: string; actorEmail: string; action: string; summary: string; createdAt: string }>
   >([]);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(() => !initialDetail);
 
   const [cancelOpen, setCancelOpen] = React.useState(false);
   const [cancelReason, setCancelReason] = React.useState('');
@@ -562,7 +612,7 @@ export function InvoiceDetailsPage({
   const [payOpen, setPayOpen] = React.useState(false);
   const [payForm, setPayForm] = React.useState({
     paymentDate: new Date().toISOString().slice(0, 10),
-    amount: 0,
+    amount: initialDetail?.balanceDue || 0,
     paymentMethod: 'UPI' as PaymentMethod,
     referenceId: '',
     notes: '',
@@ -595,24 +645,21 @@ export function InvoiceDetailsPage({
   }, [invoiceId, notify]);
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    if (initialDetail) {
+      setInvoice(initialDetail);
+      setLoading(false);
+    }
+    void load(Boolean(initialDetail));
+  }, [initialDetail, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath(`tenants/${tenantUid}/invoices/${invoiceId}`, schedule);
-    const u2 = subscribeRtdbPath(`tenants/${tenantUid}/payments`, schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
-  }, [tenantUid, invoiceId, load]);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('invoices') || changed.has('payments') || changed.has('activityLogs')) {
+        void load(true);
+      }
+    });
+  }, [tenantUid, load]);
 
   if (loading) return <div className="p-8 text-sm text-zinc-500">Loading invoice...</div>;
   if (!invoice) {

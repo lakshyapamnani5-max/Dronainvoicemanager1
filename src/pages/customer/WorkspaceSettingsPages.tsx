@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { CheckCircle2, Upload } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { authApi, businessApi, subscribeRtdbPath } from '../../lib/api';
+import { authApi, businessApi, cachedRead } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type { BusinessProfile, Invoice, TemplateId } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
@@ -29,15 +29,16 @@ export function BusinessProfilePage() {
 
   const tenantUid = session?.effectiveUser.uid;
   React.useEffect(() => {
-    const fetchProfile = () => {
-      businessApi.getProfile().then((res) => {
-        if (res.profile) setForm(res.profile);
-      }).catch(() => {});
-    };
-    fetchProfile();
-    if (!tenantUid) return;
-    return subscribeRtdbPath(`businessProfiles/${tenantUid}`, fetchProfile);
-  }, [tenantUid]);
+    if (session?.businessProfile) {
+      setForm(session.businessProfile);
+    } else if (tenantUid) {
+      const cachedProf = cachedRead.getTenantEntry(tenantUid).profile;
+      if (cachedProf) setForm(cachedProf);
+    }
+    businessApi.getProfile().then((res) => {
+      if (res.profile) setForm(res.profile);
+    }).catch(() => {});
+  }, [tenantUid, session?.businessProfile]);
 
   if (!form) return <div className="p-8 text-sm text-zinc-500">Loading business profile...</div>;
 
@@ -505,15 +506,16 @@ export function CustomerSettingsPage() {
 
   const tenantUid = session?.effectiveUser.uid;
   React.useEffect(() => {
-    const fetchProfile = () => {
-      businessApi.getProfile().then((res) => {
-        if (res.profile) setForm(res.profile);
-      }).catch(() => {});
-    };
-    fetchProfile();
-    if (!tenantUid) return;
-    return subscribeRtdbPath(`businessProfiles/${tenantUid}`, fetchProfile);
-  }, [tenantUid]);
+    if (session?.businessProfile) {
+      setForm(session.businessProfile);
+    } else if (tenantUid) {
+      const cachedProf = cachedRead.getTenantEntry(tenantUid).profile;
+      if (cachedProf) setForm(cachedProf);
+    }
+    businessApi.getProfile().then((res) => {
+      if (res.profile) setForm(res.profile);
+    }).catch(() => {});
+  }, [tenantUid, session?.businessProfile]);
 
   if (!form) return <div className="p-8 text-sm text-zinc-500">Loading settings...</div>;
 

@@ -1,6 +1,6 @@
 import * as React from 'react';
 import { Search, ShieldAlert } from 'lucide-react';
-import { adminApi, subscribeRtdbPath } from '../../lib/api';
+import { adminApi, cachedRead } from '../../lib/api';
 import { exportToExcel, formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
 import type { ActivityLog, ImpersonationSession, PlatformSettings } from '../../shared/types';
@@ -11,48 +11,118 @@ import { Input, Label, Select } from '../../components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { useToast } from '../../components/ui/toast';
 
+type PlatformInvoiceRow = {
+  id: string;
+  userUid: string;
+  tenantBusinessName: string;
+  invoiceNumber: string;
+  customerName: string;
+  invoiceDate: string;
+  dueDate: string;
+  status: string;
+  grandTotal: number;
+  amountPaid: number;
+  balanceDue: number;
+};
+
+type PlatformQuotationRow = {
+  id: string;
+  userUid: string;
+  tenantBusinessName: string;
+  quotationNumber: string;
+  customerName: string;
+  quotationDate: string;
+  validUntil: string;
+  status: string;
+  grandTotal: number;
+};
+
+function readCachedPlatformInvoices(): PlatformInvoiceRow[] | null {
+  const cache = cachedRead.getAdminCache();
+  if (!cache.syncedAt.users || !cache.syncedAt.tenants) return null;
+  const userNames = new Map(cache.users.map((u) => [u.uid, u.businessName]));
+  const rows: PlatformInvoiceRow[] = [];
+  for (const [uid, t] of Object.entries(cache.tenants)) {
+    const tenantBusinessName = userNames.get(uid) || 'Business';
+    for (const inv of t.invoices) {
+      rows.push({
+        id: inv.id,
+        userUid: uid,
+        tenantBusinessName,
+        invoiceNumber: inv.invoiceNumber,
+        customerName: inv.customerSnapshot.companyName || inv.customerSnapshot.name,
+        invoiceDate: inv.invoiceDate,
+        dueDate: inv.dueDate,
+        status: inv.status,
+        grandTotal: inv.grandTotal,
+        amountPaid: inv.amountPaid,
+        balanceDue: inv.balanceDue,
+      });
+    }
+  }
+  rows.sort((a, b) => b.invoiceDate.localeCompare(a.invoiceDate));
+  return rows;
+}
+
+function readCachedPlatformQuotations(): PlatformQuotationRow[] | null {
+  const cache = cachedRead.getAdminCache();
+  if (!cache.syncedAt.users || !cache.syncedAt.tenants) return null;
+  const userNames = new Map(cache.users.map((u) => [u.uid, u.businessName]));
+  const rows: PlatformQuotationRow[] = [];
+  for (const [uid, t] of Object.entries(cache.tenants)) {
+    const tenantBusinessName = userNames.get(uid) || 'Business';
+    for (const q of t.quotations) {
+      rows.push({
+        id: q.id,
+        userUid: uid,
+        tenantBusinessName,
+        quotationNumber: q.quotationNumber,
+        customerName: q.customerSnapshot.companyName || q.customerSnapshot.name,
+        quotationDate: q.quotationDate,
+        validUntil: q.validUntil,
+        status: q.status,
+        grandTotal: q.grandTotal,
+      });
+    }
+  }
+  rows.sort((a, b) => b.quotationDate.localeCompare(a.quotationDate));
+  return rows;
+}
+
 export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) => void }) {
   const { notify } = useToast();
-  const [rows, setRows] = React.useState<
-    Array<{
-      id: string;
-      userUid: string;
-      tenantBusinessName: string;
-      invoiceNumber: string;
-      customerName: string;
-      invoiceDate: string;
-      dueDate: string;
-      status: string;
-      grandTotal: number;
-      amountPaid: number;
-      balanceDue: number;
-    }>
-  >([]);
+  const initialRows = React.useMemo(() => readCachedPlatformInvoices(), []);
+  const [allRows, setAllRows] = React.useState<PlatformInvoiceRow[]>(initialRows || []);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState('all');
 
   const load = React.useCallback(() => {
     adminApi
-      .listInvoices({ search, status })
-      .then((res) => setRows(res.invoices))
+      .listInvoices()
+      .then((res) => setAllRows(res.invoices))
       .catch((err) => notify('error', err instanceof Error ? err.message : 'Load failed'));
-  }, [search, status, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
     load();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(load, 250);
-    };
-    const u1 = subscribeRtdbPath('tenants', schedule);
-    const u2 = subscribeRtdbPath('users', schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
+    return cachedRead.subscribeAdminCache(() => {
+      const next = readCachedPlatformInvoices();
+      if (next) setAllRows(next);
+    });
   }, [load]);
+
+  const rows = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (status !== 'all' && r.status !== status) return false;
+      if (!q) return true;
+      return (
+        r.invoiceNumber.toLowerCase().includes(q) ||
+        r.tenantBusinessName.toLowerCase().includes(q) ||
+        r.customerName.toLowerCase().includes(q)
+      );
+    });
+  }, [allRows, search, status]);
 
   return (
     <div className="space-y-5">
@@ -176,44 +246,38 @@ export function PlatformInvoicesPage({ navigate }: { navigate: (path: string) =>
 
 export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) => void }) {
   const { notify } = useToast();
-  const [rows, setRows] = React.useState<
-    Array<{
-      id: string;
-      userUid: string;
-      tenantBusinessName: string;
-      quotationNumber: string;
-      customerName: string;
-      quotationDate: string;
-      validUntil: string;
-      status: string;
-      grandTotal: number;
-    }>
-  >([]);
+  const initialRows = React.useMemo(() => readCachedPlatformQuotations(), []);
+  const [allRows, setAllRows] = React.useState<PlatformQuotationRow[]>(initialRows || []);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState('all');
 
   const load = React.useCallback(() => {
     adminApi
-      .listQuotations({ search, status })
-      .then((res) => setRows(res.quotations))
+      .listQuotations()
+      .then((res) => setAllRows(res.quotations))
       .catch((err) => notify('error', err instanceof Error ? err.message : 'Load failed'));
-  }, [search, status, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
     load();
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(load, 250);
-    };
-    const u1 = subscribeRtdbPath('tenants', schedule);
-    const u2 = subscribeRtdbPath('users', schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
+    return cachedRead.subscribeAdminCache(() => {
+      const next = readCachedPlatformQuotations();
+      if (next) setAllRows(next);
+    });
   }, [load]);
+
+  const rows = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allRows.filter((r) => {
+      if (status !== 'all' && r.status !== status) return false;
+      if (!q) return true;
+      return (
+        r.quotationNumber.toLowerCase().includes(q) ||
+        r.tenantBusinessName.toLowerCase().includes(q) ||
+        r.customerName.toLowerCase().includes(q)
+      );
+    });
+  }, [allRows, search, status]);
 
   return (
     <div className="space-y-5">
@@ -327,14 +391,20 @@ export function PlatformQuotationsPage({ navigate }: { navigate: (path: string) 
 }
 
 export function AdminActivityLogsPage() {
-  const [logs, setLogs] = React.useState<ActivityLog[]>([]);
+  const initialLogs = React.useMemo(() => {
+    const cache = cachedRead.getAdminCache();
+    return cache.syncedAt.activityLogs ? cache.activityLogs.slice(0, 200) : [];
+  }, []);
+  const [logs, setLogs] = React.useState<ActivityLog[]>(initialLogs);
 
   React.useEffect(() => {
-    const loadLogs = () => {
-      adminApi.listActivityLogs(200).then((res) => setLogs(res.logs)).catch(() => {});
-    };
-    loadLogs();
-    return subscribeRtdbPath('activityLogs', loadLogs);
+    adminApi.listActivityLogs(200).then((res) => setLogs(res.logs)).catch(() => {});
+    return cachedRead.subscribeAdminCache(() => {
+      const cache = cachedRead.getAdminCache();
+      if (cache.syncedAt.activityLogs) {
+        setLogs(cache.activityLogs.slice(0, 200));
+      }
+    });
   }, []);
 
   return (
@@ -411,14 +481,20 @@ export function AdminActivityLogsPage() {
 }
 
 export function AdminImpersonationHistoryPage() {
-  const [sessions, setSessions] = React.useState<ImpersonationSession[]>([]);
+  const initialSessions = React.useMemo(() => {
+    const cache = cachedRead.getAdminCache();
+    return cache.syncedAt.impersonationSessions ? cache.impersonationSessions : [];
+  }, []);
+  const [sessions, setSessions] = React.useState<ImpersonationSession[]>(initialSessions);
 
   React.useEffect(() => {
-    const loadSessions = () => {
-      adminApi.listImpersonationHistory().then((res) => setSessions(res.sessions)).catch(() => {});
-    };
-    loadSessions();
-    return subscribeRtdbPath('impersonationSessions', loadSessions);
+    adminApi.listImpersonationHistory().then((res) => setSessions(res.sessions)).catch(() => {});
+    return cachedRead.subscribeAdminCache(() => {
+      const cache = cachedRead.getAdminCache();
+      if (cache.syncedAt.impersonationSessions) {
+        setSessions(cache.impersonationSessions);
+      }
+    });
   }, []);
 
   return (
@@ -497,15 +573,17 @@ export function AdminImpersonationHistoryPage() {
 
 export function AdminPlatformSettingsPage() {
   const { notify } = useToast();
-  const [settings, setSettings] = React.useState<PlatformSettings | null>(null);
+  const [settings, setSettings] = React.useState<PlatformSettings | null>(
+    () => cachedRead.getAdminCache().platformSettings || null
+  );
   const [saving, setSaving] = React.useState(false);
 
   React.useEffect(() => {
-    const loadSettings = () => {
-      adminApi.getSettings().then((res) => setSettings(res.settings)).catch(() => {});
-    };
-    loadSettings();
-    return subscribeRtdbPath('platformSettings', loadSettings);
+    adminApi.getSettings().then((res) => setSettings(res.settings)).catch(() => {});
+    return cachedRead.subscribeAdminCache(() => {
+      const next = cachedRead.getAdminCache().platformSettings;
+      if (next) setSettings(next);
+    });
   }, []);
 
   if (!settings) return <div className="p-8 text-sm text-zinc-500">Loading settings...</div>;

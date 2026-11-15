@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Edit2, Package, Plus, Search, Trash2 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { rateCardApi, subscribeRtdbPath } from '../../lib/api';
+import { cachedRead, rateCardApi } from '../../lib/api';
 import { exportToExcel } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
 import type { DiscountType, RateCardItem } from '../../shared/types';
@@ -23,8 +23,13 @@ export function RateCardPage() {
   const isGstBusiness = profile?.defaultIsGst !== false;
   const { notify } = useToast();
 
-  const [items, setItems] = React.useState<RateCardItem[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const initialItems = React.useMemo(() => {
+    if (!tenantUid || !cachedRead.hasTenantCollectionData(tenantUid, 'rateCard')) return null;
+    return cachedRead.getTenantEntry(tenantUid).rateCard;
+  }, [tenantUid]);
+
+  const [items, setItems] = React.useState<RateCardItem[]>(() => initialItems || []);
+  const [loading, setLoading] = React.useState(() => !initialItems);
   const [search, setSearch] = React.useState('');
   const [categoryFilter, setCategoryFilter] = React.useState('all');
   const [statusFilter, setStatusFilter] = React.useState<'all' | 'active' | 'inactive'>('all');
@@ -61,21 +66,21 @@ export function RateCardPage() {
   }, [notify]);
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    if (initialItems) {
+      setItems(initialItems);
+      setLoading(false);
+    }
+    void load(Boolean(initialItems));
+  }, [initialItems, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}/rateCard`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 200);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('rateCard')) {
+        setItems(cachedRead.getTenantEntry(tenantUid).rateCard);
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, load]);
+  }, [tenantUid]);
 
   const categories = React.useMemo(() => {
     const set = new Set<string>(DEFAULT_CATEGORIES);

@@ -14,7 +14,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { customersApi, quotationsApi, subscribeRtdbPath } from '../../lib/api';
+import { cachedRead, customersApi, quotationsApi } from '../../lib/api';
 import { generateDocumentPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
@@ -32,9 +32,26 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
-  const [quotations, setQuotations] = React.useState<Quotation[]>([]);
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
-  const [loading, setLoading] = React.useState(true);
+  const initialHydrated = React.useMemo(() => {
+    if (!tenantUid) return null;
+    const hasQuo = cachedRead.hasTenantCollectionData(tenantUid, 'quotations');
+    const hasCust = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    if (!hasQuo && !hasCust) return null;
+    const e = cachedRead.getTenantEntry(tenantUid);
+    return {
+      quotations: e.quotations,
+      customers: e.customers.filter((c) => !c.archived),
+      complete: hasQuo && hasCust,
+    };
+  }, [tenantUid]);
+
+  const [allQuotations, setAllQuotations] = React.useState<Quotation[]>(
+    () => initialHydrated?.quotations || []
+  );
+  const [customers, setCustomers] = React.useState<Customer[]>(
+    () => initialHydrated?.customers || []
+  );
+  const [loading, setLoading] = React.useState(() => !initialHydrated?.complete);
   const [search, setSearch] = React.useState('');
   const [status, setStatus] = React.useState('all');
   const [customerId, setCustomerId] = React.useState('all');
@@ -43,38 +60,57 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
     if (!silent) setLoading(true);
     try {
       const [qRes, cRes] = await Promise.all([
-        quotationsApi.list({ search, status, customerId }),
+        quotationsApi.list(),
         customersApi.list(),
       ]);
-      setQuotations(qRes.quotations);
+      setAllQuotations(qRes.quotations);
       setCustomers(cRes.customers);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load quotations');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [search, status, customerId, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
-    const t = setTimeout(() => load(false), 180);
-    return () => clearTimeout(t);
-  }, [load]);
+    if (initialHydrated) {
+      setAllQuotations(initialHydrated.quotations);
+      setCustomers(initialHydrated.customers);
+      setLoading(!initialHydrated.complete);
+    }
+    void load(Boolean(initialHydrated?.complete));
+  }, [initialHydrated, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const schedule = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath(`tenants/${tenantUid}/quotations`, schedule);
-    const u2 = subscribeRtdbPath(`tenants/${tenantUid}/customers`, schedule);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-    };
-  }, [tenantUid, load]);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('quotations') || changed.has('customers')) {
+        const entry = cachedRead.getTenantEntry(tenantUid);
+        if (changed.has('quotations')) setAllQuotations(entry.quotations);
+        if (changed.has('customers')) setCustomers(entry.customers.filter((c) => !c.archived));
+      }
+    });
+  }, [tenantUid]);
+
+  const quotations = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allQuotations.filter((item) => {
+      if (status && status !== 'all' && item.status !== status) return false;
+      if (customerId && customerId !== 'all' && item.customerId !== customerId) return false;
+      if (q) {
+        const hay = [
+          item.quotationNumber,
+          item.customerSnapshot.name,
+          item.customerSnapshot.companyName,
+          item.referenceNumber,
+        ]
+          .join(' ')
+          .toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allQuotations, search, status, customerId]);
 
   const handleConvert = async (q: Quotation) => {
     try {
@@ -369,8 +405,13 @@ export function QuotationDetailsPage({
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
-  const [quotation, setQuotation] = React.useState<Quotation | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const initialDetail = React.useMemo(() => {
+    if (!tenantUid || !cachedRead.hasTenantCollectionData(tenantUid, 'quotations')) return null;
+    return cachedRead.getTenantEntry(tenantUid).quotations.find((q) => q.id === quotationId) || null;
+  }, [tenantUid, quotationId]);
+
+  const [quotation, setQuotation] = React.useState<Quotation | null>(initialDetail);
+  const [loading, setLoading] = React.useState(() => !initialDetail);
   const [converting, setConverting] = React.useState(false);
 
   const load = React.useCallback(async (silent = false) => {
@@ -386,21 +427,21 @@ export function QuotationDetailsPage({
   }, [quotationId, notify]);
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    if (initialDetail) {
+      setQuotation(initialDetail);
+      setLoading(false);
+    }
+    void load(Boolean(initialDetail));
+  }, [initialDetail, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}/quotations/${quotationId}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('quotations')) {
+        void load(true);
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, quotationId, load]);
+  }, [tenantUid, load]);
 
   if (loading) return <div className="p-8 text-sm text-zinc-500">Loading quotation...</div>;
   if (!quotation) {

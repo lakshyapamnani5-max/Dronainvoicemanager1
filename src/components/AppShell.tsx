@@ -28,7 +28,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useTheme } from '../contexts/ThemeContext';
-import { notificationsApi, subscribeRtdbPath } from '../lib/api';
+import { cachedRead, notificationsApi } from '../lib/api';
 import { formatDateTime } from '../lib/utils';
 import type { NotificationItem } from '../shared/types';
 import { PWAInstallButton } from './PWAComponents';
@@ -123,7 +123,10 @@ export function AppShell({
   const [mobileOpen, setMobileOpen] = React.useState(false);
   const [moreSheetOpen, setMoreSheetOpen] = React.useState(false);
   const [notifOpen, setNotifOpen] = React.useState(false);
-  const [notifications, setNotifications] = React.useState<NotificationItem[]>([]);
+  const tenantUid = session?.effectiveUser.role === 'business' ? session.effectiveUser.uid : '';
+  const [notifications, setNotifications] = React.useState<NotificationItem[]>(() =>
+    tenantUid ? cachedRead.getTenantEntry(tenantUid).notifications : []
+  );
   const [exitingImp, setExitingImp] = React.useState(false);
   const [inputFocused, setInputFocused] = React.useState(false);
 
@@ -172,25 +175,30 @@ export function AppShell({
   }, [currentPath]);
 
   const loadNotifications = React.useCallback(async () => {
-    if (!session || session.effectiveUser.role !== 'business') return;
+    if (!tenantUid) return;
     try {
       const res = await notificationsApi.list();
       setNotifications(res.notifications);
     } catch {
       // ignore transient
     }
-  }, [session]);
+  }, [tenantUid]);
 
   React.useEffect(() => {
-    loadNotifications();
-  }, [loadNotifications, currentPath]);
-
-  React.useEffect(() => {
-    if (!session || session.effectiveUser.role !== 'business') return;
-    return subscribeRtdbPath(`tenants/${session.effectiveUser.uid}/notifications`, () => {
-      loadNotifications();
+    if (!tenantUid) {
+      setNotifications([]);
+      return;
+    }
+    if (cachedRead.hasTenantCollectionData(tenantUid, 'notifications')) {
+      setNotifications(cachedRead.getTenantEntry(tenantUid).notifications);
+    }
+    void loadNotifications();
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('notifications')) {
+        setNotifications(cachedRead.getTenantEntry(tenantUid).notifications);
+      }
     });
-  }, [session?.effectiveUser.uid, session?.effectiveUser.role, loadNotifications]);
+  }, [tenantUid, loadNotifications]);
 
   const unreadCount = notifications.filter((n) => !n.isRead).length;
 

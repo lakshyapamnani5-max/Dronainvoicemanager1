@@ -9,7 +9,7 @@ import {
   YAxis,
 } from 'recharts';
 import { Plus, ShieldCheck } from 'lucide-react';
-import { adminApi, subscribeRtdbPath } from '../../lib/api';
+import { adminApi, cachedRead } from '../../lib/api';
 import { formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
 import type { AdminDashboardData } from '../../shared/types';
@@ -31,47 +31,63 @@ export function AdminDashboardPage({
   const [range, setRange] = React.useState('all');
   const [customStart, setCustomStart] = React.useState('');
   const [customEnd, setCustomEnd] = React.useState('');
-  const [data, setData] = React.useState<AdminDashboardData | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  const readAdminSnap = React.useCallback(() => {
+    const cache = cachedRead.getAdminCache();
+    if (!cache.syncedAt.users && !cache.syncedAt.tenants) return null;
+    return {
+      users: cache.users,
+      tenants: cache.tenants,
+      activityLogs: cache.activityLogs,
+    };
+  }, []);
+
+  const initialSnap = React.useMemo(() => readAdminSnap(), [readAdminSnap]);
+  const [snapshot, setSnapshot] = React.useState(initialSnap);
+  const [loading, setLoading] = React.useState(() => !initialSnap);
+  const lastDashboardRef = React.useRef<AdminDashboardData | null>(null);
 
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const res = await adminApi.getDashboard({
-        range,
-        startDate: range === 'custom' ? customStart : undefined,
-        endDate: range === 'custom' ? customEnd : undefined,
-      });
-      setData(res);
+      await adminApi.getDashboard({ range: 'all' });
+      const next = readAdminSnap();
+      if (next) setSnapshot(next);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load platform analytics');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [range, customStart, customEnd, notify]);
+  }, [readAdminSnap, notify]);
 
   React.useEffect(() => {
-    if (range === 'custom' && (!customStart || !customEnd)) return;
-    load(false);
-  }, [load, range, customStart, customEnd]);
+    void load(Boolean(initialSnap));
+  }, [initialSnap, load]);
 
   React.useEffect(() => {
-    if (range === 'custom' && (!customStart || !customEnd)) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const scheduleRefresh = () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
-    };
-    const u1 = subscribeRtdbPath('users', scheduleRefresh);
-    const u2 = subscribeRtdbPath('tenants', scheduleRefresh);
-    const u3 = subscribeRtdbPath('activityLogs', scheduleRefresh);
-    return () => {
-      if (timer) clearTimeout(timer);
-      u1();
-      u2();
-      u3();
-    };
-  }, [load, range, customStart, customEnd]);
+    return cachedRead.subscribeAdminCache(() => {
+      const next = readAdminSnap();
+      if (next) setSnapshot(next);
+    });
+  }, [readAdminSnap]);
+
+  const data = React.useMemo(() => {
+    if (!snapshot) return null;
+    if (range === 'custom' && (!customStart || !customEnd)) {
+      return lastDashboardRef.current;
+    }
+    const computed = cachedRead.computeAdminDashboardFromData(
+      snapshot.users,
+      snapshot.tenants,
+      snapshot.activityLogs,
+      {
+        range,
+        startDate: range === 'custom' ? customStart : undefined,
+        endDate: range === 'custom' ? customEnd : undefined,
+      }
+    );
+    lastDashboardRef.current = computed;
+    return computed;
+  }, [snapshot, range, customStart, customEnd]);
 
   const s = data?.summary;
 

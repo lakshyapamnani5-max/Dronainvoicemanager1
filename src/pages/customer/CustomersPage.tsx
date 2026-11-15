@@ -1,7 +1,7 @@
 import * as React from 'react';
 import { Archive, ArchiveRestore, Edit2, Eye, Plus, Search, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { customersApi, subscribeRtdbPath } from '../../lib/api';
+import { cachedRead, customersApi } from '../../lib/api';
 import { formatINR } from '../../shared/gstCalculator';
 import { INDIAN_STATES, getStateFromGstin } from '../../shared/indianStates';
 import type { Customer, Invoice, Payment, Quotation } from '../../shared/types';
@@ -20,10 +20,20 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
   const tenantUid = session?.effectiveUser.uid;
   const isGstBusiness = session?.businessProfile?.defaultIsGst !== false;
   const { notify } = useToast();
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
+  const initialCustomers = React.useMemo(() => {
+    if (!tenantUid || !cachedRead.hasTenantCollectionData(tenantUid, 'customers')) return null;
+    const e = cachedRead.getTenantEntry(tenantUid);
+    return cachedRead.enrichCustomersWithStats(e.customers, e.invoices, e.quotations, {
+      includeArchived: true,
+    });
+  }, [tenantUid]);
+
+  const [allCustomers, setAllCustomers] = React.useState<Customer[]>(
+    () => initialCustomers || []
+  );
   const [search, setSearch] = React.useState('');
   const [showArchived, setShowArchived] = React.useState(false);
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(() => !initialCustomers);
 
   const [modalOpen, setModalOpen] = React.useState(false);
   const [editing, setEditing] = React.useState<Customer | null>(null);
@@ -44,32 +54,48 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
     try {
-      const res = await customersApi.list({ search, includeArchived: showArchived });
-      setCustomers(res.customers);
+      const res = await customersApi.list({ includeArchived: true });
+      setAllCustomers(res.customers);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load customers');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [search, showArchived, notify]);
+  }, [notify]);
 
   React.useEffect(() => {
-    const timer = setTimeout(() => load(false), 200);
-    return () => clearTimeout(timer);
-  }, [load]);
+    if (initialCustomers) {
+      setAllCustomers(initialCustomers);
+      setLoading(false);
+    }
+    void load(Boolean(initialCustomers));
+  }, [initialCustomers, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('customers') || changed.has('invoices') || changed.has('quotations')) {
+        const e = cachedRead.getTenantEntry(tenantUid);
+        setAllCustomers(
+          cachedRead.enrichCustomersWithStats(e.customers, e.invoices, e.quotations, {
+            includeArchived: true,
+          })
+        );
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, load]);
+  }, [tenantUid]);
+
+  const customers = React.useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return allCustomers.filter((c) => {
+      if (!showArchived && c.archived) return false;
+      if (q) {
+        const hay = `${c.name} ${c.companyName} ${c.email} ${c.phone} ${c.gstin}`.toLowerCase();
+        if (!hay.includes(q)) return false;
+      }
+      return true;
+    });
+  }, [allCustomers, search, showArchived]);
 
   const openCreate = () => {
     setEditing(null);
@@ -494,13 +520,37 @@ export function CustomerDetailsPage({
   const { session } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
+  const initialDetail = React.useMemo(() => {
+    if (
+      !tenantUid ||
+      !cachedRead.hasTenantCollectionData(tenantUid, 'customers') ||
+      !cachedRead.hasTenantCollectionData(tenantUid, 'invoices') ||
+      !cachedRead.hasTenantCollectionData(tenantUid, 'quotations') ||
+      !cachedRead.hasTenantCollectionData(tenantUid, 'payments')
+    ) {
+      return null;
+    }
+    const e = cachedRead.getTenantEntry(tenantUid);
+    const enriched = cachedRead.enrichCustomersWithStats(e.customers, e.invoices, e.quotations, {
+      includeArchived: true,
+    });
+    const cust = enriched.find((c) => c.id === customerId);
+    if (!cust) return null;
+    return {
+      customer: cust,
+      invoices: e.invoices.filter((i) => i.customerId === customerId),
+      quotations: e.quotations.filter((q) => q.customerId === customerId),
+      payments: e.payments.filter((p) => p.customerId === customerId),
+    };
+  }, [tenantUid, customerId]);
+
   const [data, setData] = React.useState<{
     customer: Customer;
     invoices: Invoice[];
     quotations: Quotation[];
     payments: Payment[];
-  } | null>(null);
-  const [loading, setLoading] = React.useState(true);
+  } | null>(initialDetail);
+  const [loading, setLoading] = React.useState(() => !initialDetail);
 
   const loadDetails = React.useCallback(
     (silent = false) => {
@@ -519,20 +569,25 @@ export function CustomerDetailsPage({
   );
 
   React.useEffect(() => {
-    loadDetails(false);
-  }, [loadDetails]);
+    if (initialDetail) {
+      setData(initialDetail);
+      setLoading(false);
+    }
+    loadDetails(Boolean(initialDetail));
+  }, [initialDetail, loadDetails]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => loadDetails(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (
+        changed.has('customers') ||
+        changed.has('invoices') ||
+        changed.has('quotations') ||
+        changed.has('payments')
+      ) {
+        loadDetails(true);
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
   }, [tenantUid, loadDetails]);
 
   if (loading) {

@@ -20,9 +20,15 @@ import type {
   TemplateId,
   UserRecord,
 } from '../shared/types';
-import { rtdbService, subscribeRtdbPath } from './rtdbService';
+import {
+  cachedRead,
+  ensureTenantMetaListener,
+  rtdbService,
+  subscribeRtdbPath,
+  updateRuntimeSessionCache,
+} from './rtdbService';
 
-export { subscribeRtdbPath };
+export { cachedRead, ensureTenantMetaListener, subscribeRtdbPath, updateRuntimeSessionCache };
 
 const TOKEN_KEY = 'drona_auth_token';
 
@@ -114,7 +120,7 @@ export const authApi = {
     }
   },
 
-  me: () => rtdbService.me(),
+  me: (forceRefresh = false) => rtdbService.me(forceRefresh),
 
   forgotPassword: (email: string) => rtdbService.forgotPassword(email),
 

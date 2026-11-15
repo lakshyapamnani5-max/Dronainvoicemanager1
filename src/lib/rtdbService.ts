@@ -18,6 +18,45 @@ import {
 } from 'firebase/database';
 import { firebaseAuth, getSecondaryAuth, rtdb } from './firebase';
 import {
+  clearAllRuntimeSessionCaches,
+  dedupeFetch,
+  getAdminCache,
+  getCachedPublicSettings,
+  getCachedSession,
+  getCachedSessionTimestamp,
+  getTenantEntry,
+  getTenantExpiryCheckDate,
+  getTenantOverdueCheckDate,
+  hasTenantCollectionData,
+  invalidateAdminSlices,
+  invalidateTenantCollection,
+  isAdminSliceFresh,
+  isTenantCollectionFresh,
+  markNotificationReadCache,
+  markTenantSyncedNow,
+  prependTenantActivityLogCache,
+  removeTenantCustomerCache,
+  removeTenantPaymentCache,
+  removeTenantRateCardCache,
+  setAdminSliceData,
+  setCachedPublicSettings,
+  setCachedSession,
+  setTenantCollectionData,
+  setTenantExpiryCheckDate,
+  setTenantOverdueCheckDate,
+  setTenantProfileCache,
+  subscribeAdminCache,
+  subscribeTenantCache,
+  upsertTenantCustomerCache,
+  upsertTenantInvoiceCache,
+  upsertTenantNotificationCache,
+  upsertTenantPaymentCache,
+  upsertTenantQuotationCache,
+  upsertTenantRateCardCache,
+  type TenantCollection,
+  type TenantMetaMap,
+} from './localCache';
+import {
   computeDocumentTotals,
   fromPaise,
   toPaise,
@@ -463,14 +502,31 @@ function setStoredImpersonationId(id: string | null): void {
   }
 }
 
-async function ensurePlatformSettings(): Promise<PlatformSettings> {
-  const snap = await get(ref(rtdb, 'platformSettings'));
-  if (snap.exists()) {
-    return { ...defaultPlatformSettings(), ...(snap.val() as Partial<PlatformSettings>) };
+async function touchTenantMeta(tenantUid: string, cols: TenantCollection[]): Promise<void> {
+  if (!cols.length) return;
+  const now = Date.now();
+  const patch: Record<string, number> = {};
+  for (const col of cols) {
+    markTenantSyncedNow(tenantUid, col, now);
+    patch[col] = now;
   }
-  const defaults = defaultPlatformSettings();
-  await set(ref(rtdb, 'platformSettings'), stripUndefined(defaults));
-  return defaults;
+  try {
+    await update(ref(rtdb, `tenants/${tenantUid}/_meta`), patch);
+  } catch {
+    // non-fatal if _meta write fails
+  }
+}
+
+async function ensurePlatformSettings(): Promise<PlatformSettings> {
+  return dedupeFetch('platformSettings', async () => {
+    const snap = await get(ref(rtdb, 'platformSettings'));
+    if (snap.exists()) {
+      return { ...defaultPlatformSettings(), ...(snap.val() as Partial<PlatformSettings>) };
+    }
+    const defaults = defaultPlatformSettings();
+    await set(ref(rtdb, 'platformSettings'), stripUndefined(defaults));
+    return defaults;
+  });
 }
 
 async function logActivity(params: {
@@ -503,6 +559,7 @@ async function logActivity(params: {
   await set(ref(rtdb, `activityLogs/${id}`), clean);
   if (entry.targetTenantUid) {
     await set(ref(rtdb, `tenants/${entry.targetTenantUid}/activityLogs/${id}`), clean);
+    prependTenantActivityLogCache(entry.targetTenantUid, entry);
   }
 }
 
@@ -529,6 +586,8 @@ async function createNotification(params: {
     createdAt: new Date().toISOString(),
   };
   await set(ref(rtdb, `tenants/${params.userUid}/notifications/${id}`), stripUndefined(item));
+  upsertTenantNotificationCache(params.userUid, item);
+  await touchTenantMeta(params.userUid, ['notifications']);
 }
 
 async function allocateDocumentNumber(
@@ -1063,77 +1122,119 @@ async function seedDemoBusinessesFromAdmin(): Promise<void> {
   }
 }
 
-async function resolveCurrentAuthContext(): Promise<{
+let runtimeAuthSession: AuthSessionState | null = null;
+let runtimeAuthSessionAt = 0;
+const AUTH_CACHE_FRESH_MS = 2 * 60 * 1000;
+
+export function updateRuntimeSessionCache(session: AuthSessionState | null): void {
+  runtimeAuthSession = session;
+  runtimeAuthSessionAt = session ? Date.now() : 0;
+  setCachedSession(session);
+}
+
+async function resolveCurrentAuthContext(forceRefresh = false): Promise<{
   actorUser: UserRecord;
   effectiveUser: UserRecord;
   businessProfile: BusinessProfile | null;
   isImpersonating: boolean;
   impersonationSession: ImpersonationSession | null;
 }> {
+  if (!firebaseAuth.currentUser && typeof firebaseAuth.authStateReady === 'function') {
+    await firebaseAuth.authStateReady();
+  }
   const fbUser = firebaseAuth.currentUser;
   if (!fbUser) throw new Error('Authentication required');
 
-  const userSnap = await get(ref(rtdb, `users/${fbUser.uid}`));
-  if (!userSnap.exists()) {
-    throw new Error('User workspace profile not found');
-  }
-  const actorUser = normalizeUserRecord(fbUser.uid, userSnap.val() as Record<string, unknown>);
-  if (actorUser.status !== 'active') {
-    await signOut(firebaseAuth);
-    throw new Error('Your account has been deactivated by Drona Admin.');
-  }
-
-  let effectiveUser = actorUser;
-  let isImpersonating = false;
-  let impersonationSession: ImpersonationSession | null = null;
-
   const storedImpId = getStoredImpersonationId();
-  if (actorUser.role === 'super_admin' && storedImpId) {
-    const impSnap = await get(ref(rtdb, `impersonationSessions/${storedImpId}`));
-    if (impSnap.exists()) {
-      const imp = impSnap.val() as ImpersonationSession;
-      if (
-        imp.active &&
-        imp.adminUid === actorUser.uid &&
-        new Date(imp.expiresAt).getTime() > Date.now()
-      ) {
-        const targetSnap = await get(ref(rtdb, `users/${imp.targetUid}`));
-        if (targetSnap.exists()) {
-          effectiveUser = normalizeUserRecord(
-            imp.targetUid,
-            targetSnap.val() as Record<string, unknown>
-          );
-          isImpersonating = true;
-          impersonationSession = imp;
+
+  if (!forceRefresh) {
+    const memFresh =
+      runtimeAuthSession &&
+      runtimeAuthSession.actorUser.uid === fbUser.uid &&
+      Date.now() - runtimeAuthSessionAt < AUTH_CACHE_FRESH_MS &&
+      (runtimeAuthSession.impersonationSession?.id || null) === storedImpId;
+    if (memFresh && runtimeAuthSession) {
+      return runtimeAuthSession;
+    }
+    const persisted = getCachedSession();
+    const persistedTs = getCachedSessionTimestamp();
+    if (
+      persisted &&
+      persisted.actorUser.uid === fbUser.uid &&
+      Date.now() - persistedTs < AUTH_CACHE_FRESH_MS &&
+      (persisted.impersonationSession?.id || null) === storedImpId
+    ) {
+      runtimeAuthSession = persisted;
+      runtimeAuthSessionAt = persistedTs;
+      return persisted;
+    }
+  }
+
+  return dedupeFetch(`authCtx:${fbUser.uid}:${storedImpId || 'none'}:${forceRefresh ? '1' : '0'}`, async () => {
+    const userSnap = await get(ref(rtdb, `users/${fbUser.uid}`));
+    if (!userSnap.exists()) {
+      throw new Error('User workspace profile not found');
+    }
+    const actorUser = normalizeUserRecord(fbUser.uid, userSnap.val() as Record<string, unknown>);
+    if (actorUser.status !== 'active') {
+      updateRuntimeSessionCache(null);
+      await signOut(firebaseAuth);
+      throw new Error('Your account has been deactivated by Drona Admin.');
+    }
+
+    let effectiveUser = actorUser;
+    let isImpersonating = false;
+    let impersonationSession: ImpersonationSession | null = null;
+
+    if (actorUser.role === 'super_admin' && storedImpId) {
+      const impSnap = await get(ref(rtdb, `impersonationSessions/${storedImpId}`));
+      if (impSnap.exists()) {
+        const imp = impSnap.val() as ImpersonationSession;
+        if (
+          imp.active &&
+          imp.adminUid === actorUser.uid &&
+          new Date(imp.expiresAt).getTime() > Date.now()
+        ) {
+          const targetSnap = await get(ref(rtdb, `users/${imp.targetUid}`));
+          if (targetSnap.exists()) {
+            effectiveUser = normalizeUserRecord(
+              imp.targetUid,
+              targetSnap.val() as Record<string, unknown>
+            );
+            isImpersonating = true;
+            impersonationSession = imp;
+          }
+        } else {
+          setStoredImpersonationId(null);
         }
       } else {
         setStoredImpersonationId(null);
       }
-    } else {
+    } else if (storedImpId && actorUser.role !== 'super_admin') {
       setStoredImpersonationId(null);
     }
-  } else if (storedImpId && actorUser.role !== 'super_admin') {
-    setStoredImpersonationId(null);
-  }
 
-  let businessProfile: BusinessProfile | null = null;
-  if (effectiveUser.role === 'business') {
-    const profSnap = await get(ref(rtdb, `businessProfiles/${effectiveUser.uid}`));
-    if (profSnap.exists()) {
-      businessProfile = normalizeBusinessProfile(
-        effectiveUser.uid,
-        profSnap.val() as Record<string, unknown>
-      );
+    let businessProfile: BusinessProfile | null = null;
+    if (effectiveUser.role === 'business') {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${effectiveUser.uid}`));
+      if (profSnap.exists()) {
+        businessProfile = normalizeBusinessProfile(
+          effectiveUser.uid,
+          profSnap.val() as Record<string, unknown>
+        );
+      }
     }
-  }
 
-  return {
-    actorUser,
-    effectiveUser,
-    businessProfile,
-    isImpersonating,
-    impersonationSession,
-  };
+    const sessionState: AuthSessionState = {
+      actorUser,
+      effectiveUser,
+      businessProfile,
+      isImpersonating,
+      impersonationSession,
+    };
+    updateRuntimeSessionCache(sessionState);
+    return sessionState;
+  });
 }
 
 async function requireTenantContext() {
@@ -1155,71 +1256,82 @@ async function requireSuperAdminContext() {
   return ctx;
 }
 
-async function syncOverdueInvoices(tenantUid: string): Promise<void> {
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
-  if (!snap.exists()) return;
-  const rawMap = snap.val() as Record<string, Record<string, unknown>>;
+async function syncOverdueInvoicesFromList(
+  tenantUid: string,
+  invoices: Invoice[],
+  forceCheck = false
+): Promise<Invoice[]> {
   const today = todayISO();
+  if (!forceCheck && getTenantOverdueCheckDate(tenantUid) === today) {
+    return invoices;
+  }
   const now = new Date().toISOString();
-
-  const notifSnap = await get(ref(rtdb, `tenants/${tenantUid}/notifications`));
-  const existingNotifs = notifSnap.exists()
-    ? Object.values(notifSnap.val() as Record<string, NotificationItem>)
-    : [];
-
-  for (const [id, raw] of Object.entries(rawMap)) {
-    const inv = normalizeInvoice(raw);
-    if (
+  const candidates = invoices.filter(
+    (inv) =>
       (inv.status === 'unpaid' || inv.status === 'partially_paid') &&
       inv.dueDate < today &&
       inv.balanceDue > 0
-    ) {
-      await update(ref(rtdb, `tenants/${tenantUid}/invoices/${id}`), {
-        status: 'overdue',
-        updatedAt: now,
+  );
+  setTenantOverdueCheckDate(tenantUid, today);
+  if (candidates.length === 0) return invoices;
+
+  const existingNotifs = getTenantEntry(tenantUid).notifications;
+  const patch: Record<string, unknown> = {};
+  const updatedIds = new Set<string>();
+
+  for (const inv of candidates) {
+    patch[`tenants/${tenantUid}/invoices/${inv.id}/status`] = 'overdue';
+    patch[`tenants/${tenantUid}/invoices/${inv.id}/updatedAt`] = now;
+    updatedIds.add(inv.id);
+    const already = existingNotifs.some(
+      (n) => n.type === 'invoice_overdue' && n.entityId === inv.id
+    );
+    if (!already) {
+      await createNotification({
+        userUid: tenantUid,
+        type: 'invoice_overdue',
+        title: 'Invoice overdue',
+        message: `Invoice ${inv.invoiceNumber} for ${
+          inv.customerSnapshot.companyName || inv.customerSnapshot.name
+        } is past due.`,
+        entityType: 'invoice',
+        entityId: inv.id,
       });
-      const already = existingNotifs.some(
-        (n) => n.type === 'invoice_overdue' && n.entityId === id
-      );
-      if (!already) {
-        await createNotification({
-          userUid: tenantUid,
-          type: 'invoice_overdue',
-          title: 'Invoice overdue',
-          message: `Invoice ${inv.invoiceNumber} for ${
-            inv.customerSnapshot.companyName || inv.customerSnapshot.name
-          } is past due.`,
-          entityType: 'invoice',
-          entityId: id,
-        });
-      }
     }
   }
+
+  await update(ref(rtdb), patch);
+  const nextList = invoices.map((inv) =>
+    updatedIds.has(inv.id) ? { ...inv, status: 'overdue' as InvoiceStatus, updatedAt: now } : inv
+  );
+  setTenantCollectionData(tenantUid, 'invoices', nextList, true);
+  await touchTenantMeta(tenantUid, ['invoices']);
+  return nextList;
 }
 
-async function syncExpiredQuotations(tenantUid: string): Promise<void> {
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
-  if (!snap.exists()) return;
-  const rawMap = snap.val() as Record<string, Record<string, unknown>>;
+async function syncExpiredQuotationsFromList(
+  tenantUid: string,
+  quotations: Quotation[],
+  forceCheck = false
+): Promise<Quotation[]> {
   const today = todayISO();
+  if (!forceCheck && getTenantExpiryCheckDate(tenantUid) === today) {
+    return quotations;
+  }
   const soonDate = addDaysISO(today, 3);
   const now = new Date().toISOString();
+  const existingNotifs = getTenantEntry(tenantUid).notifications;
+  const patch: Record<string, unknown> = {};
+  const expiredIds = new Set<string>();
 
-  const notifSnap = await get(ref(rtdb, `tenants/${tenantUid}/notifications`));
-  const existingNotifs = notifSnap.exists()
-    ? Object.values(notifSnap.val() as Record<string, NotificationItem>)
-    : [];
-
-  for (const [id, raw] of Object.entries(rawMap)) {
-    const q = normalizeQuotation(raw);
+  for (const q of quotations) {
     if (q.status === 'sent' && q.validUntil < today) {
-      await update(ref(rtdb, `tenants/${tenantUid}/quotations/${id}`), {
-        status: 'expired',
-        updatedAt: now,
-      });
+      patch[`tenants/${tenantUid}/quotations/${q.id}/status`] = 'expired';
+      patch[`tenants/${tenantUid}/quotations/${q.id}/updatedAt`] = now;
+      expiredIds.add(q.id);
     } else if (q.status === 'sent' && q.validUntil >= today && q.validUntil <= soonDate) {
       const already = existingNotifs.some(
-        (n) => n.type === 'quotation_expiring' && n.entityId === id
+        (n) => n.type === 'quotation_expiring' && n.entityId === q.id
       );
       if (!already) {
         await createNotification({
@@ -1228,67 +1340,110 @@ async function syncExpiredQuotations(tenantUid: string): Promise<void> {
           title: 'Quotation expiring soon',
           message: `Quotation ${q.quotationNumber} expires on ${q.validUntil}.`,
           entityType: 'quotation',
-          entityId: id,
+          entityId: q.id,
         });
       }
     }
   }
+
+  setTenantExpiryCheckDate(tenantUid, today);
+  if (expiredIds.size === 0) return quotations;
+
+  await update(ref(rtdb), patch);
+  const nextList = quotations.map((q) =>
+    expiredIds.has(q.id) ? { ...q, status: 'expired' as QuotationStatus, updatedAt: now } : q
+  );
+  setTenantCollectionData(tenantUid, 'quotations', nextList, true);
+  await touchTenantMeta(tenantUid, ['quotations']);
+  return nextList;
 }
 
-async function listTenantInvoicesRaw(tenantUid: string): Promise<Invoice[]> {
-  await syncOverdueInvoices(tenantUid);
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
-  if (!snap.exists()) return [];
-  const list = Object.values(snap.val() as Record<string, Record<string, unknown>>).map(
-    normalizeInvoice
-  );
-  return list.sort((a, b) =>
-    `${b.invoiceDate}_${b.createdAt}`.localeCompare(`${a.invoiceDate}_${a.createdAt}`)
-  );
+async function listTenantInvoicesRaw(tenantUid: string, forceRefresh = false): Promise<Invoice[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'invoices')) {
+    return getTenantEntry(tenantUid).invoices;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:invoices`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
+    const rawList = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeInvoice)
+          .sort((a, b) =>
+            `${b.invoiceDate}_${b.createdAt}`.localeCompare(`${a.invoiceDate}_${a.createdAt}`)
+          )
+      : [];
+    setTenantCollectionData(tenantUid, 'invoices', rawList, true);
+    return syncOverdueInvoicesFromList(tenantUid, rawList);
+  });
 }
 
-async function listTenantQuotationsRaw(tenantUid: string): Promise<Quotation[]> {
-  await syncExpiredQuotations(tenantUid);
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
-  if (!snap.exists()) return [];
-  const list = Object.values(snap.val() as Record<string, Record<string, unknown>>).map(
-    normalizeQuotation
-  );
-  return list.sort((a, b) =>
-    `${b.quotationDate}_${b.createdAt}`.localeCompare(`${a.quotationDate}_${a.createdAt}`)
-  );
-}
-
-async function listTenantPaymentsRaw(tenantUid: string): Promise<Payment[]> {
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/payments`));
-  if (!snap.exists()) return [];
-  const list = Object.values(snap.val() as Record<string, Record<string, unknown>>).map(
-    normalizePayment
-  );
-  return list.sort((a, b) =>
-    `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
-  );
-}
-
-async function listTenantCustomersRaw(
+async function listTenantQuotationsRaw(
   tenantUid: string,
-  opts?: { search?: string; includeArchived?: boolean }
+  forceRefresh = false
+): Promise<Quotation[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'quotations')) {
+    return getTenantEntry(tenantUid).quotations;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:quotations`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
+    const rawList = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeQuotation)
+          .sort((a, b) =>
+            `${b.quotationDate}_${b.createdAt}`.localeCompare(`${a.quotationDate}_${a.createdAt}`)
+          )
+      : [];
+    setTenantCollectionData(tenantUid, 'quotations', rawList, true);
+    return syncExpiredQuotationsFromList(tenantUid, rawList);
+  });
+}
+
+async function listTenantPaymentsRaw(tenantUid: string, forceRefresh = false): Promise<Payment[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'payments')) {
+    return getTenantEntry(tenantUid).payments;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:payments`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/payments`));
+    const list = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizePayment)
+          .sort((a, b) =>
+            `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
+          )
+      : [];
+    setTenantCollectionData(tenantUid, 'payments', list, true);
+    return list;
+  });
+}
+
+async function listTenantCustomersBaseRaw(
+  tenantUid: string,
+  forceRefresh = false
 ): Promise<Customer[]> {
-  const [custSnap, invoices, quotations] = await Promise.all([
-    get(ref(rtdb, `tenants/${tenantUid}/customers`)),
-    listTenantInvoicesRaw(tenantUid),
-    listTenantQuotationsRaw(tenantUid),
-  ]);
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'customers')) {
+    return getTenantEntry(tenantUid).customers;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:customers`, async () => {
+    const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers`));
+    const rawList = custSnap.exists()
+      ? Object.values(custSnap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeCustomer)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      : [];
+    setTenantCollectionData(tenantUid, 'customers', rawList, true);
+    return rawList;
+  });
+}
 
-  if (!custSnap.exists()) return [];
-  const rawList = Object.values(custSnap.val() as Record<string, Record<string, unknown>>).map(
-    normalizeCustomer
-  );
-
+export function enrichCustomersWithStats(
+  rawCustomers: Customer[],
+  invoices: Invoice[],
+  quotations: Quotation[],
+  opts?: { search?: string; includeArchived?: boolean }
+): Customer[] {
   const search = (opts?.search || '').trim().toLowerCase();
   const includeArchived = Boolean(opts?.includeArchived);
 
-  return rawList
+  return rawCustomers
     .filter((c) => includeArchived || !c.archived)
     .map((c) => {
       const custInvoices = invoices.filter((i) => i.customerId === c.id);
@@ -1298,12 +1453,8 @@ async function listTenantCustomersRaw(
       const custQuotes = quotations.filter((q) => q.customerId === c.id);
       return {
         ...c,
-        totalSales: fromPaise(
-          activeInvoices.reduce((s, i) => s + toPaise(i.grandTotal), 0)
-        ),
-        totalPaid: fromPaise(
-          activeInvoices.reduce((s, i) => s + toPaise(i.amountPaid), 0)
-        ),
+        totalSales: fromPaise(activeInvoices.reduce((s, i) => s + toPaise(i.grandTotal), 0)),
+        totalPaid: fromPaise(activeInvoices.reduce((s, i) => s + toPaise(i.amountPaid), 0)),
         outstandingBalance: fromPaise(
           activeInvoices.reduce((s, i) => s + toPaise(i.balanceDue), 0)
         ),
@@ -1324,23 +1475,49 @@ async function listTenantCustomersRaw(
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 }
 
+async function listTenantCustomersRaw(
+  tenantUid: string,
+  opts?: { search?: string; includeArchived?: boolean }
+): Promise<Customer[]> {
+  const [rawCustomers, invoices, quotations] = await Promise.all([
+    listTenantCustomersBaseRaw(tenantUid),
+    listTenantInvoicesRaw(tenantUid),
+    listTenantQuotationsRaw(tenantUid),
+  ]);
+  return enrichCustomersWithStats(rawCustomers, invoices, quotations, opts);
+}
+
+async function listTenantRateCardAllRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<RateCardItem[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'rateCard')) {
+    return getTenantEntry(tenantUid).rateCard;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:rateCard`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/rateCard`));
+    const rawList = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeRateCardItem)
+          .sort((a, b) => a.name.localeCompare(b.name))
+      : [];
+    setTenantCollectionData(tenantUid, 'rateCard', rawList, true);
+    return rawList;
+  });
+}
+
 async function listTenantRateCardRaw(
   tenantUid: string,
   opts?: { search?: string; activeOnly?: boolean; category?: string }
 ): Promise<RateCardItem[]> {
-  const snap = await get(ref(rtdb, `tenants/${tenantUid}/rateCard`));
-  if (!snap.exists()) return [];
-  const rawList = Object.values(snap.val() as Record<string, Record<string, unknown>>).map(
-    normalizeRateCardItem
-  );
-
+  const rawList = await listTenantRateCardAllRaw(tenantUid);
   const search = (opts?.search || '').trim().toLowerCase();
   const activeOnly = Boolean(opts?.activeOnly);
   const category = (opts?.category || '').trim();
 
   return rawList
-    .filter((item) => (!activeOnly || item.isActive))
-    .filter((item) => (!category || category === 'all' || item.category === category))
+    .filter((item) => !activeOnly || item.isActive)
+    .filter((item) => !category || category === 'all' || item.category === category)
     .filter((item) => {
       if (!search) return true;
       return (
@@ -1353,16 +1530,60 @@ async function listTenantRateCardRaw(
     .sort((a, b) => a.name.localeCompare(b.name));
 }
 
+async function listTenantNotificationsRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<NotificationItem[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'notifications')) {
+    return getTenantEntry(tenantUid).notifications;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:notifications`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/notifications`));
+    const notifications = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeNotification)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          .slice(0, 40)
+      : [];
+    setTenantCollectionData(tenantUid, 'notifications', notifications, true);
+    return notifications;
+  });
+}
+
+async function listTenantActivityLogsRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<ActivityLog[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'activityLogs')) {
+    return getTenantEntry(tenantUid).activityLogs;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:activityLogs`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/activityLogs`));
+    const logs = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeActivityLog)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          .slice(0, 60)
+      : [];
+    setTenantCollectionData(tenantUid, 'activityLogs', logs, true);
+    return logs;
+  });
+}
+
 async function reconcileInvoicePayments(
   tenantUid: string,
   invoiceId: string,
   nowIso: string
 ): Promise<Invoice | null> {
+  const cachedInv = getTenantEntry(tenantUid).invoices.find((i) => i.id === invoiceId);
+  let inv = cachedInv;
   const invRef = ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`);
-  const invSnap = await get(invRef);
-  if (!invSnap.exists()) return null;
+  if (!inv) {
+    const invSnap = await get(invRef);
+    if (!invSnap.exists()) return null;
+    inv = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+  }
 
-  const inv = normalizeInvoice(invSnap.val() as Record<string, unknown>);
   if (inv.status === 'draft' || inv.status === 'cancelled') return inv;
 
   const allPayments = await listTenantPaymentsRaw(tenantUid);
@@ -1391,13 +1612,16 @@ async function reconcileInvoicePayments(
     updatedAt: nowIso,
   });
 
-  return {
+  const updatedInv: Invoice = {
     ...inv,
     amountPaid,
     balanceDue,
     status: nextStatus,
     updatedAt: nowIso,
   };
+  upsertTenantInvoiceCache(tenantUid, updatedInv);
+  await touchTenantMeta(tenantUid, ['invoices']);
+  return updatedInv;
 }
 
 function validateLineItems(items: LineItemInput[]): LineItemInput[] {
@@ -1478,19 +1702,18 @@ function getPreviousPeriodBounds(start: string, end: string): { prevStart: strin
   return { prevStart, prevEnd };
 }
 
-async function computeCustomerAnalyticsForTenant(
-  tenantUid: string,
+export function computeCustomerAnalyticsFromData(
+  allInvoices: Invoice[],
+  allQuotations: Quotation[],
+  allPayments: Payment[],
+  rawCustomers: Customer[],
   params?: { range?: string; startDate?: string; endDate?: string }
-): Promise<CustomerAnalyticsData> {
+): CustomerAnalyticsData {
   const { start, end } = buildDateRangeBounds(params?.range, params?.startDate, params?.endDate);
   const { prevStart, prevEnd } = getPreviousPeriodBounds(start, end);
-
-  const [allInvoices, allQuotations, allPayments, customers] = await Promise.all([
-    listTenantInvoicesRaw(tenantUid),
-    listTenantQuotationsRaw(tenantUid),
-    listTenantPaymentsRaw(tenantUid),
-    listTenantCustomersRaw(tenantUid, { includeArchived: true }),
-  ]);
+  const customers = enrichCustomersWithStats(rawCustomers, allInvoices, allQuotations, {
+    includeArchived: true,
+  });
 
   const nonDraftNonCancelled = allInvoices.filter(
     (i) => i.status !== 'draft' && i.status !== 'cancelled'
@@ -1659,6 +1882,174 @@ async function computeCustomerAnalyticsForTenant(
   };
 }
 
+export function computeOutstandingRowsFromInvoices(
+  invoices: Invoice[],
+  params?: {
+    filter?: 'all' | 'not_due' | 'overdue';
+    customerId?: string;
+    startDate?: string;
+    endDate?: string;
+  }
+): OutstandingReportRow[] {
+  const today = todayISO();
+  const filteredInvoices = invoices.filter((inv) => {
+    if (inv.status === 'draft' || inv.status === 'cancelled') return false;
+    if (params?.customerId && params.customerId !== 'all' && inv.customerId !== params.customerId) {
+      return false;
+    }
+    if (params?.startDate && inv.invoiceDate < params.startDate) return false;
+    if (params?.endDate && inv.invoiceDate > params.endDate) return false;
+    if (params?.filter === 'overdue' && !(inv.dueDate < today && inv.balanceDue > 0)) return false;
+    if (params?.filter === 'not_due' && !(inv.dueDate >= today && inv.balanceDue > 0)) return false;
+    return true;
+  });
+
+  const byCustomer = new Map<
+    string,
+    {
+      customerId: string;
+      customerName: string;
+      companyName: string;
+      email: string;
+      phone: string;
+      invoicedPaise: number;
+      paidPaise: number;
+      outstandingPaise: number;
+      unpaidInvoiceCount: number;
+      overduePaise: number;
+      oldestDueDate: string | null;
+    }
+  >();
+
+  for (const inv of filteredInvoices) {
+    const cur = byCustomer.get(inv.customerId) || {
+      customerId: inv.customerId,
+      customerName: inv.customerSnapshot.name,
+      companyName: inv.customerSnapshot.companyName,
+      email: inv.customerSnapshot.email,
+      phone: inv.customerSnapshot.phone,
+      invoicedPaise: 0,
+      paidPaise: 0,
+      outstandingPaise: 0,
+      unpaidInvoiceCount: 0,
+      overduePaise: 0,
+      oldestDueDate: null,
+    };
+    cur.invoicedPaise += toPaise(inv.grandTotal);
+    cur.paidPaise += toPaise(inv.amountPaid);
+    const balPaise = toPaise(inv.balanceDue);
+    cur.outstandingPaise += balPaise;
+    if (balPaise > 0) {
+      cur.unpaidInvoiceCount += 1;
+      if (inv.dueDate < today) cur.overduePaise += balPaise;
+      if (!cur.oldestDueDate || inv.dueDate < cur.oldestDueDate) {
+        cur.oldestDueDate = inv.dueDate;
+      }
+    }
+    byCustomer.set(inv.customerId, cur);
+  }
+
+  return Array.from(byCustomer.values())
+    .filter((r) => r.outstandingPaise > 0)
+    .sort((a, b) => b.outstandingPaise - a.outstandingPaise)
+    .map((r) => ({
+      customerId: r.customerId,
+      customerName: r.customerName,
+      companyName: r.companyName,
+      email: r.email,
+      phone: r.phone,
+      totalInvoiced: fromPaise(r.invoicedPaise),
+      amountPaid: fromPaise(r.paidPaise),
+      outstandingBalance: fromPaise(r.outstandingPaise),
+      unpaidInvoiceCount: r.unpaidInvoiceCount,
+      overdueAmount: fromPaise(r.overduePaise),
+      oldestDueDate: r.oldestDueDate,
+    }));
+}
+
+async function computeCustomerAnalyticsForTenant(
+  tenantUid: string,
+  params?: { range?: string; startDate?: string; endDate?: string }
+): Promise<CustomerAnalyticsData> {
+  const [allInvoices, allQuotations, allPayments, rawCustomers] = await Promise.all([
+    listTenantInvoicesRaw(tenantUid),
+    listTenantQuotationsRaw(tenantUid),
+    listTenantPaymentsRaw(tenantUid),
+    listTenantCustomersBaseRaw(tenantUid),
+  ]);
+
+  return computeCustomerAnalyticsFromData(
+    allInvoices,
+    allQuotations,
+    allPayments,
+    rawCustomers,
+    params
+  );
+}
+
+const metaListenerRegistry = new Map<string, { refs: number; unsub: () => void }>();
+
+export function ensureTenantMetaListener(tenantUid: string): () => void {
+  const existing = metaListenerRegistry.get(tenantUid);
+  if (existing) {
+    existing.refs += 1;
+    return () => {
+      const cur = metaListenerRegistry.get(tenantUid);
+      if (!cur) return;
+      cur.refs -= 1;
+      if (cur.refs <= 0) {
+        cur.unsub();
+        metaListenerRegistry.delete(tenantUid);
+      }
+    };
+  }
+
+  let initialized = false;
+  const unsub = onValue(
+    ref(rtdb, `tenants/${tenantUid}/_meta`),
+    (snap) => {
+      if (!initialized) {
+        initialized = true;
+        if (!snap.exists()) return;
+      }
+      const meta = (snap.val() as TenantMetaMap | null) || {};
+      const entry = getTenantEntry(tenantUid);
+
+      const checkAndRefresh = async (
+        col: TenantCollection,
+        refresher: (uid: string, force: boolean) => Promise<unknown>
+      ) => {
+        const remoteTs = Number(meta[col] || 0);
+        const localTs = Number(entry.syncedAt[col] || 0);
+        if (remoteTs > localTs && localTs > 0) {
+          invalidateTenantCollection(tenantUid, col);
+          await refresher(tenantUid, true);
+        }
+      };
+
+      void checkAndRefresh('invoices', listTenantInvoicesRaw);
+      void checkAndRefresh('quotations', listTenantQuotationsRaw);
+      void checkAndRefresh('payments', listTenantPaymentsRaw);
+      void checkAndRefresh('customers', listTenantCustomersBaseRaw);
+      void checkAndRefresh('rateCard', listTenantRateCardAllRaw);
+      void checkAndRefresh('notifications', listTenantNotificationsRaw);
+      void checkAndRefresh('activityLogs', listTenantActivityLogsRaw);
+    },
+    () => {}
+  );
+
+  metaListenerRegistry.set(tenantUid, { refs: 1, unsub });
+  return () => {
+    const cur = metaListenerRegistry.get(tenantUid);
+    if (!cur) return;
+    cur.refs -= 1;
+    if (cur.refs <= 0) {
+      cur.unsub();
+      metaListenerRegistry.delete(tenantUid);
+    }
+  };
+}
+
 export function subscribeRtdbPath(path: string, callback: () => void): () => void {
   const r = ref(rtdb, path);
   let initialized = false;
@@ -1675,16 +2066,207 @@ export function subscribeRtdbPath(path: string, callback: () => void): () => voi
   );
 }
 
+async function fetchAdminUsersCached(forceRefresh = false): Promise<UserRecord[]> {
+  if (!forceRefresh && isAdminSliceFresh('users')) {
+    return getAdminCache().users;
+  }
+  return dedupeFetch('admin:users', async () => {
+    const snap = await get(ref(rtdb, 'users'));
+    const users = snap.exists()
+      ? Object.entries(snap.val() as Record<string, Record<string, unknown>>).map(([uid, raw]) =>
+          normalizeUserRecord(uid, raw)
+        )
+      : [];
+    setAdminSliceData('users', users);
+    return users;
+  });
+}
+
+async function fetchAdminTenantsCached(
+  forceRefresh = false
+): Promise<Record<string, { invoices: Invoice[]; quotations: Quotation[]; payments: Payment[] }>> {
+  if (!forceRefresh && isAdminSliceFresh('tenants')) {
+    return getAdminCache().tenants;
+  }
+  return dedupeFetch('admin:tenants', async () => {
+    const snap = await get(ref(rtdb, 'tenants'));
+    const tenantsMap = snap.exists()
+      ? (snap.val() as Record<string, Record<string, unknown>>)
+      : {};
+    const parsed: Record<
+      string,
+      { invoices: Invoice[]; quotations: Quotation[]; payments: Payment[] }
+    > = {};
+    for (const [uid, t] of Object.entries(tenantsMap)) {
+      const invObj = (t.invoices as Record<string, Record<string, unknown>>) || {};
+      const quoObj = (t.quotations as Record<string, Record<string, unknown>>) || {};
+      const payObj = (t.payments as Record<string, Record<string, unknown>>) || {};
+      parsed[uid] = {
+        invoices: Object.values(invObj).map(normalizeInvoice),
+        quotations: Object.values(quoObj).map(normalizeQuotation),
+        payments: Object.values(payObj).map(normalizePayment),
+      };
+    }
+    setAdminSliceData('tenants', parsed);
+    return parsed;
+  });
+}
+
+async function fetchAdminLogsCached(forceRefresh = false): Promise<ActivityLog[]> {
+  if (!forceRefresh && isAdminSliceFresh('activityLogs')) {
+    return getAdminCache().activityLogs;
+  }
+  return dedupeFetch('admin:activityLogs', async () => {
+    const snap = await get(ref(rtdb, 'activityLogs'));
+    const logs = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeActivityLog)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+          .slice(0, 150)
+      : [];
+    setAdminSliceData('activityLogs', logs);
+    return logs;
+  });
+}
+
+export function computeAdminDashboardFromData(
+  users: UserRecord[],
+  tenants: Record<string, { invoices: Invoice[]; quotations: Quotation[]; payments: Payment[] }>,
+  logs: ActivityLog[],
+  params?: { range?: string; startDate?: string; endDate?: string }
+): AdminDashboardData {
+  const { start, end } = buildDateRangeBounds(params?.range, params?.startDate, params?.endDate);
+  const allUsers = users.filter((u) => u.role === 'business');
+  const allInvoices: Invoice[] = [];
+  const allQuotations: Quotation[] = [];
+  const allPayments: Payment[] = [];
+
+  for (const u of allUsers) {
+    const t = tenants[u.uid];
+    if (!t) continue;
+    allInvoices.push(...t.invoices);
+    allQuotations.push(...t.quotations);
+    allPayments.push(...t.payments);
+  }
+
+  const rangedInvoices = allInvoices.filter(
+    (i) =>
+      i.status !== 'draft' &&
+      i.status !== 'cancelled' &&
+      i.invoiceDate >= start &&
+      i.invoiceDate <= end
+  );
+  const rangedQuotations = allQuotations.filter(
+    (q) => q.quotationDate >= start && q.quotationDate <= end
+  );
+  const rangedPayments = allPayments.filter(
+    (p) => p.paymentDate >= start && p.paymentDate <= end
+  );
+
+  const activeAccounts = allUsers.filter((u) => u.status === 'active').length;
+  const inactiveAccounts = allUsers.filter((u) => u.status !== 'active').length;
+  const dronaSubscriptionRevenue = allUsers
+    .filter((u) => u.status === 'active')
+    .reduce((s, u) => s + Number(u.subscriptionAmount || 0), 0);
+
+  const useDaily = params?.range === 'today' || params?.range === 'week';
+  const seriesMap = new Map<
+    string,
+    { invoicedPaise: number; paymentsPaise: number; invoiceCount: number }
+  >();
+
+  for (const inv of rangedInvoices) {
+    const key = useDaily ? inv.invoiceDate : inv.invoiceDate.slice(0, 7);
+    const cur = seriesMap.get(key) || { invoicedPaise: 0, paymentsPaise: 0, invoiceCount: 0 };
+    cur.invoicedPaise += toPaise(inv.grandTotal);
+    cur.invoiceCount += 1;
+    seriesMap.set(key, cur);
+  }
+  for (const pay of rangedPayments) {
+    const key = useDaily ? pay.paymentDate : pay.paymentDate.slice(0, 7);
+    const cur = seriesMap.get(key) || { invoicedPaise: 0, paymentsPaise: 0, invoiceCount: 0 };
+    cur.paymentsPaise += toPaise(pay.amount);
+    seriesMap.set(key, cur);
+  }
+
+  const usageSeries = Array.from(seriesMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, v]) => ({
+      period,
+      label: useDaily ? period.slice(5) : period,
+      invoicedValue: fromPaise(v.invoicedPaise),
+      paymentsRecorded: fromPaise(v.paymentsPaise),
+      dronaRevenue: dronaSubscriptionRevenue,
+      invoiceCount: v.invoiceCount,
+    }));
+
+  const recentBusinesses = [...allUsers]
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    .slice(0, 6)
+    .map((u) => {
+      const t = tenants[u.uid] || { invoices: [], quotations: [], payments: [] };
+      const salesPaise = t.invoices
+        .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
+        .reduce((s, i) => s + toPaise(i.grandTotal), 0);
+      return {
+        ...u,
+        invoiceCount: t.invoices.length,
+        quotationCount: t.quotations.length,
+        totalSales: fromPaise(salesPaise),
+      };
+    });
+
+  return {
+    summary: {
+      totalBusinesses: allUsers.length,
+      activeAccounts,
+      inactiveAccounts,
+      totalInvoicesGenerated: rangedInvoices.length,
+      totalQuotationsGenerated: rangedQuotations.length,
+      platformInvoicedValue: fromPaise(
+        rangedInvoices.reduce((s, i) => s + toPaise(i.grandTotal), 0)
+      ),
+      platformPaymentsRecorded: fromPaise(
+        rangedPayments.reduce((s, p) => s + toPaise(p.amount), 0)
+      ),
+      dronaSubscriptionRevenue,
+    },
+    usageSeries,
+    recentBusinesses,
+    recentActivity: logs.slice(0, 15),
+  };
+}
+
+export const cachedRead = {
+  getTenantEntry,
+  hasTenantCollectionData,
+  setTenantProfileCache,
+  subscribeTenantCache,
+  subscribeAdminCache,
+  getAdminCache,
+  getCachedSession,
+  getCachedPublicSettings,
+  enrichCustomersWithStats,
+  computeCustomerAnalyticsFromData,
+  computeOutstandingRowsFromInvoices,
+  computeAdminDashboardFromData,
+  ensureTenantMetaListener,
+};
+
 export const rtdbService = {
   getPublicSettings: async () => {
+    const cached = getCachedPublicSettings();
+    if (cached) return cached;
     try {
       const s = await ensurePlatformSettings();
-      return {
+      const pub = {
         platformName: s.platformName,
         allowSelfRegistration: s.allowSelfRegistration,
         maintenanceMode: s.maintenanceMode,
         supportEmail: s.supportEmail,
       };
+      setCachedPublicSettings(pub);
+      return pub;
     } catch {
       const d = defaultPlatformSettings();
       return {
@@ -1821,7 +2403,7 @@ export const rtdbService = {
       }
 
       setStoredImpersonationId(null);
-      const ctx = await resolveCurrentAuthContext();
+      const ctx = await resolveCurrentAuthContext(true);
       await logActivity({
         actor: ctx.actorUser,
         targetTenantUid: ctx.actorUser.role === 'business' ? ctx.actorUser.uid : null,
@@ -1906,7 +2488,7 @@ export const rtdbService = {
       await set(ref(rtdb, `businessProfiles/${uid}`), stripUndefined(profileRec));
 
       setStoredImpersonationId(null);
-      const ctx = await resolveCurrentAuthContext();
+      const ctx = await resolveCurrentAuthContext(true);
       await logActivity({
         actor: ctx.actorUser,
         targetTenantUid: uid,
@@ -1923,11 +2505,13 @@ export const rtdbService = {
 
   logout: async () => {
     setStoredImpersonationId(null);
+    updateRuntimeSessionCache(null);
+    clearAllRuntimeSessionCaches();
     await signOut(firebaseAuth);
   },
 
-  me: async (): Promise<{ session: AuthSessionState }> => {
-    const session = await resolveCurrentAuthContext();
+  me: async (forceRefresh = false): Promise<{ session: AuthSessionState }> => {
+    const session = await resolveCurrentAuthContext(forceRefresh);
     return { session };
   },
 
@@ -1969,16 +2553,18 @@ export const rtdbService = {
   // ==================== BUSINESS PROFILE ====================
   getBusinessProfile: async (): Promise<{ profile: BusinessProfile }> => {
     const ctx = await requireTenantContext();
-    const snap = await get(ref(rtdb, `businessProfiles/${ctx.effectiveUser.uid}`));
+    const tenantUid = ctx.effectiveUser.uid;
+    const cachedProf = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (cachedProf && isTenantCollectionFresh(tenantUid, 'profile')) {
+      return { profile: cachedProf };
+    }
+    const snap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
     if (!snap.exists()) {
       throw new Error('Business profile not found');
     }
-    return {
-      profile: normalizeBusinessProfile(
-        ctx.effectiveUser.uid,
-        snap.val() as Record<string, unknown>
-      ),
-    };
+    const prof = normalizeBusinessProfile(tenantUid, snap.val() as Record<string, unknown>);
+    setTenantProfileCache(tenantUid, prof, true);
+    return { profile: prof };
   },
 
   updateBusinessProfile: async (
@@ -1986,10 +2572,13 @@ export const rtdbService = {
   ): Promise<{ profile: BusinessProfile }> => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const snap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
-    const existing = snap.exists()
-      ? normalizeBusinessProfile(tenantUid, snap.val() as Record<string, unknown>)
-      : normalizeBusinessProfile(tenantUid, {});
+    let existing = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!existing) {
+      const snap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      existing = snap.exists()
+        ? normalizeBusinessProfile(tenantUid, snap.val() as Record<string, unknown>)
+        : normalizeBusinessProfile(tenantUid, {});
+    }
 
     const gstin = sanitizeStr(input.gstin ?? existing.gstin, 20).toUpperCase();
     const pan = sanitizeStr(input.pan ?? existing.pan, 12).toUpperCase();
@@ -2057,6 +2646,20 @@ export const rtdbService = {
       gstin: updated.gstin,
       updatedAt: now,
     });
+    setTenantProfileCache(tenantUid, updated, true);
+    updateRuntimeSessionCache({
+      ...ctx,
+      businessProfile: updated,
+      effectiveUser: {
+        ...ctx.effectiveUser,
+        businessName: updated.businessName,
+        ownerName: updated.ownerName,
+        phone: updated.phone,
+        gstin: updated.gstin,
+        updatedAt: now,
+      },
+    });
+    await touchTenantMeta(tenantUid, ['profile']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -2081,15 +2684,14 @@ export const rtdbService = {
   getCustomer: async (customerId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const allCustomers = await listTenantCustomersRaw(tenantUid, { includeArchived: true });
-    const customer = allCustomers.find((c) => c.id === customerId);
-    if (!customer) throw new Error('Customer not found');
-
-    const [allInvoices, allQuotations, allPayments] = await Promise.all([
+    const [allCustomers, allInvoices, allQuotations, allPayments] = await Promise.all([
+      listTenantCustomersRaw(tenantUid, { includeArchived: true }),
       listTenantInvoicesRaw(tenantUid),
       listTenantQuotationsRaw(tenantUid),
       listTenantPaymentsRaw(tenantUid),
     ]);
+    const customer = allCustomers.find((c) => c.id === customerId);
+    if (!customer) throw new Error('Customer not found');
 
     return {
       customer,
@@ -2127,6 +2729,9 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/customers/${id}`), stripUndefined(customer));
+    upsertTenantCustomerCache(tenantUid, customer);
+    await touchTenantMeta(tenantUid, ['customers']);
+
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
@@ -2153,9 +2758,12 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const custRef = ref(rtdb, `tenants/${tenantUid}/customers/${customerId}`);
-    const snap = await get(custRef);
-    if (!snap.exists()) throw new Error('Customer not found');
-    const existing = normalizeCustomer(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).customers.find((c) => c.id === customerId);
+    if (!existing) {
+      const snap = await get(custRef);
+      if (!snap.exists()) throw new Error('Customer not found');
+      existing = normalizeCustomer(snap.val() as Record<string, unknown>);
+    }
 
     const name = sanitizeStr(input.name ?? existing.name, 140);
     if (!name) throw new Error('Customer name is required');
@@ -2178,6 +2786,9 @@ export const rtdbService = {
     };
 
     await set(custRef, stripUndefined(updated));
+    upsertTenantCustomerCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['customers']);
+
     const isUnarchiving = existing.archived && !updated.archived;
     await logActivity({
       actor: ctx.actorUser,
@@ -2199,9 +2810,12 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const custRef = ref(rtdb, `tenants/${tenantUid}/customers/${customerId}`);
-    const snap = await get(custRef);
-    if (!snap.exists()) throw new Error('Customer not found');
-    const existing = normalizeCustomer(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).customers.find((c) => c.id === customerId);
+    if (!existing) {
+      const snap = await get(custRef);
+      if (!snap.exists()) throw new Error('Customer not found');
+      existing = normalizeCustomer(snap.val() as Record<string, unknown>);
+    }
 
     const [invoices, quotations] = await Promise.all([
       listTenantInvoicesRaw(tenantUid),
@@ -2212,7 +2826,10 @@ export const rtdbService = {
       quotations.some((q) => q.customerId === customerId);
 
     if (hasDocs) {
-      await update(custRef, { archived: true, updatedAt: new Date().toISOString() });
+      const now = new Date().toISOString();
+      await update(custRef, { archived: true, updatedAt: now });
+      upsertTenantCustomerCache(tenantUid, { ...existing, archived: true, updatedAt: now });
+      await touchTenantMeta(tenantUid, ['customers']);
       await logActivity({
         actor: ctx.actorUser,
         targetTenantUid: tenantUid,
@@ -2224,6 +2841,8 @@ export const rtdbService = {
       });
     } else {
       await remove(custRef);
+      removeTenantCustomerCache(tenantUid, customerId);
+      await touchTenantMeta(tenantUid, ['customers']);
       await logActivity({
         actor: ctx.actorUser,
         targetTenantUid: tenantUid,
@@ -2277,22 +2896,18 @@ export const rtdbService = {
   getInvoice: async (invoiceId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    await syncOverdueInvoices(tenantUid);
-    const snap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`));
-    if (!snap.exists()) throw new Error('Invoice not found');
-    const invoice = normalizeInvoice(snap.val() as Record<string, unknown>);
-
-    const [payments, logsSnap] = await Promise.all([
+    const [invoices, payments, allLogs] = await Promise.all([
+      listTenantInvoicesRaw(tenantUid),
       listTenantPaymentsRaw(tenantUid),
-      get(ref(rtdb, `tenants/${tenantUid}/activityLogs`)),
+      listTenantActivityLogsRaw(tenantUid),
     ]);
+    const invoice = invoices.find((i) => i.id === invoiceId);
+    if (!invoice) throw new Error('Invoice not found');
 
-    invoice.payments = payments.filter((p) => p.invoiceId === invoiceId);
-    const allLogs = logsSnap.exists()
-      ? Object.values(logsSnap.val() as Record<string, Record<string, unknown>>).map(
-          normalizeActivityLog
-        )
-      : [];
+    const invoiceCopy: Invoice = {
+      ...invoice,
+      payments: payments.filter((p) => p.invoiceId === invoiceId),
+    };
     const auditLogs = allLogs
       .filter((l) => l.entityType === 'invoice' && l.entityId === invoiceId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -2305,7 +2920,7 @@ export const rtdbService = {
         impersonationSessionId: l.impersonationSessionId,
       }));
 
-    return { invoice, auditLogs };
+    return { invoice: invoiceCopy, auditLogs };
   },
 
   saveInvoice: async (input: SaveDocumentPayload, existingInvoiceId?: string) => {
@@ -2313,15 +2928,20 @@ export const rtdbService = {
     const tenantUid = ctx.effectiveUser.uid;
     const cleanItems = validateLineItems(input.items);
 
-    const [profSnap, custSnap] = await Promise.all([
-      get(ref(rtdb, `businessProfiles/${tenantUid}`)),
-      get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`)),
-    ]);
-    if (!profSnap.exists()) throw new Error('Business profile not configured');
-    if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
+    let profile = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!profile) {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      if (!profSnap.exists()) throw new Error('Business profile not configured');
+      profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
+      setTenantProfileCache(tenantUid, profile, true);
+    }
 
-    const profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
-    const customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+    let customer = getTenantEntry(tenantUid).customers.find((c) => c.id === input.customerId);
+    if (!customer) {
+      const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`));
+      if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
+      customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+    }
 
     const resolvedLogo = resolveDocumentLogo(profile.logoDataUrl, input.logoDataUrl);
     const resolvedUpiId =
@@ -2391,12 +3011,16 @@ export const rtdbService = {
         logoDataUrl: businessSnapshot.logoDataUrl,
         updatedAt: now,
       });
+      profile = { ...profile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
+      setTenantProfileCache(tenantUid, profile, true);
     }
     if (input.saveUpiToProfile && input.upiId !== undefined) {
       await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
         upiId: businessSnapshot.upiId,
         updatedAt: now,
       });
+      profile = { ...profile, upiId: businessSnapshot.upiId, updatedAt: now };
+      setTenantProfileCache(tenantUid, profile, true);
     }
 
     let targetId = existingInvoiceId || generateId('inv');
@@ -2410,9 +3034,12 @@ export const rtdbService = {
     let wasAlreadyFinalized = false;
 
     if (existingInvoiceId) {
-      const exSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${existingInvoiceId}`));
-      if (!exSnap.exists()) throw new Error('Invoice not found');
-      const existing = normalizeInvoice(exSnap.val() as Record<string, unknown>);
+      let existing = getTenantEntry(tenantUid).invoices.find((i) => i.id === existingInvoiceId);
+      if (!existing) {
+        const exSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${existingInvoiceId}`));
+        if (!exSnap.exists()) throw new Error('Invoice not found');
+        existing = normalizeInvoice(exSnap.val() as Record<string, unknown>);
+      }
       if (existing.status === 'cancelled') {
         throw new Error('Cancelled invoices cannot be edited.');
       }
@@ -2509,6 +3136,8 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/invoices/${targetId}`), stripUndefined(savedInvoice));
+    upsertTenantInvoiceCache(tenantUid, savedInvoice);
+    await touchTenantMeta(tenantUid, ['invoices']);
 
     if (!isDraft && !wasAlreadyFinalized) {
       await createNotification({
@@ -2551,15 +3180,18 @@ export const rtdbService = {
   finalizeInvoice: async (invoiceId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const [profSnap, invSnap] = await Promise.all([
-      get(ref(rtdb, `businessProfiles/${tenantUid}`)),
-      get(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`)),
-    ]);
-    if (!profSnap.exists()) throw new Error('Business profile not configured');
-    if (!invSnap.exists()) throw new Error('Invoice not found');
-
-    const profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
-    const existing = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    let profile = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!profile) {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      if (!profSnap.exists()) throw new Error('Business profile not configured');
+      profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
+    }
+    let existing = getTenantEntry(tenantUid).invoices.find((i) => i.id === invoiceId);
+    if (!existing) {
+      const invSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`));
+      if (!invSnap.exists()) throw new Error('Invoice not found');
+      existing = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    }
     if (existing.status !== 'draft') throw new Error('Only draft invoices can be finalized');
 
     const officialNumber = await allocateDocumentNumber(
@@ -2579,6 +3211,8 @@ export const rtdbService = {
       updatedAt: now,
     };
     await set(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`), stripUndefined(updated));
+    upsertTenantInvoiceCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['invoices']);
 
     await createNotification({
       userUid: tenantUid,
@@ -2607,9 +3241,12 @@ export const rtdbService = {
   cancelInvoice: async (invoiceId: string, reason: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const invSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`));
-    if (!invSnap.exists()) throw new Error('Invoice not found');
-    const existing = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).invoices.find((i) => i.id === invoiceId);
+    if (!existing) {
+      const invSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`));
+      if (!invSnap.exists()) throw new Error('Invoice not found');
+      existing = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    }
     if (existing.status === 'cancelled') throw new Error('Invoice is already cancelled');
     if (existing.amountPaid > 0) {
       throw new Error('Cannot cancel an invoice that has recorded payments');
@@ -2626,6 +3263,8 @@ export const rtdbService = {
       updatedAt: now,
     };
     await set(ref(rtdb, `tenants/${tenantUid}/invoices/${invoiceId}`), stripUndefined(updated));
+    upsertTenantInvoiceCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['invoices']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -2679,10 +3318,10 @@ export const rtdbService = {
   getQuotation: async (quotationId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    await syncExpiredQuotations(tenantUid);
-    const snap = await get(ref(rtdb, `tenants/${tenantUid}/quotations/${quotationId}`));
-    if (!snap.exists()) throw new Error('Quotation not found');
-    return { quotation: normalizeQuotation(snap.val() as Record<string, unknown>) };
+    const quotations = await listTenantQuotationsRaw(tenantUid);
+    const quotation = quotations.find((q) => q.id === quotationId);
+    if (!quotation) throw new Error('Quotation not found');
+    return { quotation };
   },
 
   saveQuotation: async (input: SaveDocumentPayload, existingQuotationId?: string) => {
@@ -2690,15 +3329,20 @@ export const rtdbService = {
     const tenantUid = ctx.effectiveUser.uid;
     const cleanItems = validateLineItems(input.items);
 
-    const [profSnap, custSnap] = await Promise.all([
-      get(ref(rtdb, `businessProfiles/${tenantUid}`)),
-      get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`)),
-    ]);
-    if (!profSnap.exists()) throw new Error('Business profile not configured');
-    if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
+    let profile = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!profile) {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      if (!profSnap.exists()) throw new Error('Business profile not configured');
+      profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
+      setTenantProfileCache(tenantUid, profile, true);
+    }
 
-    const profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
-    const customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+    let customer = getTenantEntry(tenantUid).customers.find((c) => c.id === input.customerId);
+    if (!customer) {
+      const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`));
+      if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
+      customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+    }
 
     const resolvedLogo = resolveDocumentLogo(profile.logoDataUrl, input.logoDataUrl);
     const resolvedUpiId =
@@ -2766,12 +3410,16 @@ export const rtdbService = {
         logoDataUrl: businessSnapshot.logoDataUrl,
         updatedAt: now,
       });
+      profile = { ...profile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
+      setTenantProfileCache(tenantUid, profile, true);
     }
     if (input.saveUpiToProfile && input.upiId !== undefined) {
       await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
         upiId: businessSnapshot.upiId,
         updatedAt: now,
       });
+      profile = { ...profile, upiId: businessSnapshot.upiId, updatedAt: now };
+      setTenantProfileCache(tenantUid, profile, true);
     }
 
     const targetId = existingQuotationId || generateId('quo');
@@ -2780,9 +3428,12 @@ export const rtdbService = {
     let createdAt = now;
 
     if (existingQuotationId) {
-      const exSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations/${existingQuotationId}`));
-      if (!exSnap.exists()) throw new Error('Quotation not found');
-      const existing = normalizeQuotation(exSnap.val() as Record<string, unknown>);
+      let existing = getTenantEntry(tenantUid).quotations.find((q) => q.id === existingQuotationId);
+      if (!existing) {
+        const exSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations/${existingQuotationId}`));
+        if (!exSnap.exists()) throw new Error('Quotation not found');
+        existing = normalizeQuotation(exSnap.val() as Record<string, unknown>);
+      }
       if (existing.status !== 'draft') throw new Error('Only draft quotations can be edited');
       createdAt = existing.createdAt;
       quotationNumber = isDraft
@@ -2843,6 +3494,8 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/quotations/${targetId}`), stripUndefined(saved));
+    upsertTenantQuotationCache(tenantUid, saved);
+    await touchTenantMeta(tenantUid, ['quotations']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -2867,14 +3520,19 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const quoRef = ref(rtdb, `tenants/${tenantUid}/quotations/${quotationId}`);
-    const snap = await get(quoRef);
-    if (!snap.exists()) throw new Error('Quotation not found');
-    const q = normalizeQuotation(snap.val() as Record<string, unknown>);
+    let q = getTenantEntry(tenantUid).quotations.find((item) => item.id === quotationId);
+    if (!q) {
+      const snap = await get(quoRef);
+      if (!snap.exists()) throw new Error('Quotation not found');
+      q = normalizeQuotation(snap.val() as Record<string, unknown>);
+    }
     if (q.status === 'converted') throw new Error('Converted quotations cannot change status');
 
     const now = new Date().toISOString();
     const updated: Quotation = { ...q, status, updatedAt: now };
     await set(quoRef, stripUndefined(updated));
+    upsertTenantQuotationCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['quotations']);
 
     if (status === 'accepted') {
       await createNotification({
@@ -2903,15 +3561,18 @@ export const rtdbService = {
   convertQuotationToInvoice: async (quotationId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const [profSnap, quoSnap] = await Promise.all([
-      get(ref(rtdb, `businessProfiles/${tenantUid}`)),
-      get(ref(rtdb, `tenants/${tenantUid}/quotations/${quotationId}`)),
-    ]);
-    if (!profSnap.exists()) throw new Error('Business profile not configured');
-    if (!quoSnap.exists()) throw new Error('Quotation not found');
-
-    const profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
-    const quo = normalizeQuotation(quoSnap.val() as Record<string, unknown>);
+    let profile = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!profile) {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      if (!profSnap.exists()) throw new Error('Business profile not configured');
+      profile = normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>);
+    }
+    let quo = getTenantEntry(tenantUid).quotations.find((q) => q.id === quotationId);
+    if (!quo) {
+      const quoSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations/${quotationId}`));
+      if (!quoSnap.exists()) throw new Error('Quotation not found');
+      quo = normalizeQuotation(quoSnap.val() as Record<string, unknown>);
+    }
 
     if (quo.status === 'converted' || quo.convertedInvoiceId) {
       throw new Error('This quotation has already been converted into an invoice');
@@ -2979,6 +3640,14 @@ export const rtdbService = {
       convertedInvoiceId: newInvId,
       updatedAt: now,
     });
+    upsertTenantInvoiceCache(tenantUid, invoice);
+    upsertTenantQuotationCache(tenantUid, {
+      ...quo,
+      status: 'converted',
+      convertedInvoiceId: newInvId,
+      updatedAt: now,
+    });
+    await touchTenantMeta(tenantUid, ['invoices', 'quotations']);
 
     await createNotification({
       userUid: tenantUid,
@@ -3052,10 +3721,13 @@ export const rtdbService = {
       throw new Error('Payment amount must be greater than zero');
     }
 
+    let inv = getTenantEntry(tenantUid).invoices.find((i) => i.id === input.invoiceId);
     const invRef = ref(rtdb, `tenants/${tenantUid}/invoices/${input.invoiceId}`);
-    const invSnap = await get(invRef);
-    if (!invSnap.exists()) throw new Error('Invoice not found');
-    const inv = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    if (!inv) {
+      const invSnap = await get(invRef);
+      if (!invSnap.exists()) throw new Error('Invoice not found');
+      inv = normalizeInvoice(invSnap.val() as Record<string, unknown>);
+    }
 
     if (inv.status === 'draft') throw new Error('Cannot record payment on a draft invoice');
     if (inv.status === 'cancelled') throw new Error('Cannot record payment on a cancelled invoice');
@@ -3090,6 +3762,8 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/payments/${payId}`), stripUndefined(payment));
+    upsertTenantPaymentCache(tenantUid, payment);
+    await touchTenantMeta(tenantUid, ['payments']);
     await reconcileInvoicePayments(tenantUid, inv.id, now);
 
     await createNotification({
@@ -3127,9 +3801,12 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const payRef = ref(rtdb, `tenants/${tenantUid}/payments/${paymentId}`);
-    const snap = await get(payRef);
-    if (!snap.exists()) throw new Error('Payment record not found');
-    const existing = normalizePayment(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).payments.find((p) => p.id === paymentId);
+    if (!existing) {
+      const snap = await get(payRef);
+      if (!snap.exists()) throw new Error('Payment record not found');
+      existing = normalizePayment(snap.val() as Record<string, unknown>);
+    }
 
     const nextAmount = input.amount !== undefined ? Number(input.amount) : existing.amount;
     const amountPaise = toPaise(nextAmount);
@@ -3160,6 +3837,8 @@ export const rtdbService = {
     };
 
     await set(payRef, stripUndefined(updated));
+    upsertTenantPaymentCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['payments']);
     await reconcileInvoicePayments(tenantUid, existing.invoiceId, now);
 
     await logActivity({
@@ -3179,12 +3858,17 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const payRef = ref(rtdb, `tenants/${tenantUid}/payments/${paymentId}`);
-    const snap = await get(payRef);
-    if (!snap.exists()) throw new Error('Payment record not found');
-    const existing = normalizePayment(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).payments.find((p) => p.id === paymentId);
+    if (!existing) {
+      const snap = await get(payRef);
+      if (!snap.exists()) throw new Error('Payment record not found');
+      existing = normalizePayment(snap.val() as Record<string, unknown>);
+    }
 
     const now = new Date().toISOString();
     await remove(payRef);
+    removeTenantPaymentCache(tenantUid, paymentId);
+    await touchTenantMeta(tenantUid, ['payments']);
     await reconcileInvoicePayments(tenantUid, existing.invoiceId, now);
 
     await logActivity({
@@ -3237,6 +3921,8 @@ export const rtdbService = {
     };
 
     await set(ref(rtdb, `tenants/${tenantUid}/rateCard/${id}`), stripUndefined(item));
+    upsertTenantRateCardCache(tenantUid, item);
+    await touchTenantMeta(tenantUid, ['rateCard']);
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
@@ -3254,9 +3940,12 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const itemRef = ref(rtdb, `tenants/${tenantUid}/rateCard/${itemId}`);
-    const snap = await get(itemRef);
-    if (!snap.exists()) throw new Error('Rate card item not found');
-    const existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).rateCard.find((r) => r.id === itemId);
+    if (!existing) {
+      const snap = await get(itemRef);
+      if (!snap.exists()) throw new Error('Rate card item not found');
+      existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+    }
 
     const name = sanitizeStr(input.name ?? existing.name, 160);
     if (!name) throw new Error('Item name is required');
@@ -3286,6 +3975,8 @@ export const rtdbService = {
     };
 
     await set(itemRef, stripUndefined(updated));
+    upsertTenantRateCardCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['rateCard']);
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
@@ -3303,11 +3994,16 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const itemRef = ref(rtdb, `tenants/${tenantUid}/rateCard/${itemId}`);
-    const snap = await get(itemRef);
-    if (!snap.exists()) throw new Error('Rate card item not found');
-    const existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+    let existing = getTenantEntry(tenantUid).rateCard.find((r) => r.id === itemId);
+    if (!existing) {
+      const snap = await get(itemRef);
+      if (!snap.exists()) throw new Error('Rate card item not found');
+      existing = normalizeRateCardItem(snap.val() as Record<string, unknown>);
+    }
 
     await remove(itemRef);
+    removeTenantRateCardCache(tenantUid, itemId);
+    await touchTenantMeta(tenantUid, ['rateCard']);
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
@@ -3338,119 +4034,44 @@ export const rtdbService = {
     endDate?: string;
   }): Promise<{ rows: OutstandingReportRow[] }> => {
     const ctx = await requireTenantContext();
-    const tenantUid = ctx.effectiveUser.uid;
-    const invoices = await listTenantInvoicesRaw(tenantUid);
-    const today = todayISO();
-
-    const filteredInvoices = invoices.filter((inv) => {
-      if (inv.status === 'draft' || inv.status === 'cancelled') return false;
-      if (params?.customerId && params.customerId !== 'all' && inv.customerId !== params.customerId) {
-        return false;
-      }
-      if (params?.startDate && inv.invoiceDate < params.startDate) return false;
-      if (params?.endDate && inv.invoiceDate > params.endDate) return false;
-      if (params?.filter === 'overdue' && !(inv.dueDate < today && inv.balanceDue > 0)) return false;
-      if (params?.filter === 'not_due' && !(inv.dueDate >= today && inv.balanceDue > 0)) return false;
-      return true;
-    });
-
-    const byCustomer = new Map<
-      string,
-      {
-        customerId: string;
-        customerName: string;
-        companyName: string;
-        email: string;
-        phone: string;
-        invoicedPaise: number;
-        paidPaise: number;
-        outstandingPaise: number;
-        unpaidInvoiceCount: number;
-        overduePaise: number;
-        oldestDueDate: string | null;
-      }
-    >();
-
-    for (const inv of filteredInvoices) {
-      const cur = byCustomer.get(inv.customerId) || {
-        customerId: inv.customerId,
-        customerName: inv.customerSnapshot.name,
-        companyName: inv.customerSnapshot.companyName,
-        email: inv.customerSnapshot.email,
-        phone: inv.customerSnapshot.phone,
-        invoicedPaise: 0,
-        paidPaise: 0,
-        outstandingPaise: 0,
-        unpaidInvoiceCount: 0,
-        overduePaise: 0,
-        oldestDueDate: null,
-      };
-      cur.invoicedPaise += toPaise(inv.grandTotal);
-      cur.paidPaise += toPaise(inv.amountPaid);
-      const balPaise = toPaise(inv.balanceDue);
-      cur.outstandingPaise += balPaise;
-      if (balPaise > 0) {
-        cur.unpaidInvoiceCount += 1;
-        if (inv.dueDate < today) cur.overduePaise += balPaise;
-        if (!cur.oldestDueDate || inv.dueDate < cur.oldestDueDate) {
-          cur.oldestDueDate = inv.dueDate;
-        }
-      }
-      byCustomer.set(inv.customerId, cur);
-    }
-
-    const rows: OutstandingReportRow[] = Array.from(byCustomer.values())
-      .filter((r) => r.outstandingPaise > 0)
-      .sort((a, b) => b.outstandingPaise - a.outstandingPaise)
-      .map((r) => ({
-        customerId: r.customerId,
-        customerName: r.customerName,
-        companyName: r.companyName,
-        email: r.email,
-        phone: r.phone,
-        totalInvoiced: fromPaise(r.invoicedPaise),
-        amountPaid: fromPaise(r.paidPaise),
-        outstandingBalance: fromPaise(r.outstandingPaise),
-        unpaidInvoiceCount: r.unpaidInvoiceCount,
-        overdueAmount: fromPaise(r.overduePaise),
-        oldestDueDate: r.oldestDueDate,
-      }));
-
-    return { rows };
+    const invoices = await listTenantInvoicesRaw(ctx.effectiveUser.uid);
+    return { rows: computeOutstandingRowsFromInvoices(invoices, params) };
   },
 
   // ==================== NOTIFICATIONS ====================
   listNotifications: async () => {
     const ctx = await requireTenantContext();
-    const snap = await get(ref(rtdb, `tenants/${ctx.effectiveUser.uid}/notifications`));
-    if (!snap.exists()) return { notifications: [] };
-    const notifications = Object.values(
-      snap.val() as Record<string, Record<string, unknown>>
-    )
-      .map(normalizeNotification)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 40);
+    const notifications = await listTenantNotificationsRaw(ctx.effectiveUser.uid);
     return { notifications };
   },
 
   markNotificationRead: async (id: string) => {
     const ctx = await requireTenantContext();
-    await update(ref(rtdb, `tenants/${ctx.effectiveUser.uid}/notifications/${id}`), {
+    const tenantUid = ctx.effectiveUser.uid;
+    await update(ref(rtdb, `tenants/${tenantUid}/notifications/${id}`), {
       isRead: true,
     });
+    markNotificationReadCache(tenantUid, id);
+    await touchTenantMeta(tenantUid, ['notifications']);
     return { ok: true };
   },
 
   markAllNotificationsRead: async () => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const snap = await get(ref(rtdb, `tenants/${tenantUid}/notifications`));
-    if (!snap.exists()) return { ok: true };
+    const current = await listTenantNotificationsRaw(tenantUid);
+    if (current.length === 0) return { ok: true };
     const updates: Record<string, unknown> = {};
-    for (const id of Object.keys(snap.val() as Record<string, unknown>)) {
-      updates[`tenants/${tenantUid}/notifications/${id}/isRead`] = true;
+    for (const n of current) {
+      if (!n.isRead) {
+        updates[`tenants/${tenantUid}/notifications/${n.id}/isRead`] = true;
+      }
     }
-    await update(ref(rtdb), updates);
+    if (Object.keys(updates).length > 0) {
+      await update(ref(rtdb), updates);
+    }
+    markNotificationReadCache(tenantUid);
+    await touchTenantMeta(tenantUid, ['notifications']);
     return { ok: true };
   },
 
@@ -3461,189 +4082,52 @@ export const rtdbService = {
     endDate?: string;
   }): Promise<AdminDashboardData> => {
     await requireSuperAdminContext();
-    const { start, end } = buildDateRangeBounds(params?.range, params?.startDate, params?.endDate);
-
-    const [usersSnap, tenantsSnap, logsSnap] = await Promise.all([
-      get(ref(rtdb, 'users')),
-      get(ref(rtdb, 'tenants')),
-      get(ref(rtdb, 'activityLogs')),
+    const [users, tenants, logs] = await Promise.all([
+      fetchAdminUsersCached(),
+      fetchAdminTenantsCached(),
+      fetchAdminLogsCached(),
     ]);
-
-    const allUsers = usersSnap.exists()
-      ? Object.entries(usersSnap.val() as Record<string, Record<string, unknown>>)
-          .map(([uid, raw]) => normalizeUserRecord(uid, raw))
-          .filter((u) => u.role === 'business')
-      : [];
-
-    const tenantsMap = tenantsSnap.exists()
-      ? (tenantsSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
-
-    const allInvoices: Invoice[] = [];
-    const allQuotations: Quotation[] = [];
-    const allPayments: Payment[] = [];
-
-    for (const u of allUsers) {
-      const t = tenantsMap[u.uid] || {};
-      const invObj = (t.invoices as Record<string, Record<string, unknown>>) || {};
-      const quoObj = (t.quotations as Record<string, Record<string, unknown>>) || {};
-      const payObj = (t.payments as Record<string, Record<string, unknown>>) || {};
-      for (const r of Object.values(invObj)) allInvoices.push(normalizeInvoice(r));
-      for (const r of Object.values(quoObj)) allQuotations.push(normalizeQuotation(r));
-      for (const r of Object.values(payObj)) allPayments.push(normalizePayment(r));
-    }
-
-    const rangedInvoices = allInvoices.filter(
-      (i) =>
-        i.status !== 'draft' &&
-        i.status !== 'cancelled' &&
-        i.invoiceDate >= start &&
-        i.invoiceDate <= end
-    );
-    const rangedQuotations = allQuotations.filter(
-      (q) => q.quotationDate >= start && q.quotationDate <= end
-    );
-    const rangedPayments = allPayments.filter(
-      (p) => p.paymentDate >= start && p.paymentDate <= end
-    );
-
-    const activeAccounts = allUsers.filter((u) => u.status === 'active').length;
-    const inactiveAccounts = allUsers.filter((u) => u.status !== 'active').length;
-    const dronaSubscriptionRevenue = allUsers
-      .filter((u) => u.status === 'active')
-      .reduce((s, u) => s + Number(u.subscriptionAmount || 0), 0);
-
-    const useDaily = params?.range === 'today' || params?.range === 'week';
-    const seriesMap = new Map<
-      string,
-      { invoicedPaise: number; paymentsPaise: number; invoiceCount: number }
-    >();
-
-    for (const inv of rangedInvoices) {
-      const key = useDaily ? inv.invoiceDate : inv.invoiceDate.slice(0, 7);
-      const cur = seriesMap.get(key) || { invoicedPaise: 0, paymentsPaise: 0, invoiceCount: 0 };
-      cur.invoicedPaise += toPaise(inv.grandTotal);
-      cur.invoiceCount += 1;
-      seriesMap.set(key, cur);
-    }
-    for (const pay of rangedPayments) {
-      const key = useDaily ? pay.paymentDate : pay.paymentDate.slice(0, 7);
-      const cur = seriesMap.get(key) || { invoicedPaise: 0, paymentsPaise: 0, invoiceCount: 0 };
-      cur.paymentsPaise += toPaise(pay.amount);
-      seriesMap.set(key, cur);
-    }
-
-    const usageSeries = Array.from(seriesMap.entries())
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([period, v]) => ({
-        period,
-        label: useDaily ? period.slice(5) : period,
-        invoicedValue: fromPaise(v.invoicedPaise),
-        paymentsRecorded: fromPaise(v.paymentsPaise),
-        dronaRevenue: dronaSubscriptionRevenue,
-        invoiceCount: v.invoiceCount,
-      }));
-
-    const recentBusinesses = [...allUsers]
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, 6)
-      .map((u) => {
-        const t = tenantsMap[u.uid] || {};
-        const invList = Object.values(
-          (t.invoices as Record<string, Record<string, unknown>>) || {}
-        ).map(normalizeInvoice);
-        const quoCount = Object.keys((t.quotations as Record<string, unknown>) || {}).length;
-        const salesPaise = invList
-          .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
-          .reduce((s, i) => s + toPaise(i.grandTotal), 0);
-        return {
-          ...u,
-          invoiceCount: invList.length,
-          quotationCount: quoCount,
-          totalSales: fromPaise(salesPaise),
-        };
-      });
-
-    const recentActivity = logsSnap.exists()
-      ? Object.values(logsSnap.val() as Record<string, Record<string, unknown>>)
-          .map(normalizeActivityLog)
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-          .slice(0, 15)
-      : [];
-
-    return {
-      summary: {
-        totalBusinesses: allUsers.length,
-        activeAccounts,
-        inactiveAccounts,
-        totalInvoicesGenerated: rangedInvoices.length,
-        totalQuotationsGenerated: rangedQuotations.length,
-        platformInvoicedValue: fromPaise(
-          rangedInvoices.reduce((s, i) => s + toPaise(i.grandTotal), 0)
-        ),
-        platformPaymentsRecorded: fromPaise(
-          rangedPayments.reduce((s, p) => s + toPaise(p.amount), 0)
-        ),
-        dronaSubscriptionRevenue,
-      },
-      usageSeries,
-      recentBusinesses,
-      recentActivity,
-    };
+    return computeAdminDashboardFromData(users, tenants, logs, params);
   },
 
   adminListUsers: async (params?: { search?: string; status?: string }): Promise<{
     users: AdminUserRow[];
   }> => {
     await requireSuperAdminContext();
-    const [usersSnap, tenantsSnap] = await Promise.all([
-      get(ref(rtdb, 'users')),
-      get(ref(rtdb, 'tenants')),
+    const [users, tenants] = await Promise.all([
+      fetchAdminUsersCached(),
+      fetchAdminTenantsCached(),
     ]);
-
-    const tenantsMap = tenantsSnap.exists()
-      ? (tenantsSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
     const search = (params?.search || '').trim().toLowerCase();
 
-    const list: AdminUserRow[] = usersSnap.exists()
-      ? Object.entries(usersSnap.val() as Record<string, Record<string, unknown>>)
-          .map(([uid, raw]) => normalizeUserRecord(uid, raw))
-          .filter((u) => u.role === 'business')
-          .filter((u) => !params?.status || params.status === 'all' || u.status === params.status)
-          .map((u) => {
-            const t = tenantsMap[u.uid] || {};
-            const invList = Object.values(
-              (t.invoices as Record<string, Record<string, unknown>>) || {}
-            ).map(normalizeInvoice);
-            const quoCount = Object.keys((t.quotations as Record<string, unknown>) || {}).length;
-            const payList = Object.values(
-              (t.payments as Record<string, Record<string, unknown>>) || {}
-            ).map(normalizePayment);
-            const salesPaise = invList
-              .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
-              .reduce((s, i) => s + toPaise(i.grandTotal), 0);
-            const collectedPaise = payList.reduce((s, p) => s + toPaise(p.amount), 0);
+    const list: AdminUserRow[] = users
+      .filter((u) => u.role === 'business')
+      .filter((u) => !params?.status || params.status === 'all' || u.status === params.status)
+      .map((u) => {
+        const t = tenants[u.uid] || { invoices: [], quotations: [], payments: [] };
+        const salesPaise = t.invoices
+          .filter((i) => i.status !== 'draft' && i.status !== 'cancelled')
+          .reduce((s, i) => s + toPaise(i.grandTotal), 0);
+        const collectedPaise = t.payments.reduce((s, p) => s + toPaise(p.amount), 0);
 
-            return {
-              ...u,
-              invoiceCount: invList.length,
-              quotationCount: quoCount,
-              totalSales: fromPaise(salesPaise),
-              totalCollected: fromPaise(collectedPaise),
-            };
-          })
-          .filter((u) => {
-            if (!search) return true;
-            return (
-              u.businessName.toLowerCase().includes(search) ||
-              u.ownerName.toLowerCase().includes(search) ||
-              u.email.toLowerCase().includes(search) ||
-              u.gstin.toLowerCase().includes(search)
-            );
-          })
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      : [];
+        return {
+          ...u,
+          invoiceCount: t.invoices.length,
+          quotationCount: t.quotations.length,
+          totalSales: fromPaise(salesPaise),
+          totalCollected: fromPaise(collectedPaise),
+        };
+      })
+      .filter((u) => {
+        if (!search) return true;
+        return (
+          u.businessName.toLowerCase().includes(search) ||
+          u.ownerName.toLowerCase().includes(search) ||
+          u.email.toLowerCase().includes(search) ||
+          u.gstin.toLowerCase().includes(search)
+        );
+      })
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
 
     return { users: list };
   },
@@ -3721,6 +4205,7 @@ export const rtdbService = {
 
       await set(ref(rtdb, `users/${uid}`), stripUndefined(userRec));
       await set(ref(rtdb, `businessProfiles/${uid}`), stripUndefined(profileRec));
+      invalidateAdminSlices(['users', 'tenants', 'activityLogs']);
 
       await logActivity({
         actor: ctx.actorUser,
@@ -3805,6 +4290,7 @@ export const rtdbService = {
       gstin: updated.gstin,
       updatedAt: now,
     });
+    invalidateAdminSlices(['users', 'activityLogs']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -3831,6 +4317,7 @@ export const rtdbService = {
       status,
       updatedAt: new Date().toISOString(),
     });
+    invalidateAdminSlices(['users', 'activityLogs']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -3892,6 +4379,7 @@ export const rtdbService = {
 
     await set(ref(rtdb, `impersonationSessions/${impId}`), stripUndefined(impSession));
     setStoredImpersonationId(impId);
+    invalidateAdminSlices(['impersonationSessions', 'activityLogs']);
 
     await logActivity({
       actor: ctx.actorUser,
@@ -3903,7 +4391,7 @@ export const rtdbService = {
       summary: `Admin ${ctx.actorUser.email} entered customer workspace for ${target.businessName}`,
     });
 
-    const session = await resolveCurrentAuthContext();
+    const session = await resolveCurrentAuthContext(true);
     return { session };
   },
 
@@ -3932,22 +4420,18 @@ export const rtdbService = {
     }
 
     setStoredImpersonationId(null);
-    const session = await resolveCurrentAuthContext();
+    invalidateAdminSlices(['impersonationSessions', 'activityLogs']);
+    const session = await resolveCurrentAuthContext(true);
     return { session };
   },
 
   adminListInvoices: async (params?: { search?: string; status?: string }) => {
     await requireSuperAdminContext();
-    const [usersSnap, tenantsSnap] = await Promise.all([
-      get(ref(rtdb, 'users')),
-      get(ref(rtdb, 'tenants')),
+    const [users, tenants] = await Promise.all([
+      fetchAdminUsersCached(),
+      fetchAdminTenantsCached(),
     ]);
-    const usersMap = usersSnap.exists()
-      ? (usersSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
-    const tenantsMap = tenantsSnap.exists()
-      ? (tenantsSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
+    const userNames = new Map(users.map((u) => [u.uid, u.businessName]));
 
     const search = (params?.search || '').trim().toLowerCase();
     const status = params?.status && params.status !== 'all' ? params.status : '';
@@ -3966,11 +4450,9 @@ export const rtdbService = {
       balanceDue: number;
     }> = [];
 
-    for (const [uid, t] of Object.entries(tenantsMap)) {
-      const tenantBusinessName = String(usersMap[uid]?.businessName || 'Business');
-      const invObj = (t.invoices as Record<string, Record<string, unknown>>) || {};
-      for (const raw of Object.values(invObj)) {
-        const inv = normalizeInvoice(raw);
+    for (const [uid, t] of Object.entries(tenants)) {
+      const tenantBusinessName = userNames.get(uid) || 'Business';
+      for (const inv of t.invoices) {
         if (status && inv.status !== status) continue;
         const customerName = inv.customerSnapshot.companyName || inv.customerSnapshot.name;
         if (
@@ -4003,16 +4485,11 @@ export const rtdbService = {
 
   adminListQuotations: async (params?: { search?: string; status?: string }) => {
     await requireSuperAdminContext();
-    const [usersSnap, tenantsSnap] = await Promise.all([
-      get(ref(rtdb, 'users')),
-      get(ref(rtdb, 'tenants')),
+    const [users, tenants] = await Promise.all([
+      fetchAdminUsersCached(),
+      fetchAdminTenantsCached(),
     ]);
-    const usersMap = usersSnap.exists()
-      ? (usersSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
-    const tenantsMap = tenantsSnap.exists()
-      ? (tenantsSnap.val() as Record<string, Record<string, unknown>>)
-      : {};
+    const userNames = new Map(users.map((u) => [u.uid, u.businessName]));
 
     const search = (params?.search || '').trim().toLowerCase();
     const status = params?.status && params.status !== 'all' ? params.status : '';
@@ -4029,11 +4506,9 @@ export const rtdbService = {
       grandTotal: number;
     }> = [];
 
-    for (const [uid, t] of Object.entries(tenantsMap)) {
-      const tenantBusinessName = String(usersMap[uid]?.businessName || 'Business');
-      const quoObj = (t.quotations as Record<string, Record<string, unknown>>) || {};
-      for (const raw of Object.values(quoObj)) {
-        const q = normalizeQuotation(raw);
+    for (const [uid, t] of Object.entries(tenants)) {
+      const tenantBusinessName = userNames.get(uid) || 'Business';
+      for (const q of t.quotations) {
         if (status && q.status !== status) continue;
         const customerName = q.customerSnapshot.companyName || q.customerSnapshot.name;
         if (
@@ -4064,28 +4539,32 @@ export const rtdbService = {
 
   adminListActivityLogs: async (limit = 150) => {
     await requireSuperAdminContext();
-    const snap = await get(ref(rtdb, 'activityLogs'));
-    if (!snap.exists()) return { logs: [] };
-    const logs = Object.values(snap.val() as Record<string, Record<string, unknown>>)
-      .map(normalizeActivityLog)
-      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, limit);
-    return { logs };
+    const logs = await fetchAdminLogsCached();
+    return { logs: logs.slice(0, limit) };
   },
 
   adminListImpersonationHistory: async () => {
     await requireSuperAdminContext();
+    if (isAdminSliceFresh('impersonationSessions')) {
+      return { sessions: getAdminCache().impersonationSessions };
+    }
     const snap = await get(ref(rtdb, 'impersonationSessions'));
-    if (!snap.exists()) return { sessions: [] };
-    const sessions = Object.values(snap.val() as Record<string, ImpersonationSession>).sort(
-      (a, b) => b.startedAt.localeCompare(a.startedAt)
-    );
+    const sessions = snap.exists()
+      ? Object.values(snap.val() as Record<string, ImpersonationSession>).sort((a, b) =>
+          b.startedAt.localeCompare(a.startedAt)
+        )
+      : [];
+    setAdminSliceData('impersonationSessions', sessions);
     return { sessions };
   },
 
   adminGetSettings: async () => {
     await requireSuperAdminContext();
+    if (isAdminSliceFresh('platformSettings') && getAdminCache().platformSettings) {
+      return { settings: getAdminCache().platformSettings! };
+    }
     const settings = await ensurePlatformSettings();
+    setAdminSliceData('platformSettings', settings);
     return { settings };
   },
 
@@ -4113,6 +4592,13 @@ export const rtdbService = {
       updatedAt: new Date().toISOString(),
     };
     await set(ref(rtdb, 'platformSettings'), stripUndefined(updated));
+    setAdminSliceData('platformSettings', updated);
+    setCachedPublicSettings({
+      platformName: updated.platformName,
+      allowSelfRegistration: updated.allowSelfRegistration,
+      maintenanceMode: updated.maintenanceMode,
+      supportEmail: updated.supportEmail,
+    });
     await logActivity({
       actor: ctx.actorUser,
       action: 'PLATFORM_SETTINGS_UPDATED',

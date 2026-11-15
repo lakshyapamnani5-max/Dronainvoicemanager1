@@ -10,11 +10,11 @@ import {
 } from 'recharts';
 import { Download, FileSpreadsheet } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { analyticsApi, customersApi, subscribeRtdbPath } from '../../lib/api';
+import { analyticsApi, cachedRead, customersApi } from '../../lib/api';
 import { generateOutstandingPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
-import type { Customer, CustomerAnalyticsData, OutstandingReportRow } from '../../shared/types';
+import type { Customer, CustomerAnalyticsData, Invoice, Payment, Quotation } from '../../shared/types';
 import { EmptyState } from '../../components/AppShell';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
@@ -25,47 +25,79 @@ import { useToast } from '../../components/ui/toast';
 export function OutstandingReportPage({ navigate }: { navigate: (path: string) => void }) {
   const { session } = useAuth();
   const { notify } = useToast();
-  const [rows, setRows] = React.useState<OutstandingReportRow[]>([]);
-  const [customers, setCustomers] = React.useState<Customer[]>([]);
+  const tenantUid = session?.effectiveUser.uid;
+  const initialHydrated = React.useMemo(() => {
+    if (!tenantUid) return null;
+    const hasInv = cachedRead.hasTenantCollectionData(tenantUid, 'invoices');
+    const hasCust = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    if (!hasInv && !hasCust) return null;
+    const e = cachedRead.getTenantEntry(tenantUid);
+    return {
+      invoices: e.invoices as Invoice[],
+      customers: e.customers.filter((c) => !c.archived) as Customer[],
+      complete: hasInv && hasCust,
+    };
+  }, [tenantUid]);
+
+  const [allInvoices, setAllInvoices] = React.useState<Invoice[]>(
+    () => initialHydrated?.invoices || []
+  );
+  const [customers, setCustomers] = React.useState<Customer[]>(
+    () => initialHydrated?.customers || []
+  );
   const [filter, setFilter] = React.useState<'all' | 'not_due' | 'overdue'>('all');
   const [customerId, setCustomerId] = React.useState('all');
   const [startDate, setStartDate] = React.useState('');
   const [endDate, setEndDate] = React.useState('');
-  const [loading, setLoading] = React.useState(true);
+  const [loading, setLoading] = React.useState(() => !initialHydrated?.complete);
 
-  const tenantUid = session?.effectiveUser.uid;
   const load = React.useCallback(async (silent = false) => {
+    if (!tenantUid) return;
     if (!silent) setLoading(true);
     try {
-      const [repRes, custRes] = await Promise.all([
-        analyticsApi.getOutstanding({ filter, customerId, startDate, endDate }),
+      const [, custRes] = await Promise.all([
+        analyticsApi.getOutstanding(),
         customersApi.list(),
       ]);
-      setRows(repRes.rows);
+      setAllInvoices(cachedRead.getTenantEntry(tenantUid).invoices);
       setCustomers(custRes.customers);
     } catch (err) {
       if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load outstanding report');
     } finally {
       if (!silent) setLoading(false);
     }
-  }, [filter, customerId, startDate, endDate, notify]);
+  }, [tenantUid, notify]);
 
   React.useEffect(() => {
-    load(false);
-  }, [load]);
+    if (initialHydrated) {
+      setAllInvoices(initialHydrated.invoices);
+      setCustomers(initialHydrated.customers);
+      setLoading(!initialHydrated.complete);
+    }
+    void load(Boolean(initialHydrated?.complete));
+  }, [initialHydrated, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => load(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('invoices') || changed.has('payments') || changed.has('customers')) {
+        const e = cachedRead.getTenantEntry(tenantUid);
+        if (changed.has('invoices') || changed.has('payments')) setAllInvoices(e.invoices);
+        if (changed.has('customers')) setCustomers(e.customers.filter((c) => !c.archived));
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, load]);
+  }, [tenantUid]);
+
+  const rows = React.useMemo(
+    () =>
+      cachedRead.computeOutstandingRowsFromInvoices(allInvoices, {
+        filter,
+        customerId,
+        startDate,
+        endDate,
+      }),
+    [allInvoices, filter, customerId, startDate, endDate]
+  );
 
   const totals = rows.reduce(
     (acc, r) => ({
@@ -305,20 +337,46 @@ export function SalesReportsPage() {
   const [range, setRange] = React.useState('year');
   const [customStart, setCustomStart] = React.useState('');
   const [customEnd, setCustomEnd] = React.useState('');
-  const [data, setData] = React.useState<CustomerAnalyticsData | null>(null);
-  const [loading, setLoading] = React.useState(true);
+
+  const readCacheSnapshot = React.useCallback((uid?: string) => {
+    if (
+      !uid ||
+      !cachedRead.hasTenantCollectionData(uid, 'invoices') ||
+      !cachedRead.hasTenantCollectionData(uid, 'quotations') ||
+      !cachedRead.hasTenantCollectionData(uid, 'payments') ||
+      !cachedRead.hasTenantCollectionData(uid, 'customers')
+    ) {
+      return null;
+    }
+    const e = cachedRead.getTenantEntry(uid);
+    return {
+      invoices: e.invoices as Invoice[],
+      quotations: e.quotations as Quotation[],
+      payments: e.payments as Payment[],
+      customers: e.customers as Customer[],
+    };
+  }, []);
+
+  const initialSnap = React.useMemo(() => readCacheSnapshot(tenantUid), [tenantUid, readCacheSnapshot]);
+  const [snapshot, setSnapshot] = React.useState<{
+    invoices: Invoice[];
+    quotations: Quotation[];
+    payments: Payment[];
+    customers: Customer[];
+  } | null>(initialSnap);
+  const [loading, setLoading] = React.useState(() => !initialSnap);
+  const lastReportRef = React.useRef<CustomerAnalyticsData | null>(null);
 
   const loadSales = React.useCallback(
     (silent = false) => {
-      if (range === 'custom' && (!customStart || !customEnd)) return;
+      if (!tenantUid) return;
       if (!silent) setLoading(true);
       analyticsApi
-        .getDashboard({
-          range,
-          startDate: range === 'custom' ? customStart : undefined,
-          endDate: range === 'custom' ? customEnd : undefined,
+        .getDashboard({ range: 'all' })
+        .then(() => {
+          const next = readCacheSnapshot(tenantUid);
+          if (next) setSnapshot(next);
         })
-        .then((res) => setData(res))
         .catch((err) => {
           if (!silent) notify('error', err instanceof Error ? err.message : 'Failed to load report');
         })
@@ -326,26 +384,51 @@ export function SalesReportsPage() {
           if (!silent) setLoading(false);
         });
     },
-    [range, customStart, customEnd, notify]
+    [tenantUid, readCacheSnapshot, notify]
   );
 
   React.useEffect(() => {
-    loadSales(false);
-  }, [loadSales]);
+    if (initialSnap) {
+      setSnapshot(initialSnap);
+      setLoading(false);
+    }
+    loadSales(Boolean(initialSnap));
+  }, [initialSnap, loadSales]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
-    if (range === 'custom' && (!customStart || !customEnd)) return;
-    let timer: ReturnType<typeof setTimeout> | null = null;
-    const unsub = subscribeRtdbPath(`tenants/${tenantUid}`, () => {
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(() => loadSales(true), 250);
+    return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
+      if (
+        changed.has('invoices') ||
+        changed.has('quotations') ||
+        changed.has('payments') ||
+        changed.has('customers')
+      ) {
+        const next = readCacheSnapshot(tenantUid);
+        if (next) setSnapshot(next);
+      }
     });
-    return () => {
-      if (timer) clearTimeout(timer);
-      unsub();
-    };
-  }, [tenantUid, range, customStart, customEnd, loadSales]);
+  }, [tenantUid, readCacheSnapshot]);
+
+  const data = React.useMemo(() => {
+    if (!snapshot) return null;
+    if (range === 'custom' && (!customStart || !customEnd)) {
+      return lastReportRef.current;
+    }
+    const computed = cachedRead.computeCustomerAnalyticsFromData(
+      snapshot.invoices,
+      snapshot.quotations,
+      snapshot.payments,
+      snapshot.customers,
+      {
+        range,
+        startDate: range === 'custom' ? customStart : undefined,
+        endDate: range === 'custom' ? customEnd : undefined,
+      }
+    );
+    lastReportRef.current = computed;
+    return computed;
+  }, [snapshot, range, customStart, customEnd]);
 
   return (
     <div className="space-y-6">
