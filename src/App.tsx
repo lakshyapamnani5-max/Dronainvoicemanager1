@@ -22,6 +22,7 @@ import {
 import { AuthPages } from './pages/auth/AuthPages';
 import { CustomerDashboard } from './pages/customer/CustomerDashboard';
 import { CustomerDetailsPage, CustomersPage } from './pages/customer/CustomersPage';
+import { GstCustomerPage } from './pages/customer/GstCustomerPage';
 import { InvoiceDetailsPage, InvoicesListPage } from './pages/customer/InvoicesPages';
 import { PaymentsPage } from './pages/customer/PaymentsPage';
 import { QuotationDetailsPage, QuotationsListPage } from './pages/customer/QuotationsPages';
@@ -405,6 +406,19 @@ function AppRouter() {
         breadcrumbs={[bizName, 'Customers', 'Ledger']}
       >
         <CustomerDetailsPage customerId={id} navigate={navigate} />
+      </AppShell>
+    );
+  }
+
+  if (path === '/gst-customer') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="GST Customer Lookup"
+        breadcrumbs={[bizName, 'Customers', 'GST Customer']}
+      >
+        <GstCustomerPage navigate={navigate} />
       </AppShell>
     );
   }

@@ -3,6 +3,7 @@ import type {
   AuthSessionState,
   BusinessProfile,
   Customer,
+  GstinLookupResponse,
   ImpersonationSession,
   Invoice,
   NotificationItem,
@@ -814,6 +815,88 @@ export function clearAllRuntimeSessionCaches(): void {
   setCachedSession(null);
 }
 
+// ==================== GSTIN LOOKUP CACHE ====================
+
+const GSTIN_CACHE_KEY = 'drona_v1_gstin_cache';
+const GSTIN_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours
+const GSTIN_CACHE_MAX_ENTRIES = 50;
+
+type GstinCacheMap = Record<string, GstinLookupResponse & { cachedAt: number }>;
+let gstinCacheMemory: GstinCacheMap | null = null;
+
+function readGstinCacheMap(): GstinCacheMap {
+  if (gstinCacheMemory) return gstinCacheMemory;
+  if (!hasStorage()) {
+    gstinCacheMemory = {};
+    return gstinCacheMemory;
+  }
+  try {
+    const raw = window.localStorage.getItem(GSTIN_CACHE_KEY);
+    if (!raw) {
+      gstinCacheMemory = {};
+      return gstinCacheMemory;
+    }
+    const parsed = JSON.parse(raw) as GstinCacheMap;
+    gstinCacheMemory = parsed && typeof parsed === 'object' ? parsed : {};
+    return gstinCacheMemory;
+  } catch {
+    gstinCacheMemory = {};
+    return gstinCacheMemory;
+  }
+}
+
+function persistGstinCacheMap(map: GstinCacheMap): void {
+  const entries = Object.entries(map).sort((a, b) => (b[1]?.cachedAt || 0) - (a[1]?.cachedAt || 0));
+  const trimmed: GstinCacheMap = {};
+  for (const [k, v] of entries.slice(0, GSTIN_CACHE_MAX_ENTRIES)) {
+    trimmed[k] = v;
+  }
+  gstinCacheMemory = trimmed;
+  if (!hasStorage()) return;
+  try {
+    window.localStorage.setItem(GSTIN_CACHE_KEY, JSON.stringify(trimmed));
+  } catch {
+    try {
+      window.localStorage.removeItem(GSTIN_CACHE_KEY);
+    } catch {
+      // ignore
+    }
+  }
+}
+
+export function getCachedGstinLookup(gstin: string): GstinLookupResponse | null {
+  const key = gstin.trim().toUpperCase();
+  if (!key) return null;
+  const map = readGstinCacheMap();
+  const entry = map[key];
+  if (!entry) return null;
+  if (Date.now() - Number(entry.cachedAt || 0) > GSTIN_CACHE_TTL_MS) {
+    return null;
+  }
+  return entry;
+}
+
+export function setCachedGstinLookup(gstin: string, result: GstinLookupResponse): GstinLookupResponse {
+  const key = gstin.trim().toUpperCase();
+  const map = { ...readGstinCacheMap() };
+  const stamped: GstinLookupResponse & { cachedAt: number } = {
+    ...result,
+    gstin: key,
+    cachedAt: Date.now(),
+  };
+  map[key] = stamped;
+  persistGstinCacheMap(map);
+  return stamped;
+}
+
+export function listCachedGstinLookups(): GstinLookupResponse[] {
+  const map = readGstinCacheMap();
+  const now = Date.now();
+  return Object.values(map)
+    .filter((item) => item?.gstin && now - Number(item.cachedAt || 0) <= GSTIN_CACHE_TTL_MS)
+    .sort((a, b) => (b.cachedAt || 0) - (a.cachedAt || 0));
+}
+
 // ==================== IN-FLIGHT DEDUPLICATION ====================
 
 export function dedupeFetch<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
@@ -827,3 +910,4 @@ export function dedupeFetch<T>(key: string, fetcher: () => Promise<T>): Promise<
   inFlight.set(key, promise);
   return promise;
 }
+

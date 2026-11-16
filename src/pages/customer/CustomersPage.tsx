@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Archive, ArchiveRestore, Edit2, Eye, Plus, Search, Users } from 'lucide-react';
+import { Archive, ArchiveRestore, Edit2, Eye, Plus, Search, ShieldCheck, Users } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { cachedRead, customersApi } from '../../lib/api';
 import { formatINR } from '../../shared/gstCalculator';
@@ -14,6 +14,7 @@ import { Dialog } from '../../components/ui/dialog';
 import { Input, Label, Select, Textarea } from '../../components/ui/input';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '../../components/ui/table';
 import { useToast } from '../../components/ui/toast';
+import { GstCustomerLookupView } from './GstCustomerPage';
 
 export function CustomersPage({ navigate }: { navigate: (path: string) => void }) {
   const { session } = useAuth();
@@ -31,6 +32,7 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
   const [allCustomers, setAllCustomers] = React.useState<Customer[]>(
     () => initialCustomers || []
   );
+  const [activeTab, setActiveTab] = React.useState<'list' | 'gst'>('list');
   const [search, setSearch] = React.useState('');
   const [showArchived, setShowArchived] = React.useState(false);
   const [loading, setLoading] = React.useState(() => !initialCustomers);
@@ -176,35 +178,83 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
-        <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3 flex-1 sm:min-w-[240px] sm:max-w-md">
-          <div className="relative flex-1">
-            <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
-            <Input
-              value={search}
-              onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search name, company, GSTIN, email..."
-              className="pl-9"
-            />
-          </div>
-          <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap cursor-pointer">
-            <input
-              type="checkbox"
-              checked={showArchived}
-              onChange={(e) => setShowArchived(e.target.checked)}
-              className="h-4 w-4 rounded accent-[#F57C00]"
-            />
-            Show archived
-          </label>
-        </div>
-
-        <Button onClick={openCreate} className="w-full sm:w-auto">
-          <Plus className="h-4 w-4" />
-          Add Customer
-        </Button>
+      {/* Customers / GST Customer Tab Bar */}
+      <div className="inline-flex rounded-xl border border-zinc-200 bg-white p-1 dark:border-zinc-800 dark:bg-zinc-900">
+        <button
+          type="button"
+          onClick={() => setActiveTab('list')}
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+            activeTab === 'list'
+              ? 'bg-[#F57C00] text-white'
+              : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+          }`}
+        >
+          <Users className="h-3.5 w-3.5" />
+          All Customers ({allCustomers.filter((c) => !c.archived).length})
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveTab('gst')}
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
+            activeTab === 'gst'
+              ? 'bg-[#F57C00] text-white'
+              : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+          }`}
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          GST Customer
+        </button>
       </div>
 
-      <Card>
+      {activeTab === 'gst' ? (
+        <GstCustomerLookupView
+          navigate={navigate}
+          onCustomerSaved={() => {
+            void load(true);
+          }}
+        />
+      ) : (
+        <>
+          <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center sm:justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:items-center gap-2.5 sm:gap-3 flex-1 sm:min-w-[240px] sm:max-w-md">
+              <div className="relative flex-1">
+                <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
+                <Input
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="Search name, company, GSTIN, email..."
+                  className="pl-9"
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 whitespace-nowrap cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(e) => setShowArchived(e.target.checked)}
+                  className="h-4 w-4 rounded accent-[#F57C00]"
+                />
+                Show archived
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setActiveTab('gst')}
+                className="flex-1 sm:flex-none"
+              >
+                <ShieldCheck className="h-4 w-4 text-[#F57C00]" />
+                Add via GSTIN
+              </Button>
+              <Button onClick={openCreate} className="flex-1 sm:flex-none">
+                <Plus className="h-4 w-4" />
+                Add Customer
+              </Button>
+            </div>
+          </div>
+
+          <Card>
         <CardContent className="p-0">
           {loading ? (
             <div className="p-8 text-center text-xs text-zinc-500">Loading customers...</div>
@@ -391,6 +441,8 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
           )}
         </CardContent>
       </Card>
+        </>
+      )}
 
       <Dialog
         open={modalOpen}

@@ -412,3 +412,47 @@ export interface AdminDashboardData {
   recentBusinesses: Array<UserRecord & { invoiceCount: number; quotationCount: number; totalSales: number }>;
   recentActivity: ActivityLog[];
 }
+
+export interface GstinAddressDetails {
+  building_number: string | null;
+  building_name: string | null;
+  floor: string | null;
+  street: string | null;
+  locality: string | null;
+  district: string | null;
+  city: string | null;
+  state: string | null;
+  landmark: string | null;
+  pincode: string | null;
+}
+
+export interface GstinLookupDetails {
+  gstin: string | null;
+  legal_name: string | null;
+  trade_name: string | null;
+  status: string | null;
+  taxpayer_type: string | null;
+  business_constitution: string | null;
+  registration_date: string | null;
+  cancellation_date: string | null;
+  state_code: string | null;
+  state_jurisdiction: string | null;
+  address: string | null;
+  pincode: string | null;
+  nature_of_business: string[] | null;
+  block_status: string | null;
+  einvoice_status?: string | null;
+  last_updated?: string | null;
+  address_details?: GstinAddressDetails | null;
+}
+
+export interface GstinLookupResponse {
+  success: true;
+  gstin: string;
+  data: GstinLookupDetails;
+  credits_remaining?: number;
+  response_ms?: number;
+  profile_complete?: boolean;
+  cachedAt?: number;
+}
+

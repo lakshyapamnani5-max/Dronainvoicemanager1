@@ -21,6 +21,7 @@ import {
   Receipt,
   Settings,
   ShieldAlert,
+  ShieldCheck,
   Sun,
   UserCircle2,
   Users,
@@ -52,6 +53,7 @@ const CUSTOMER_NAV: Array<{ group: string; items: NavItem[] }> = [
       { label: 'Invoices', path: '/invoices', icon: Receipt },
       { label: 'Quotations', path: '/quotations', icon: FileCheck2 },
       { label: 'Customers', path: '/customers', icon: Users },
+      { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
       { label: 'Rate Card', path: '/rate-card', icon: Package },
       { label: 'Payments', path: '/payments', icon: CreditCard },
     ],
@@ -252,6 +254,7 @@ export function AppShell({
         '/admin/settings',
       ].some((p) => currentPath === p || currentPath.startsWith(p + '/'))
     : [
+        '/gst-customer',
         '/rate-card',
         '/payments',
         '/reports/outstanding',
@@ -270,6 +273,7 @@ export function AppShell({
         { label: 'Platform Settings', path: '/admin/settings', icon: Settings },
       ]
     : [
+        { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
         { label: 'Rate Card', path: '/rate-card', icon: Package },
         { label: 'Payments', path: '/payments', icon: CreditCard },
         { label: 'Outstanding Reports', path: '/reports/outstanding', icon: FileSpreadsheet },

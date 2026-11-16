@@ -38,10 +38,35 @@ import {
   updateCustomer,
   updateQuotationStatus,
 } from './services.ts';
+import { GstinApi, GstinError, isValidGstin as isValidGstinChecksum } from 'gstinapi';
 import { fromPaise } from '../src/shared/gstCalculator.ts';
 import { isValidGstin } from '../src/shared/indianStates.ts';
 
 export const apiRouter = Router();
+
+const GSTIN_CODE_STATUS: Record<string, number> = {
+  INVALID_FORMAT: 400,
+  UNAUTHORIZED: 401,
+  INSUFFICIENT_CREDITS: 402,
+  ACCOUNT_DEACTIVATED: 403,
+  NOT_FOUND: 404,
+  RATE_LIMITED: 429,
+  PROVIDER_UNAVAILABLE: 502,
+  TIMEOUT: 504,
+  NETWORK: 502,
+};
+
+const GSTIN_CODE_MESSAGE: Record<string, string> = {
+  INVALID_FORMAT: 'Invalid GSTIN format or checksum. Please double-check the 15-character GST number.',
+  UNAUTHORIZED: 'GSTIN API authentication failed. Check the server GSTIN_API_KEY configuration.',
+  INSUFFICIENT_CREDITS: 'GSTIN lookup credits exhausted on gstinapi.in. Please top up credits.',
+  ACCOUNT_DEACTIVATED: 'The gstinapi.in account is deactivated.',
+  NOT_FOUND: 'No GST registration record found for this GSTIN.',
+  RATE_LIMITED: 'GSTIN lookup rate limit reached. Please try again in a few seconds.',
+  PROVIDER_UNAVAILABLE: 'GST network is temporarily unavailable. Please try again shortly.',
+  TIMEOUT: 'GSTIN lookup timed out. Please try again.',
+  NETWORK: 'Network error while contacting GST verification service.',
+};
 
 function setSessionCookie(res: import('express').Response, token: string): void {
   const isProd = process.env.NODE_ENV === 'production';
@@ -81,6 +106,55 @@ apiRouter.get('/public/settings', (_req, res) => {
     maintenanceMode: s.maintenanceMode,
     supportEmail: s.supportEmail,
   });
+});
+
+apiRouter.get('/gstin', rateLimit(40, 60_000), async (req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  const gstin = sanitizeStr(req.query?.gstin, 20).toUpperCase();
+
+  if (!gstin) {
+    res.status(400).json({ error: 'GSTIN parameter is required', code: 'INVALID_FORMAT' });
+    return;
+  }
+
+  if (!isValidGstinChecksum(gstin)) {
+    res.status(400).json({
+      error: GSTIN_CODE_MESSAGE.INVALID_FORMAT,
+      code: 'INVALID_FORMAT',
+    });
+    return;
+  }
+
+  const apiKey = process.env.GSTIN_API_KEY?.trim();
+  if (!apiKey) {
+    res.status(503).json({
+      error: 'GSTIN_API_KEY environment variable is not configured on the server.',
+      code: 'MISSING_API_KEY',
+    });
+    return;
+  }
+
+  try {
+    const client = new GstinApi({
+      apiKey,
+      retries: 2,
+      timeout: 15000,
+      validateChecksum: true,
+    });
+    const result = await client.lookup(gstin, { include: 'profile' });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof GstinError) {
+      const status = (err.code && GSTIN_CODE_STATUS[err.code]) || err.status || 502;
+      const message = (err.code && GSTIN_CODE_MESSAGE[err.code]) || err.message;
+      res.status(status).json({ error: message, code: err.code || 'HTTP_ERROR' });
+      return;
+    }
+    res.status(500).json({
+      error: err instanceof Error ? err.message : 'Failed to verify GSTIN',
+      code: 'INTERNAL_ERROR',
+    });
+  }
 });
 
 // ==================== AUTHENTICATION ====================

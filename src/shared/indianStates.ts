@@ -64,12 +64,16 @@ export function isValidIfsc(ifsc: string): boolean {
   return IFSC_REGEX.test(clean);
 }
 
+export function getStateByCode(code: string): string | null {
+  const cleanCode = code.trim().padStart(2, '0');
+  const found = INDIAN_STATES.find((s) => s.code === cleanCode);
+  return found ? found.name : null;
+}
+
 export function getStateFromGstin(gstin: string): string | null {
   const clean = gstin.trim().toUpperCase();
   if (clean.length < 2) return null;
-  const code = clean.slice(0, 2);
-  const found = INDIAN_STATES.find((s) => s.code === code);
-  return found ? found.name : null;
+  return getStateByCode(clean.slice(0, 2));
 }
 
 export function getStateCode(stateName: string): string {
@@ -77,3 +81,25 @@ export function getStateCode(stateName: string): string {
   const found = INDIAN_STATES.find((s) => s.name.toLowerCase() === norm);
   return found ? found.code : '';
 }
+
+const GSTIN_CHECKSUM_CHARS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ';
+
+export function getGstinChecksumChar(gstin: string): string | null {
+  const clean = gstin.trim().toUpperCase();
+  if (clean.length < 14) return null;
+  let sum = 0;
+  for (let i = 0; i < 14; i++) {
+    const val = GSTIN_CHECKSUM_CHARS.indexOf(clean[i]);
+    if (val < 0) return null;
+    const product = val * (i % 2 === 0 ? 1 : 2);
+    sum += Math.floor(product / 36) + (product % 36);
+  }
+  return GSTIN_CHECKSUM_CHARS[(36 - (sum % 36)) % 36];
+}
+
+export function isValidGstinChecksum(gstin: string): boolean {
+  const clean = gstin.trim().toUpperCase();
+  if (!GSTIN_REGEX.test(clean)) return false;
+  return getGstinChecksumChar(clean) === clean[14];
+}
+

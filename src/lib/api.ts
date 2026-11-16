@@ -5,6 +5,7 @@ import type {
   BusinessProfile,
   Customer,
   CustomerAnalyticsData,
+  GstinLookupResponse,
   ImpersonationSession,
   Invoice,
   LineItemInput,
@@ -20,6 +21,13 @@ import type {
   TemplateId,
   UserRecord,
 } from '../shared/types';
+import { GSTIN_REGEX, isValidGstinChecksum } from '../shared/indianStates';
+import {
+  dedupeFetch,
+  getCachedGstinLookup,
+  listCachedGstinLookups,
+  setCachedGstinLookup,
+} from './localCache';
 import {
   cachedRead,
   ensureTenantMetaListener,
@@ -145,6 +153,52 @@ export const customersApi = {
   create: (payload: Partial<Customer>) => rtdbService.createCustomer(payload),
   update: (id: string, payload: Partial<Customer>) => rtdbService.updateCustomer(id, payload),
   remove: (id: string) => rtdbService.deleteCustomer(id),
+};
+
+export const gstinApi = {
+  getRecentLookups: () => listCachedGstinLookups(),
+
+  lookup: async (
+    rawGstin: string,
+    options?: { forceRefresh?: boolean }
+  ): Promise<{ result: GstinLookupResponse; fromCache: boolean }> => {
+    const gstin = rawGstin.trim().toUpperCase();
+    if (!GSTIN_REGEX.test(gstin)) {
+      throw new ApiError('Enter a valid 15-character GSTIN (e.g. 27ABCDE1234F1Z5).', 400);
+    }
+    if (!isValidGstinChecksum(gstin)) {
+      throw new ApiError(
+        'GSTIN checksum digit (15th character) is invalid. Please double-check the GST number.',
+        400
+      );
+    }
+
+    if (!options?.forceRefresh) {
+      const cached = getCachedGstinLookup(gstin);
+      if (cached) {
+        return { result: cached, fromCache: true };
+      }
+    }
+
+    const result = await dedupeFetch(`gstin:${gstin}`, async () => {
+      const res = await fetch(
+        `/api/gstin?gstin=${encodeURIComponent(gstin)}&include=profile`,
+        { headers: { Accept: 'application/json' } }
+      );
+      const body = (await res.json().catch(() => ({}))) as Partial<GstinLookupResponse> & {
+        error?: string;
+      };
+      if (!res.ok || !body.success || !body.data) {
+        throw new ApiError(
+          body.error || `GSTIN lookup failed (HTTP ${res.status})`,
+          res.status || 500
+        );
+      }
+      return setCachedGstinLookup(gstin, body as GstinLookupResponse);
+    });
+
+    return { result, fromCache: false };
+  },
 };
 
 export const invoicesApi = {
