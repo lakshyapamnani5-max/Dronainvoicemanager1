@@ -9,8 +9,12 @@ import type {
   NotificationItem,
   Payment,
   PlatformSettings,
+  Purchase,
+  PurchaseAttachment,
+  PurchasePayment,
   Quotation,
   RateCardItem,
+  Supplier,
   UserRecord,
 } from '../shared/types';
 
@@ -22,7 +26,11 @@ export type TenantCollection =
   | 'payments'
   | 'rateCard'
   | 'notifications'
-  | 'activityLogs';
+  | 'activityLogs'
+  | 'suppliers'
+  | 'purchases'
+  | 'purchasePayments'
+  | 'purchaseAttachments';
 
 export interface TenantMetaMap {
   profile?: number;
@@ -33,6 +41,10 @@ export interface TenantMetaMap {
   rateCard?: number;
   notifications?: number;
   activityLogs?: number;
+  suppliers?: number;
+  purchases?: number;
+  purchasePayments?: number;
+  purchaseAttachments?: number;
 }
 
 export interface TenantCacheEntry {
@@ -44,8 +56,13 @@ export interface TenantCacheEntry {
   rateCard: RateCardItem[];
   notifications: NotificationItem[];
   activityLogs: ActivityLog[];
+  suppliers: Supplier[];
+  purchases: Purchase[];
+  purchasePayments: PurchasePayment[];
+  purchaseAttachments: PurchaseAttachment[];
   syncedAt: Partial<Record<TenantCollection, number>>;
   lastOverdueCheckDate?: string;
+  lastPurchaseOverdueCheckDate?: string;
   lastExpiryCheckDate?: string;
   lastAccessedAt: number;
 }
@@ -125,6 +142,10 @@ function emptyTenantEntry(): TenantCacheEntry {
     rateCard: [],
     notifications: [],
     activityLogs: [],
+    suppliers: [],
+    purchases: [],
+    purchasePayments: [],
+    purchaseAttachments: [],
     syncedAt: {},
     lastAccessedAt: Date.now(),
   };
@@ -211,8 +232,13 @@ function buildCompactTenantPayload(
     rateCard: entry.rateCard,
     notifications: entry.notifications.slice(0, maxNotifs),
     activityLogs: entry.activityLogs.slice(0, maxLogs),
+    suppliers: entry.suppliers,
+    purchases: entry.purchases.slice(0, maxDocs),
+    purchasePayments: entry.purchasePayments,
+    purchaseAttachments: entry.purchaseAttachments.slice(0, maxDocs),
     syncedAt: entry.syncedAt,
     lastOverdueCheckDate: entry.lastOverdueCheckDate,
+    lastPurchaseOverdueCheckDate: entry.lastPurchaseOverdueCheckDate,
     lastExpiryCheckDate: entry.lastExpiryCheckDate,
     lastAccessedAt: entry.lastAccessedAt,
   };
@@ -285,8 +311,15 @@ function readTenantEntryFromStorage(tenantUid: string): TenantCacheEntry | null 
       rateCard: Array.isArray(parsed.rateCard) ? parsed.rateCard : [],
       notifications: Array.isArray(parsed.notifications) ? parsed.notifications : [],
       activityLogs: Array.isArray(parsed.activityLogs) ? parsed.activityLogs : [],
+      suppliers: Array.isArray(parsed.suppliers) ? parsed.suppliers : [],
+      purchases: Array.isArray(parsed.purchases) ? parsed.purchases : [],
+      purchasePayments: Array.isArray(parsed.purchasePayments) ? parsed.purchasePayments : [],
+      purchaseAttachments: Array.isArray(parsed.purchaseAttachments)
+        ? parsed.purchaseAttachments
+        : [],
       syncedAt: parsed.syncedAt && typeof parsed.syncedAt === 'object' ? parsed.syncedAt : {},
       lastOverdueCheckDate: parsed.lastOverdueCheckDate,
+      lastPurchaseOverdueCheckDate: parsed.lastPurchaseOverdueCheckDate,
       lastExpiryCheckDate: parsed.lastExpiryCheckDate,
       lastAccessedAt: Date.now(),
     };
@@ -563,6 +596,16 @@ export function setTenantOverdueCheckDate(tenantUid: string, dateIso: string): v
   persistTenantEntry(tenantUid, entry);
 }
 
+export function getTenantPurchaseOverdueCheckDate(tenantUid: string): string | undefined {
+  return getTenantEntry(tenantUid).lastPurchaseOverdueCheckDate;
+}
+
+export function setTenantPurchaseOverdueCheckDate(tenantUid: string, dateIso: string): void {
+  const entry = getTenantEntry(tenantUid);
+  entry.lastPurchaseOverdueCheckDate = dateIso;
+  persistTenantEntry(tenantUid, entry);
+}
+
 export function getTenantExpiryCheckDate(tenantUid: string): string | undefined {
   return getTenantEntry(tenantUid).lastExpiryCheckDate;
 }
@@ -571,6 +614,96 @@ export function setTenantExpiryCheckDate(tenantUid: string, dateIso: string): vo
   const entry = getTenantEntry(tenantUid);
   entry.lastExpiryCheckDate = dateIso;
   persistTenantEntry(tenantUid, entry);
+}
+
+export function upsertTenantSupplierCache(tenantUid: string, supplier: Supplier): void {
+  const entry = getTenantEntry(tenantUid);
+  const idx = entry.suppliers.findIndex((s) => s.id === supplier.id);
+  const next = [...entry.suppliers];
+  if (idx >= 0) next[idx] = supplier;
+  else next.unshift(supplier);
+  entry.suppliers = next;
+  entry.syncedAt.suppliers = Date.now();
+  sessionSynced.add(`${tenantUid}:suppliers`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['suppliers']);
+}
+
+export function removeTenantSupplierCache(tenantUid: string, supplierId: string): void {
+  const entry = getTenantEntry(tenantUid);
+  entry.suppliers = entry.suppliers.filter((s) => s.id !== supplierId);
+  entry.syncedAt.suppliers = Date.now();
+  sessionSynced.add(`${tenantUid}:suppliers`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['suppliers']);
+}
+
+export function upsertTenantPurchaseCache(tenantUid: string, purchase: Purchase): void {
+  const entry = getTenantEntry(tenantUid);
+  const idx = entry.purchases.findIndex((p) => p.id === purchase.id);
+  const next = [...entry.purchases];
+  if (idx >= 0) next[idx] = purchase;
+  else next.unshift(purchase);
+  next.sort((a, b) =>
+    `${b.billDate}_${b.createdAt}`.localeCompare(`${a.billDate}_${a.createdAt}`)
+  );
+  entry.purchases = next;
+  entry.syncedAt.purchases = Date.now();
+  sessionSynced.add(`${tenantUid}:purchases`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['purchases', 'suppliers']);
+}
+
+export function removeTenantPurchaseCache(tenantUid: string, purchaseId: string): void {
+  const entry = getTenantEntry(tenantUid);
+  entry.purchases = entry.purchases.filter((p) => p.id !== purchaseId);
+  entry.purchasePayments = entry.purchasePayments.filter((p) => p.purchaseId !== purchaseId);
+  entry.purchaseAttachments = entry.purchaseAttachments.filter((a) => a.purchaseId !== purchaseId);
+  entry.syncedAt.purchases = Date.now();
+  sessionSynced.add(`${tenantUid}:purchases`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['purchases', 'purchasePayments', 'purchaseAttachments', 'suppliers']);
+}
+
+export function upsertTenantPurchasePaymentCache(tenantUid: string, payment: PurchasePayment): void {
+  const entry = getTenantEntry(tenantUid);
+  const idx = entry.purchasePayments.findIndex((p) => p.id === payment.id);
+  const next = [...entry.purchasePayments];
+  if (idx >= 0) next[idx] = payment;
+  else next.unshift(payment);
+  next.sort((a, b) =>
+    `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
+  );
+  entry.purchasePayments = next;
+  entry.syncedAt.purchasePayments = Date.now();
+  sessionSynced.add(`${tenantUid}:purchasePayments`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['purchasePayments', 'purchases', 'suppliers']);
+}
+
+export function removeTenantPurchasePaymentCache(tenantUid: string, paymentId: string): void {
+  const entry = getTenantEntry(tenantUid);
+  entry.purchasePayments = entry.purchasePayments.filter((p) => p.id !== paymentId);
+  entry.syncedAt.purchasePayments = Date.now();
+  sessionSynced.add(`${tenantUid}:purchasePayments`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['purchasePayments', 'purchases', 'suppliers']);
+}
+
+export function upsertTenantPurchaseAttachmentCache(
+  tenantUid: string,
+  att: PurchaseAttachment
+): void {
+  const entry = getTenantEntry(tenantUid);
+  const idx = entry.purchaseAttachments.findIndex((a) => a.id === att.id);
+  const next = [...entry.purchaseAttachments];
+  if (idx >= 0) next[idx] = att;
+  else next.unshift(att);
+  entry.purchaseAttachments = next;
+  entry.syncedAt.purchaseAttachments = Date.now();
+  sessionSynced.add(`${tenantUid}:purchaseAttachments`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['purchaseAttachments']);
 }
 
 // ==================== SESSION & PUBLIC SETTINGS CACHE ====================

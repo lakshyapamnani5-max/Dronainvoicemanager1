@@ -13,7 +13,7 @@ async function startServer() {
   const app = express();
   app.set('trust proxy', 1);
 
-  app.use(express.json({ limit: '5mb' }));
+  app.use(express.json({ limit: '22mb' }));
   app.use(cookieParser());
 
   app.use('/api', apiRouter);

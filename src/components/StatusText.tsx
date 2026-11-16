@@ -8,7 +8,12 @@ import {
   Send,
   XCircle,
 } from 'lucide-react';
-import type { AccountStatus, InvoiceStatus, QuotationStatus } from '../shared/types';
+import type {
+  AccountStatus,
+  InvoiceStatus,
+  PurchaseStatus,
+  QuotationStatus,
+} from '../shared/types';
 
 export function InvoiceStatusLabel({ status }: { status: InvoiceStatus | string }) {
   switch (status) {
@@ -57,6 +62,10 @@ export function InvoiceStatusLabel({ status }: { status: InvoiceStatus | string 
     default:
       return <span className="text-xs text-zinc-500">{status}</span>;
   }
+}
+
+export function PurchaseStatusLabel({ status }: { status: PurchaseStatus | string }) {
+  return <InvoiceStatusLabel status={status} />;
 }
 
 export function QuotationStatusLabel({ status }: { status: QuotationStatus | string }) {

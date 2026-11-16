@@ -1,6 +1,7 @@
 import { initializeApp, getApps, type FirebaseApp } from 'firebase/app';
 import { getAuth, type Auth } from 'firebase/auth';
 import { getDatabase, type Database } from 'firebase/database';
+import { getStorage, type FirebaseStorage } from 'firebase/storage';
 import { getAnalytics, isSupported, type Analytics } from 'firebase/analytics';
 
 export const firebaseConfig = {
@@ -18,6 +19,7 @@ const existingPrimary = getApps().find((a) => a.name === '[DEFAULT]');
 export const firebaseApp: FirebaseApp = existingPrimary || initializeApp(firebaseConfig);
 export const firebaseAuth: Auth = getAuth(firebaseApp);
 export const rtdb: Database = getDatabase(firebaseApp);
+export const firebaseStorage: FirebaseStorage = getStorage(firebaseApp);
 
 let analyticsPromise: Promise<Analytics | null> | null = null;
 export function initFirebaseAnalytics(): Promise<Analytics | null> {

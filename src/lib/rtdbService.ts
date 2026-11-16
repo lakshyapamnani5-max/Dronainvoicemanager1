@@ -16,7 +16,13 @@ import {
   set,
   update,
 } from 'firebase/database';
-import { firebaseAuth, getSecondaryAuth, rtdb } from './firebase';
+import {
+  deleteObject,
+  getDownloadURL,
+  ref as storageRef,
+  uploadBytes,
+} from 'firebase/storage';
+import { firebaseAuth, firebaseStorage, getSecondaryAuth, rtdb } from './firebase';
 import {
   clearAllRuntimeSessionCaches,
   dedupeFetch,
@@ -27,6 +33,7 @@ import {
   getTenantEntry,
   getTenantExpiryCheckDate,
   getTenantOverdueCheckDate,
+  getTenantPurchaseOverdueCheckDate,
   hasTenantCollectionData,
   invalidateAdminSlices,
   invalidateTenantCollection,
@@ -37,7 +44,10 @@ import {
   prependTenantActivityLogCache,
   removeTenantCustomerCache,
   removeTenantPaymentCache,
+  removeTenantPurchaseCache,
+  removeTenantPurchasePaymentCache,
   removeTenantRateCardCache,
+  removeTenantSupplierCache,
   setAdminSliceData,
   setCachedPublicSettings,
   setCachedSession,
@@ -45,23 +55,35 @@ import {
   setTenantExpiryCheckDate,
   setTenantOverdueCheckDate,
   setTenantProfileCache,
+  setTenantPurchaseOverdueCheckDate,
   subscribeAdminCache,
   subscribeTenantCache,
   upsertTenantCustomerCache,
   upsertTenantInvoiceCache,
   upsertTenantNotificationCache,
   upsertTenantPaymentCache,
+  upsertTenantPurchaseAttachmentCache,
+  upsertTenantPurchaseCache,
+  upsertTenantPurchasePaymentCache,
   upsertTenantQuotationCache,
   upsertTenantRateCardCache,
+  upsertTenantSupplierCache,
   type TenantCollection,
   type TenantMetaMap,
 } from './localCache';
 import {
   computeDocumentTotals,
+  computePurchaseTotals,
   fromPaise,
   toPaise,
 } from '../shared/gstCalculator';
-import { isValidGstin, isValidIfsc, isValidPan } from '../shared/indianStates';
+import {
+  getStateCode,
+  getStateFromGstin,
+  isValidGstin,
+  isValidIfsc,
+  isValidPan,
+} from '../shared/indianStates';
 import type {
   ActivityLog,
   AdminDashboardData,
@@ -69,6 +91,7 @@ import type {
   BusinessProfile,
   BusinessSnapshot,
   ComputedLineItem,
+  ComputedPurchaseLineItem,
   Customer,
   CustomerAnalyticsData,
   CustomerSnapshot,
@@ -82,9 +105,19 @@ import type {
   Payment,
   PaymentMethod,
   PlatformSettings,
+  Purchase,
+  PurchaseAnalyticsData,
+  PurchaseAttachment,
+  PurchaseLineItemInput,
+  PurchasePayment,
+  PurchaseStatus,
+  PurchaseType,
   Quotation,
   QuotationStatus,
   RateCardItem,
+  SavePurchasePayload,
+  Supplier,
+  SupplierSnapshot,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
@@ -485,6 +518,129 @@ function normalizeActivityLog(raw: Record<string, unknown>): ActivityLog {
   };
 }
 
+function normalizeSupplier(raw: Record<string, unknown>): Supplier {
+  const gstin = String(raw.gstin || '').toUpperCase();
+  const state = String(raw.state || getStateFromGstin(gstin) || 'Maharashtra');
+  return {
+    id: String(raw.id || ''),
+    userUid: String(raw.userUid || ''),
+    name: String(raw.name || ''),
+    companyName: String(raw.companyName || ''),
+    email: String(raw.email || ''),
+    phone: String(raw.phone || ''),
+    gstin,
+    billingAddress: String(raw.billingAddress || ''),
+    state,
+    stateCode: String(raw.stateCode || getStateCode(state) || (gstin.length >= 2 ? gstin.slice(0, 2) : '')),
+    notes: String(raw.notes || ''),
+    archived: Boolean(raw.archived),
+    createdAt: String(raw.createdAt || ''),
+    updatedAt: String(raw.updatedAt || ''),
+  };
+}
+
+function normalizePurchase(raw: Record<string, unknown>): Purchase {
+  const itemsRaw = Array.isArray(raw.items)
+    ? raw.items
+    : raw.items && typeof raw.items === 'object'
+      ? Object.values(raw.items as Record<string, unknown>)
+      : [];
+  const supRaw = (raw.supplierSnapshot as Record<string, unknown> | undefined) || {};
+  const supGstin = String(supRaw.gstin || '').toUpperCase();
+  const supState = String(supRaw.state || getStateFromGstin(supGstin) || 'Maharashtra');
+
+  return {
+    id: String(raw.id || ''),
+    userUid: String(raw.userUid || ''),
+    billNumber: String(raw.billNumber || ''),
+    referenceNumber: String(raw.referenceNumber || ''),
+    supplierId: String(raw.supplierId || ''),
+    supplierSnapshot: {
+      id: String(supRaw.id || raw.supplierId || ''),
+      name: String(supRaw.name || ''),
+      companyName: String(supRaw.companyName || ''),
+      email: String(supRaw.email || ''),
+      phone: String(supRaw.phone || ''),
+      gstin: supGstin,
+      billingAddress: String(supRaw.billingAddress || ''),
+      state: supState,
+      stateCode: String(supRaw.stateCode || getStateCode(supState)),
+    },
+    billDate: String(raw.billDate || ''),
+    dueDate: String(raw.dueDate || ''),
+    paymentTerms: String(raw.paymentTerms || ''),
+    purchaseType: (raw.purchaseType as PurchaseType) || 'gst',
+    isGst: raw.isGst !== false,
+    taxMode: (raw.taxMode as TaxPricingMode) || 'exclusive',
+    taxSupplyMode: (raw.taxSupplyMode as TaxSupplyMode) || 'auto',
+    isInterState: Boolean(raw.isInterState),
+    placeOfSupply: String(raw.placeOfSupply || ''),
+    roundOffEnabled: raw.roundOffEnabled !== false,
+    status: (raw.status as PurchaseStatus) || 'unpaid',
+    items: itemsRaw as ComputedPurchaseLineItem[],
+    subtotal: Number(raw.subtotal ?? 0),
+    itemDiscountTotal: Number(raw.itemDiscountTotal ?? 0),
+    invoiceDiscountType: raw.invoiceDiscountType === 'fixed' ? 'fixed' : 'percent',
+    invoiceDiscountValue: Number(raw.invoiceDiscountValue ?? 0),
+    invoiceDiscountAmount: Number(raw.invoiceDiscountAmount ?? 0),
+    totalDiscount: Number(raw.totalDiscount ?? 0),
+    taxableAmount: Number(raw.taxableAmount ?? 0),
+    cgstTotal: Number(raw.cgstTotal ?? 0),
+    sgstTotal: Number(raw.sgstTotal ?? 0),
+    igstTotal: Number(raw.igstTotal ?? 0),
+    totalTax: Number(raw.totalTax ?? 0),
+    additionalCharges: Number(raw.additionalCharges ?? 0),
+    roundOff: Number(raw.roundOff ?? 0),
+    grandTotal: Number(raw.grandTotal ?? 0),
+    amountPaid: Number(raw.amountPaid ?? 0),
+    balanceDue: Number(raw.balanceDue ?? 0),
+    amountInWords: String(raw.amountInWords || ''),
+    notes: String(raw.notes || ''),
+    ocrUsed: Boolean(raw.ocrUsed),
+    ocrWarnings: Array.isArray(raw.ocrWarnings) ? raw.ocrWarnings.map(String) : undefined,
+    attachmentId: raw.attachmentId ? String(raw.attachmentId) : undefined,
+    attachmentMeta: raw.attachmentMeta
+      ? (raw.attachmentMeta as Purchase['attachmentMeta'])
+      : null,
+    createdAt: String(raw.createdAt || ''),
+    updatedAt: String(raw.updatedAt || ''),
+  };
+}
+
+function normalizePurchasePayment(raw: Record<string, unknown>): PurchasePayment {
+  return {
+    id: String(raw.id || ''),
+    userUid: String(raw.userUid || ''),
+    purchaseId: String(raw.purchaseId || ''),
+    billNumber: raw.billNumber ? String(raw.billNumber) : undefined,
+    supplierId: String(raw.supplierId || ''),
+    supplierName: raw.supplierName ? String(raw.supplierName) : undefined,
+    paymentDate: String(raw.paymentDate || ''),
+    amount: Number(raw.amount ?? 0),
+    paymentMethod: (raw.paymentMethod as PaymentMethod) || 'Bank Transfer',
+    referenceId: String(raw.referenceId || ''),
+    notes: String(raw.notes || ''),
+    paymentNumber: String(raw.paymentNumber || ''),
+    isAdvance: Boolean(raw.isAdvance),
+    createdAt: String(raw.createdAt || ''),
+  };
+}
+
+function normalizePurchaseAttachment(raw: Record<string, unknown>): PurchaseAttachment {
+  return {
+    id: String(raw.id || ''),
+    userUid: String(raw.userUid || ''),
+    purchaseId: String(raw.purchaseId || ''),
+    fileName: String(raw.fileName || 'bill'),
+    mimeType: String(raw.mimeType || 'image/jpeg'),
+    sizeBytes: Number(raw.sizeBytes ?? 0),
+    storagePath: String(raw.storagePath || ''),
+    downloadUrl: String(raw.downloadUrl || ''),
+    pageCount: raw.pageCount !== undefined ? Number(raw.pageCount) : undefined,
+    createdAt: String(raw.createdAt || ''),
+  };
+}
+
 function getStoredImpersonationId(): string | null {
   try {
     return sessionStorage.getItem(IMPERSONATION_STORAGE_KEY);
@@ -592,7 +748,7 @@ async function createNotification(params: {
 
 async function allocateDocumentNumber(
   tenantUid: string,
-  docType: 'INV' | 'QUO' | 'RCP',
+  docType: 'INV' | 'QUO' | 'RCP' | 'PPAY',
   prefix: string,
   dateIso: string
 ): Promise<string> {
@@ -1987,6 +2143,378 @@ async function computeCustomerAnalyticsForTenant(
   );
 }
 
+async function listTenantSuppliersBaseRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<Supplier[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'suppliers')) {
+    return getTenantEntry(tenantUid).suppliers;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:suppliers`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/suppliers`));
+    const list = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizeSupplier)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      : [];
+    setTenantCollectionData(tenantUid, 'suppliers', list, true);
+    return list;
+  });
+}
+
+async function syncOverduePurchasesFromList(
+  tenantUid: string,
+  purchases: Purchase[],
+  forceCheck = false
+): Promise<Purchase[]> {
+  const today = todayISO();
+  if (!forceCheck && getTenantPurchaseOverdueCheckDate(tenantUid) === today) {
+    return purchases;
+  }
+  const now = new Date().toISOString();
+  const candidates = purchases.filter(
+    (p) =>
+      (p.status === 'unpaid' || p.status === 'partially_paid') &&
+      p.dueDate &&
+      p.dueDate < today &&
+      p.balanceDue > 0
+  );
+  setTenantPurchaseOverdueCheckDate(tenantUid, today);
+  if (candidates.length === 0) return purchases;
+
+  const patch: Record<string, unknown> = {};
+  const updatedIds = new Set<string>();
+  for (const p of candidates) {
+    patch[`tenants/${tenantUid}/purchases/${p.id}/status`] = 'overdue';
+    patch[`tenants/${tenantUid}/purchases/${p.id}/updatedAt`] = now;
+    updatedIds.add(p.id);
+  }
+  await update(ref(rtdb), patch);
+  const nextList = purchases.map((p) =>
+    updatedIds.has(p.id) ? { ...p, status: 'overdue' as PurchaseStatus, updatedAt: now } : p
+  );
+  setTenantCollectionData(tenantUid, 'purchases', nextList, true);
+  await touchTenantMeta(tenantUid, ['purchases']);
+  return nextList;
+}
+
+async function listTenantPurchasesRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<Purchase[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'purchases')) {
+    return getTenantEntry(tenantUid).purchases;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:purchases`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/purchases`));
+    const list = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizePurchase)
+          .sort((a, b) => `${b.billDate}_${b.createdAt}`.localeCompare(`${a.billDate}_${a.createdAt}`))
+      : [];
+    setTenantCollectionData(tenantUid, 'purchases', list, true);
+    return syncOverduePurchasesFromList(tenantUid, list);
+  });
+}
+
+async function listTenantPurchasePaymentsRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<PurchasePayment[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'purchasePayments')) {
+    return getTenantEntry(tenantUid).purchasePayments;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:purchasePayments`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/purchasePayments`));
+    const list = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizePurchasePayment)
+          .sort((a, b) =>
+            `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
+          )
+      : [];
+    setTenantCollectionData(tenantUid, 'purchasePayments', list, true);
+    return list;
+  });
+}
+
+async function listTenantPurchaseAttachmentsRaw(
+  tenantUid: string,
+  forceRefresh = false
+): Promise<PurchaseAttachment[]> {
+  if (!forceRefresh && isTenantCollectionFresh(tenantUid, 'purchaseAttachments')) {
+    return getTenantEntry(tenantUid).purchaseAttachments;
+  }
+  return dedupeFetch(`tenant:${tenantUid}:purchaseAttachments`, async () => {
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/purchaseAttachments`));
+    const list = snap.exists()
+      ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
+          .map(normalizePurchaseAttachment)
+          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      : [];
+    setTenantCollectionData(tenantUid, 'purchaseAttachments', list, true);
+    return list;
+  });
+}
+
+export function enrichSuppliersWithStats(
+  rawSuppliers: Supplier[],
+  purchases: Purchase[],
+  opts?: { search?: string; includeArchived?: boolean }
+): Supplier[] {
+  const search = (opts?.search || '').trim().toLowerCase();
+  const includeArchived = Boolean(opts?.includeArchived);
+
+  return rawSuppliers
+    .filter((s) => includeArchived || !s.archived)
+    .map((s) => {
+      const bills = purchases.filter((p) => p.supplierId === s.id);
+      const activeBills = bills.filter((p) => p.status !== 'draft');
+      return {
+        ...s,
+        totalPurchases: fromPaise(activeBills.reduce((sum, b) => sum + toPaise(b.grandTotal), 0)),
+        totalPaid: fromPaise(activeBills.reduce((sum, b) => sum + toPaise(b.amountPaid), 0)),
+        outstandingBalance: fromPaise(
+          activeBills.reduce((sum, b) => sum + toPaise(b.balanceDue), 0)
+        ),
+        billCount: bills.length,
+      };
+    })
+    .filter((s) => {
+      if (!search) return true;
+      return (
+        s.name.toLowerCase().includes(search) ||
+        s.companyName.toLowerCase().includes(search) ||
+        s.email.toLowerCase().includes(search) ||
+        s.phone.toLowerCase().includes(search) ||
+        s.gstin.toLowerCase().includes(search)
+      );
+    })
+    .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+async function reconcilePurchasePayments(
+  tenantUid: string,
+  purchaseId: string,
+  nowIso: string
+): Promise<Purchase | null> {
+  let purchase = getTenantEntry(tenantUid).purchases.find((p) => p.id === purchaseId);
+  const purRef = ref(rtdb, `tenants/${tenantUid}/purchases/${purchaseId}`);
+  if (!purchase) {
+    const snap = await get(purRef);
+    if (!snap.exists()) return null;
+    purchase = normalizePurchase(snap.val() as Record<string, unknown>);
+  }
+  if (purchase.status === 'draft') return purchase;
+
+  const allPayments = await listTenantPurchasePaymentsRaw(tenantUid);
+  const paidPaise = allPayments
+    .filter((p) => p.purchaseId === purchaseId)
+    .reduce((sum, p) => sum + toPaise(p.amount), 0);
+
+  const grandPaise = toPaise(purchase.grandTotal);
+  const balancePaise = Math.max(0, grandPaise - paidPaise);
+  const nextStatus: PurchaseStatus =
+    balancePaise === 0
+      ? 'paid'
+      : purchase.dueDate && purchase.dueDate < todayISO()
+        ? 'overdue'
+        : paidPaise > 0
+          ? 'partially_paid'
+          : 'unpaid';
+
+  const amountPaid = fromPaise(paidPaise);
+  const balanceDue = fromPaise(balancePaise);
+
+  await update(purRef, {
+    amountPaid,
+    balanceDue,
+    status: nextStatus,
+    updatedAt: nowIso,
+  });
+
+  const updated: Purchase = {
+    ...purchase,
+    amountPaid,
+    balanceDue,
+    status: nextStatus,
+    updatedAt: nowIso,
+  };
+  upsertTenantPurchaseCache(tenantUid, updated);
+  await touchTenantMeta(tenantUid, ['purchases']);
+  return updated;
+}
+
+export function computePurchaseAnalyticsFromData(
+  allPurchases: Purchase[],
+  allPurchasePayments: PurchasePayment[],
+  rawSuppliers: Supplier[],
+  params?: { range?: string; startDate?: string; endDate?: string }
+): PurchaseAnalyticsData {
+  const { start, end } = buildDateRangeBounds(params?.range, params?.startDate, params?.endDate);
+  const suppliers = enrichSuppliersWithStats(rawSuppliers, allPurchases, { includeArchived: false });
+  const activeBills = allPurchases.filter((p) => p.status !== 'draft');
+  const draftBills = allPurchases.filter((p) => p.status === 'draft').length;
+
+  const rangedBills = activeBills.filter((p) => p.billDate >= start && p.billDate <= end);
+  const rangedPayments = allPurchasePayments.filter(
+    (p) => p.paymentDate >= start && p.paymentDate <= end
+  );
+
+  const totalPurchases = fromPaise(rangedBills.reduce((s, p) => s + toPaise(p.grandTotal), 0));
+  const amountPaid = fromPaise(rangedPayments.reduce((s, p) => s + toPaise(p.amount), 0));
+  const outstandingPayables = fromPaise(
+    activeBills.reduce((s, p) => s + toPaise(p.balanceDue), 0)
+  );
+  const overduePayables = fromPaise(
+    activeBills
+      .filter((p) => p.status === 'overdue')
+      .reduce((s, p) => s + toPaise(p.balanceDue), 0)
+  );
+
+  const useDaily = params?.range === 'today' || params?.range === 'week';
+  const bucketMap = new Map<
+    string,
+    { purchasedPaise: number; paidPaise: number; billCount: number }
+  >();
+  for (const b of rangedBills) {
+    const key = useDaily ? b.billDate : b.billDate.slice(0, 7);
+    const cur = bucketMap.get(key) || { purchasedPaise: 0, paidPaise: 0, billCount: 0 };
+    cur.purchasedPaise += toPaise(b.grandTotal);
+    cur.billCount += 1;
+    bucketMap.set(key, cur);
+  }
+  for (const pay of rangedPayments) {
+    const key = useDaily ? pay.paymentDate : pay.paymentDate.slice(0, 7);
+    const cur = bucketMap.get(key) || { purchasedPaise: 0, paidPaise: 0, billCount: 0 };
+    cur.paidPaise += toPaise(pay.amount);
+    bucketMap.set(key, cur);
+  }
+
+  const purchaseSeries = Array.from(bucketMap.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, v]) => ({
+      period,
+      label: useDaily ? period.slice(5) : period,
+      purchased: fromPaise(v.purchasedPaise),
+      paid: fromPaise(v.paidPaise),
+      billCount: v.billCount,
+    }));
+
+  const statusMap = new Map<PurchaseStatus, { count: number; amountPaise: number }>();
+  for (const p of allPurchases) {
+    const cur = statusMap.get(p.status) || { count: 0, amountPaise: 0 };
+    cur.count += 1;
+    cur.amountPaise += toPaise(p.grandTotal);
+    statusMap.set(p.status, cur);
+  }
+  const statusBreakdown = Array.from(statusMap.entries()).map(([status, v]) => ({
+    status,
+    count: v.count,
+    amount: fromPaise(v.amountPaise),
+  }));
+
+  const supAgg = new Map<
+    string,
+    {
+      supplierId: string;
+      name: string;
+      companyName: string;
+      gstin: string;
+      totalPaise: number;
+      outstandingPaise: number;
+      billCount: number;
+    }
+  >();
+  for (const b of rangedBills) {
+    const cur = supAgg.get(b.supplierId) || {
+      supplierId: b.supplierId,
+      name: b.supplierSnapshot.name,
+      companyName: b.supplierSnapshot.companyName,
+      gstin: b.supplierSnapshot.gstin,
+      totalPaise: 0,
+      outstandingPaise: 0,
+      billCount: 0,
+    };
+    cur.totalPaise += toPaise(b.grandTotal);
+    cur.outstandingPaise += toPaise(b.balanceDue);
+    cur.billCount += 1;
+    supAgg.set(b.supplierId, cur);
+  }
+  const topSuppliers = Array.from(supAgg.values())
+    .sort((a, b) => b.totalPaise - a.totalPaise)
+    .slice(0, 6)
+    .map((s) => ({
+      supplierId: s.supplierId,
+      name: s.name,
+      companyName: s.companyName,
+      gstin: s.gstin,
+      totalPurchases: fromPaise(s.totalPaise),
+      outstanding: fromPaise(s.outstandingPaise),
+      billCount: s.billCount,
+    }));
+
+  return {
+    summary: {
+      totalPurchases,
+      totalPurchaseBills: rangedBills.length,
+      amountPaid,
+      outstandingPayables,
+      overduePayables,
+      totalVendors: suppliers.length,
+      draftBills,
+    },
+    purchaseSeries,
+    statusBreakdown,
+    topSuppliers,
+    recentPurchases: allPurchases.slice(0, 8),
+  };
+}
+
+export function computeCombinedSalesVsPurchases(
+  allInvoices: Invoice[],
+  allPurchases: Purchase[],
+  params?: { range?: string; startDate?: string; endDate?: string }
+): Array<{
+  period: string;
+  label: string;
+  salesRevenue: number;
+  purchaseValue: number;
+  grossDifference: number;
+}> {
+  const { start, end } = buildDateRangeBounds(params?.range, params?.startDate, params?.endDate);
+  const useDaily = params?.range === 'today' || params?.range === 'week';
+  const buckets = new Map<string, { salesPaise: number; purchasePaise: number }>();
+
+  for (const inv of allInvoices) {
+    if (inv.status === 'draft' || inv.status === 'cancelled') continue;
+    if (inv.invoiceDate < start || inv.invoiceDate > end) continue;
+    const key = useDaily ? inv.invoiceDate : inv.invoiceDate.slice(0, 7);
+    const cur = buckets.get(key) || { salesPaise: 0, purchasePaise: 0 };
+    cur.salesPaise += toPaise(inv.grandTotal);
+    buckets.set(key, cur);
+  }
+
+  for (const pur of allPurchases) {
+    if (pur.status === 'draft') continue;
+    if (pur.billDate < start || pur.billDate > end) continue;
+    const key = useDaily ? pur.billDate : pur.billDate.slice(0, 7);
+    const cur = buckets.get(key) || { salesPaise: 0, purchasePaise: 0 };
+    cur.purchasePaise += toPaise(pur.grandTotal);
+    buckets.set(key, cur);
+  }
+
+  return Array.from(buckets.entries())
+    .sort(([a], [b]) => a.localeCompare(b))
+    .map(([period, v]) => ({
+      period,
+      label: useDaily ? period.slice(5) : period,
+      salesRevenue: fromPaise(v.salesPaise),
+      purchaseValue: fromPaise(v.purchasePaise),
+      grossDifference: fromPaise(v.salesPaise - v.purchasePaise),
+    }));
+}
+
 const metaListenerRegistry = new Map<string, { refs: number; unsub: () => void }>();
 
 export function ensureTenantMetaListener(tenantUid: string): () => void {
@@ -2034,6 +2562,10 @@ export function ensureTenantMetaListener(tenantUid: string): () => void {
       void checkAndRefresh('rateCard', listTenantRateCardAllRaw);
       void checkAndRefresh('notifications', listTenantNotificationsRaw);
       void checkAndRefresh('activityLogs', listTenantActivityLogsRaw);
+      void checkAndRefresh('suppliers', listTenantSuppliersBaseRaw);
+      void checkAndRefresh('purchases', listTenantPurchasesRaw);
+      void checkAndRefresh('purchasePayments', listTenantPurchasePaymentsRaw);
+      void checkAndRefresh('purchaseAttachments', listTenantPurchaseAttachmentsRaw);
     },
     () => {}
   );
@@ -2247,7 +2779,10 @@ export const cachedRead = {
   getCachedSession,
   getCachedPublicSettings,
   enrichCustomersWithStats,
+  enrichSuppliersWithStats,
   computeCustomerAnalyticsFromData,
+  computePurchaseAnalyticsFromData,
+  computeCombinedSalesVsPurchases,
   computeOutstandingRowsFromInvoices,
   computeAdminDashboardFromData,
   ensureTenantMetaListener,
@@ -4073,6 +4608,700 @@ export const rtdbService = {
     markNotificationReadCache(tenantUid);
     await touchTenantMeta(tenantUid, ['notifications']);
     return { ok: true };
+  },
+
+  // ==================== SUPPLIERS & PURCHASES MANAGEMENT ====================
+  listSuppliers: async (params?: { search?: string; includeArchived?: boolean }) => {
+    const ctx = await requireTenantContext();
+    const [rawSuppliers, purchases] = await Promise.all([
+      listTenantSuppliersBaseRaw(ctx.effectiveUser.uid),
+      listTenantPurchasesRaw(ctx.effectiveUser.uid),
+    ]);
+    return { suppliers: enrichSuppliersWithStats(rawSuppliers, purchases, params) };
+  },
+
+  getSupplier: async (id: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [rawSuppliers, purchases, payments] = await Promise.all([
+      listTenantSuppliersBaseRaw(tenantUid),
+      listTenantPurchasesRaw(tenantUid),
+      listTenantPurchasePaymentsRaw(tenantUid),
+    ]);
+    const list = enrichSuppliersWithStats(rawSuppliers, purchases, { includeArchived: true });
+    const supplier = list.find((s) => s.id === id);
+    if (!supplier) throw new Error('Supplier not found');
+    return {
+      supplier,
+      purchases: purchases.filter((p) => p.supplierId === id),
+      payments: payments.filter((p) => p.supplierId === id),
+    };
+  },
+
+  createSupplier: async (input: Partial<Supplier>) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const name = sanitizeStr(input.name, 120);
+    const companyName = sanitizeStr(input.companyName, 160);
+    if (!name && !companyName) {
+      throw new Error('Supplier name or company name is required');
+    }
+    const gstin = sanitizeStr(input.gstin, 20).toUpperCase();
+    if (gstin && !isValidGstin(gstin)) {
+      throw new Error('Invalid supplier GSTIN format');
+    }
+
+    const existingList = await listTenantSuppliersBaseRaw(tenantUid);
+    if (gstin) {
+      const dup = existingList.find((s) => !s.archived && s.gstin === gstin);
+      if (dup) {
+        throw new Error(
+          `Supplier "${dup.companyName || dup.name}" with GSTIN ${gstin} already exists`
+        );
+      }
+    }
+
+    const state =
+      sanitizeStr(input.state, 64) || getStateFromGstin(gstin) || 'Maharashtra';
+    const stateCode = sanitizeStr(input.stateCode, 4) || getStateCode(state);
+    const id = generateId('sup');
+    const now = new Date().toISOString();
+    const supplier: Supplier = {
+      id,
+      userUid: tenantUid,
+      name: name || companyName,
+      companyName,
+      email: sanitizeStr(input.email, 160).toLowerCase(),
+      phone: sanitizeStr(input.phone, 32),
+      gstin,
+      billingAddress: sanitizeStr(input.billingAddress, 400),
+      state,
+      stateCode,
+      notes: sanitizeStr(input.notes, 400),
+      archived: false,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    await set(ref(rtdb, `tenants/${tenantUid}/suppliers/${id}`), stripUndefined(supplier));
+    upsertTenantSupplierCache(tenantUid, supplier);
+    await touchTenantMeta(tenantUid, ['suppliers']);
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'SUPPLIER_CREATED',
+      entityType: 'supplier',
+      entityId: id,
+      summary: `Added supplier ${supplier.companyName || supplier.name}`,
+    });
+    return { supplier };
+  },
+
+  updateSupplier: async (id: string, input: Partial<Supplier>) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const list = await listTenantSuppliersBaseRaw(tenantUid);
+    const existing = list.find((s) => s.id === id);
+    if (!existing) throw new Error('Supplier not found');
+
+    const gstin =
+      input.gstin !== undefined ? sanitizeStr(input.gstin, 20).toUpperCase() : existing.gstin;
+    if (gstin && !isValidGstin(gstin)) {
+      throw new Error('Invalid supplier GSTIN format');
+    }
+    if (gstin && list.some((s) => s.id !== id && !s.archived && s.gstin === gstin)) {
+      throw new Error(`Another active supplier already uses GSTIN ${gstin}`);
+    }
+
+    const nextState =
+      input.state !== undefined
+        ? sanitizeStr(input.state, 64) || existing.state
+        : existing.state;
+    const updated: Supplier = {
+      ...existing,
+      name: input.name !== undefined ? sanitizeStr(input.name, 120) || existing.name : existing.name,
+      companyName:
+        input.companyName !== undefined
+          ? sanitizeStr(input.companyName, 160)
+          : existing.companyName,
+      email:
+        input.email !== undefined
+          ? sanitizeStr(input.email, 160).toLowerCase()
+          : existing.email,
+      phone: input.phone !== undefined ? sanitizeStr(input.phone, 32) : existing.phone,
+      gstin,
+      billingAddress:
+        input.billingAddress !== undefined
+          ? sanitizeStr(input.billingAddress, 400)
+          : existing.billingAddress,
+      state: nextState,
+      stateCode:
+        input.stateCode !== undefined
+          ? sanitizeStr(input.stateCode, 4) || getStateCode(nextState)
+          : getStateCode(nextState) || existing.stateCode,
+      notes: input.notes !== undefined ? sanitizeStr(input.notes, 400) : existing.notes,
+      updatedAt: new Date().toISOString(),
+    };
+
+    await set(ref(rtdb, `tenants/${tenantUid}/suppliers/${id}`), stripUndefined(updated));
+    upsertTenantSupplierCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['suppliers']);
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'SUPPLIER_UPDATED',
+      entityType: 'supplier',
+      entityId: id,
+      summary: `Updated supplier ${updated.companyName || updated.name}`,
+    });
+    return { supplier: updated };
+  },
+
+  deleteSupplier: async (id: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [list, purchases] = await Promise.all([
+      listTenantSuppliersBaseRaw(tenantUid),
+      listTenantPurchasesRaw(tenantUid),
+    ]);
+    const existing = list.find((s) => s.id === id);
+    if (!existing) throw new Error('Supplier not found');
+
+    const linkedBills = purchases.filter((p) => p.supplierId === id);
+    if (linkedBills.length > 0) {
+      const archived: Supplier = {
+        ...existing,
+        archived: true,
+        updatedAt: new Date().toISOString(),
+      };
+      await update(ref(rtdb, `tenants/${tenantUid}/suppliers/${id}`), {
+        archived: true,
+        updatedAt: archived.updatedAt,
+      });
+      upsertTenantSupplierCache(tenantUid, archived);
+      await touchTenantMeta(tenantUid, ['suppliers']);
+      return { ok: true, mode: 'archived' as const };
+    }
+
+    await remove(ref(rtdb, `tenants/${tenantUid}/suppliers/${id}`));
+    removeTenantSupplierCache(tenantUid, id);
+    await touchTenantMeta(tenantUid, ['suppliers']);
+    return { ok: true, mode: 'deleted' as const };
+  },
+
+  listPurchases: async (params?: {
+    search?: string;
+    status?: string;
+    supplierId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) => {
+    const ctx = await requireTenantContext();
+    let list = await listTenantPurchasesRaw(ctx.effectiveUser.uid);
+    if (params?.status && params.status !== 'all') {
+      list = list.filter((p) => p.status === params.status);
+    }
+    if (params?.supplierId && params.supplierId !== 'all') {
+      list = list.filter((p) => p.supplierId === params.supplierId);
+    }
+    if (params?.startDate) {
+      list = list.filter((p) => p.billDate >= params.startDate!);
+    }
+    if (params?.endDate) {
+      list = list.filter((p) => p.billDate <= params.endDate!);
+    }
+    if (params?.search) {
+      const q = params.search.trim().toLowerCase();
+      list = list.filter(
+        (p) =>
+          p.billNumber.toLowerCase().includes(q) ||
+          p.referenceNumber.toLowerCase().includes(q) ||
+          p.supplierSnapshot.companyName.toLowerCase().includes(q) ||
+          p.supplierSnapshot.name.toLowerCase().includes(q) ||
+          p.supplierSnapshot.gstin.toLowerCase().includes(q)
+      );
+    }
+    return { purchases: list };
+  },
+
+  getPurchase: async (id: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [purchases, payments, attachments] = await Promise.all([
+      listTenantPurchasesRaw(tenantUid),
+      listTenantPurchasePaymentsRaw(tenantUid),
+      listTenantPurchaseAttachmentsRaw(tenantUid),
+    ]);
+    const purchase = purchases.find((p) => p.id === id);
+    if (!purchase) throw new Error('Purchase bill not found');
+    const billPayments = payments.filter((p) => p.purchaseId === id);
+    const attachment = attachments.find((a) => a.purchaseId === id) || null;
+    return { purchase, payments: billPayments, attachment };
+  },
+
+  savePurchase: async (payload: SavePurchasePayload, editId?: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    let profile = getTenantEntry(tenantUid).profile || ctx.businessProfile;
+    if (!profile) {
+      const profSnap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
+      profile = profSnap.exists()
+        ? normalizeBusinessProfile(tenantUid, profSnap.val() as Record<string, unknown>)
+        : normalizeBusinessProfile(tenantUid, { state: 'Maharashtra' });
+      setTenantProfileCache(tenantUid, profile, true);
+    }
+    const suppliers = await listTenantSuppliersBaseRaw(tenantUid);
+    const supplier = suppliers.find((s) => s.id === payload.supplierId);
+    if (!supplier) throw new Error('Selected supplier not found');
+
+    const billNumber = sanitizeStr(payload.billNumber, 64);
+    if (!billNumber) throw new Error('Purchase bill number is required');
+
+    const billDate = sanitizeStr(payload.billDate, 10) || todayISO();
+    const dueDate = sanitizeStr(payload.dueDate, 10) || billDate;
+    const validatedItems = validateLineItems(payload.items).map((it, idx) => ({
+      ...it,
+      ocrConfidence: payload.items[idx]?.ocrConfidence,
+      ocrStatus: payload.items[idx]?.ocrStatus,
+      ocrMessage: payload.items[idx]?.ocrMessage,
+    })) as PurchaseLineItemInput[];
+
+    const existingList = await listTenantPurchasesRaw(tenantUid);
+    const existing = editId ? existingList.find((p) => p.id === editId) : undefined;
+    if (editId && !existing) throw new Error('Purchase bill not found');
+
+    const duplicateBill = existingList.find(
+      (p) =>
+        p.id !== editId &&
+        p.supplierId === supplier.id &&
+        p.billNumber.trim().toLowerCase() === billNumber.toLowerCase()
+    );
+    if (duplicateBill) {
+      throw new Error(
+        `Purchase bill "${billNumber}" is already recorded for supplier ${
+          supplier.companyName || supplier.name
+        }`
+      );
+    }
+
+    const calc = computePurchaseTotals({
+      items: validatedItems,
+      supplierState: supplier.state,
+      recipientState: profile.state,
+      placeOfSupply: payload.placeOfSupply || profile.state,
+      purchaseType: payload.purchaseType,
+      taxMode: payload.taxMode,
+      taxSupplyMode: payload.taxSupplyMode,
+      invoiceDiscountType: payload.invoiceDiscountType,
+      invoiceDiscountValue: payload.invoiceDiscountValue,
+      additionalCharges: payload.additionalCharges,
+      roundOffEnabled: payload.roundOffEnabled,
+    });
+
+    if (!calc.taxRuleChecked && payload.purchaseType === 'gst') {
+      throw new Error(
+        calc.taxRuleWarning ||
+          'Verify supplier state and recipient place of supply before saving GST purchase.'
+      );
+    }
+
+    const now = new Date().toISOString();
+    const purchaseId = existing ? existing.id : generateId('pur');
+
+    // Optional Firebase Storage upload for scanned bill attachment
+    let attachmentId = existing?.attachmentId;
+    let attachmentMeta = existing?.attachmentMeta ?? null;
+
+    if (payload.attachmentFile?.base64Data) {
+      const attId = generateId('att');
+      const safeName =
+        payload.attachmentFile.fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'purchase-bill';
+      const storagePath = `tenants/${tenantUid}/purchaseAttachments/${attId}/${safeName}`;
+      try {
+        const cleanB64 = payload.attachmentFile.base64Data.includes(',')
+          ? payload.attachmentFile.base64Data.split(',')[1] || ''
+          : payload.attachmentFile.base64Data;
+        const binStr = atob(cleanB64);
+        const bytes = new Uint8Array(binStr.length);
+        for (let i = 0; i < binStr.length; i++) bytes[i] = binStr.charCodeAt(i);
+        const blob = new Blob([bytes], { type: payload.attachmentFile.mimeType });
+
+        const sRef = storageRef(firebaseStorage, storagePath);
+        await uploadBytes(sRef, blob, { contentType: payload.attachmentFile.mimeType });
+        const downloadUrl = await getDownloadURL(sRef);
+
+        const attRecord: PurchaseAttachment = {
+          id: attId,
+          userUid: tenantUid,
+          purchaseId,
+          fileName: payload.attachmentFile.fileName,
+          mimeType: payload.attachmentFile.mimeType,
+          sizeBytes: payload.attachmentFile.sizeBytes,
+          storagePath,
+          downloadUrl,
+          pageCount: payload.attachmentFile.pageCount,
+          createdAt: now,
+        };
+        await set(
+          ref(rtdb, `tenants/${tenantUid}/purchaseAttachments/${attId}`),
+          stripUndefined(attRecord)
+        );
+        upsertTenantPurchaseAttachmentCache(tenantUid, attRecord);
+        await touchTenantMeta(tenantUid, ['purchaseAttachments']);
+        attachmentId = attId;
+        attachmentMeta = {
+          id: attId,
+          fileName: attRecord.fileName,
+          mimeType: attRecord.mimeType,
+          sizeBytes: attRecord.sizeBytes,
+          downloadUrl,
+          storagePath,
+          pageCount: attRecord.pageCount,
+        };
+      } catch {
+        // Non-blocking fallback if Firebase Storage rules reject binary upload
+      }
+    }
+
+    const existingPayments = existing
+      ? (await listTenantPurchasePaymentsRaw(tenantUid)).filter((p) => p.purchaseId === existing.id)
+      : [];
+    const existingPaidPaise = existingPayments.reduce((s, p) => s + toPaise(p.amount), 0);
+    const grandPaise = toPaise(calc.grandTotal);
+    const balancePaise = Math.max(0, grandPaise - existingPaidPaise);
+
+    const status: PurchaseStatus = payload.saveAsDraft
+      ? 'draft'
+      : balancePaise === 0 && grandPaise > 0
+        ? 'paid'
+        : dueDate < todayISO() && balancePaise > 0
+          ? 'overdue'
+          : existingPaidPaise > 0
+            ? 'partially_paid'
+            : 'unpaid';
+
+    const supplierSnapshot: SupplierSnapshot = {
+      id: supplier.id,
+      name: supplier.name,
+      companyName: supplier.companyName,
+      email: supplier.email,
+      phone: supplier.phone,
+      gstin: supplier.gstin,
+      billingAddress: supplier.billingAddress,
+      state: supplier.state,
+      stateCode: supplier.stateCode,
+    };
+
+    const purchase: Purchase = {
+      id: purchaseId,
+      userUid: tenantUid,
+      billNumber,
+      referenceNumber: sanitizeStr(payload.referenceNumber, 80),
+      supplierId: supplier.id,
+      supplierSnapshot,
+      billDate,
+      dueDate,
+      paymentTerms: sanitizeStr(payload.paymentTerms, 120),
+      purchaseType: payload.purchaseType,
+      isGst: calc.isGst,
+      taxMode: payload.taxMode,
+      taxSupplyMode: payload.taxSupplyMode,
+      isInterState: calc.isInterState,
+      placeOfSupply: sanitizeStr(payload.placeOfSupply, 64) || profile.state,
+      roundOffEnabled: payload.roundOffEnabled,
+      status,
+      items: calc.items,
+      subtotal: calc.subtotal,
+      itemDiscountTotal: calc.itemDiscountTotal,
+      invoiceDiscountType: payload.invoiceDiscountType === 'fixed' ? 'fixed' : 'percent',
+      invoiceDiscountValue: Math.max(0, Number(payload.invoiceDiscountValue) || 0),
+      invoiceDiscountAmount: calc.invoiceDiscountAmount,
+      totalDiscount: calc.totalDiscount,
+      taxableAmount: calc.taxableAmount,
+      cgstTotal: calc.cgstTotal,
+      sgstTotal: calc.sgstTotal,
+      igstTotal: calc.igstTotal,
+      totalTax: calc.totalTax,
+      additionalCharges: calc.additionalCharges,
+      roundOff: calc.roundOff,
+      grandTotal: calc.grandTotal,
+      amountPaid: fromPaise(existingPaidPaise),
+      balanceDue: payload.saveAsDraft ? calc.grandTotal : fromPaise(balancePaise),
+      amountInWords: calc.amountInWords,
+      notes: sanitizeStr(payload.notes, 600),
+      ocrUsed: Boolean(payload.ocrUsed),
+      ocrWarnings: payload.ocrWarnings,
+      attachmentId,
+      attachmentMeta,
+      createdAt: existing ? existing.createdAt : now,
+      updatedAt: now,
+    };
+
+    await set(ref(rtdb, `tenants/${tenantUid}/purchases/${purchaseId}`), stripUndefined(purchase));
+    upsertTenantPurchaseCache(tenantUid, purchase);
+    await touchTenantMeta(tenantUid, ['purchases']);
+
+    let savedPurchase = purchase;
+    if (
+      !payload.saveAsDraft &&
+      payload.initialPayment &&
+      Number(payload.initialPayment.amount) > 0
+    ) {
+      const payResult = await rtdbService.recordPurchasePayment({
+        purchaseId,
+        amount: payload.initialPayment.amount,
+        paymentDate: payload.initialPayment.paymentDate || billDate,
+        paymentMethod: payload.initialPayment.paymentMethod || 'Bank Transfer',
+        referenceId: payload.initialPayment.referenceId,
+        notes: payload.initialPayment.notes,
+        allowAdvance: payload.initialPayment.allowAdvance,
+      });
+      if (payResult.purchase) savedPurchase = payResult.purchase;
+    }
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: existing ? 'PURCHASE_UPDATED' : 'PURCHASE_CREATED',
+      entityType: 'purchase',
+      entityId: purchaseId,
+      summary: `${existing ? 'Updated' : 'Recorded'} purchase bill ${billNumber} (${
+        supplier.companyName || supplier.name
+      })`,
+    });
+
+    return { purchase: savedPurchase };
+  },
+
+  deletePurchase: async (purchaseId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [purchases, payments, attachments] = await Promise.all([
+      listTenantPurchasesRaw(tenantUid),
+      listTenantPurchasePaymentsRaw(tenantUid),
+      listTenantPurchaseAttachmentsRaw(tenantUid),
+    ]);
+    const existing = purchases.find((p) => p.id === purchaseId);
+    if (!existing) throw new Error('Purchase bill not found');
+
+    const patch: Record<string, null> = {
+      [`tenants/${tenantUid}/purchases/${purchaseId}`]: null,
+    };
+    for (const pay of payments.filter((p) => p.purchaseId === purchaseId)) {
+      patch[`tenants/${tenantUid}/purchasePayments/${pay.id}`] = null;
+    }
+    for (const att of attachments.filter((a) => a.purchaseId === purchaseId)) {
+      patch[`tenants/${tenantUid}/purchaseAttachments/${att.id}`] = null;
+      if (att.storagePath) {
+        try {
+          await deleteObject(storageRef(firebaseStorage, att.storagePath));
+        } catch {
+          // ignore if storage file absent
+        }
+      }
+    }
+
+    await update(ref(rtdb), patch);
+    removeTenantPurchaseCache(tenantUid, purchaseId);
+    await touchTenantMeta(tenantUid, ['purchases', 'purchasePayments', 'purchaseAttachments']);
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'PURCHASE_DELETED',
+      entityType: 'purchase',
+      entityId: purchaseId,
+      summary: `Deleted purchase bill ${existing.billNumber}`,
+    });
+    return { ok: true };
+  },
+
+  listPurchasePayments: async (params?: {
+    search?: string;
+    supplierId?: string;
+    purchaseId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) => {
+    const ctx = await requireTenantContext();
+    let list = await listTenantPurchasePaymentsRaw(ctx.effectiveUser.uid);
+    if (params?.purchaseId) list = list.filter((p) => p.purchaseId === params.purchaseId);
+    if (params?.supplierId && params.supplierId !== 'all') {
+      list = list.filter((p) => p.supplierId === params.supplierId);
+    }
+    if (params?.startDate) list = list.filter((p) => p.paymentDate >= params.startDate!);
+    if (params?.endDate) list = list.filter((p) => p.paymentDate <= params.endDate!);
+    if (params?.search) {
+      const q = params.search.trim().toLowerCase();
+      list = list.filter(
+        (p) =>
+          p.paymentNumber.toLowerCase().includes(q) ||
+          (p.billNumber || '').toLowerCase().includes(q) ||
+          (p.supplierName || '').toLowerCase().includes(q) ||
+          p.referenceId.toLowerCase().includes(q)
+      );
+    }
+    return { payments: list };
+  },
+
+  recordPurchasePayment: async (input: {
+    purchaseId: string;
+    paymentDate: string;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    referenceId?: string;
+    notes?: string;
+    allowAdvance?: boolean;
+  }) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const amountPaise = toPaise(Number(input.amount));
+    if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+      throw new Error('Payment amount must be greater than zero');
+    }
+
+    const purchases = await listTenantPurchasesRaw(tenantUid);
+    const purchase = purchases.find((p) => p.id === input.purchaseId);
+    if (!purchase) throw new Error('Purchase bill not found');
+    if (purchase.status === 'draft') {
+      throw new Error('Finalize draft purchase bill before recording payments');
+    }
+
+    const existingPayments = await listTenantPurchasePaymentsRaw(tenantUid);
+    const currentPaidPaise = existingPayments
+      .filter((p) => p.purchaseId === purchase.id)
+      .reduce((s, p) => s + toPaise(p.amount), 0);
+    const grandPaise = toPaise(purchase.grandTotal);
+    const remainingPaise = Math.max(0, grandPaise - currentPaidPaise);
+    const isAdvance = amountPaise > remainingPaise;
+
+    if (isAdvance && !input.allowAdvance) {
+      throw new Error(
+        `Amount exceeds remaining balance (${fromPaise(remainingPaise).toFixed(
+          2
+        )}). Enable advance payment confirmation to proceed.`
+      );
+    }
+
+    const paymentDate = sanitizeStr(input.paymentDate, 10) || todayISO();
+    const paymentNumber = await allocateDocumentNumber(tenantUid, 'PPAY', 'PPAY', paymentDate);
+    const payId = generateId('ppay');
+    const now = new Date().toISOString();
+
+    const payment: PurchasePayment = {
+      id: payId,
+      userUid: tenantUid,
+      purchaseId: purchase.id,
+      billNumber: purchase.billNumber,
+      supplierId: purchase.supplierId,
+      supplierName: purchase.supplierSnapshot.companyName || purchase.supplierSnapshot.name,
+      paymentDate,
+      amount: fromPaise(amountPaise),
+      paymentMethod: input.paymentMethod || 'Bank Transfer',
+      referenceId: sanitizeStr(input.referenceId, 80),
+      notes: sanitizeStr(input.notes, 300),
+      paymentNumber,
+      isAdvance,
+      createdAt: now,
+    };
+
+    await set(
+      ref(rtdb, `tenants/${tenantUid}/purchasePayments/${payId}`),
+      stripUndefined(payment)
+    );
+    upsertTenantPurchasePaymentCache(tenantUid, payment);
+    await touchTenantMeta(tenantUid, ['purchasePayments']);
+    const updatedPurchase = await reconcilePurchasePayments(tenantUid, purchase.id, now);
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'PURCHASE_PAYMENT_RECORDED',
+      entityType: 'purchase_payment',
+      entityId: payId,
+      summary: `Paid INR ${payment.amount.toFixed(2)} for purchase ${purchase.billNumber}`,
+    });
+    return { payment, purchase: updatedPurchase };
+  },
+
+  updatePurchasePayment: async (
+    paymentId: string,
+    input: {
+      paymentDate?: string;
+      amount?: number;
+      paymentMethod?: PaymentMethod;
+      referenceId?: string;
+      notes?: string;
+    }
+  ) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const list = await listTenantPurchasePaymentsRaw(tenantUid);
+    const existing = list.find((p) => p.id === paymentId);
+    if (!existing) throw new Error('Purchase payment record not found');
+
+    const nextAmount = input.amount !== undefined ? Number(input.amount) : existing.amount;
+    const amountPaise = toPaise(nextAmount);
+    if (!Number.isFinite(amountPaise) || amountPaise <= 0) {
+      throw new Error('Payment amount must be greater than zero');
+    }
+
+    const now = new Date().toISOString();
+    const updated: PurchasePayment = {
+      ...existing,
+      paymentDate:
+        input.paymentDate !== undefined
+          ? sanitizeStr(input.paymentDate, 10) || existing.paymentDate
+          : existing.paymentDate,
+      amount: fromPaise(amountPaise),
+      paymentMethod: input.paymentMethod || existing.paymentMethod,
+      referenceId:
+        input.referenceId !== undefined ? sanitizeStr(input.referenceId, 80) : existing.referenceId,
+      notes: input.notes !== undefined ? sanitizeStr(input.notes, 300) : existing.notes,
+    };
+
+    await set(
+      ref(rtdb, `tenants/${tenantUid}/purchasePayments/${paymentId}`),
+      stripUndefined(updated)
+    );
+    upsertTenantPurchasePaymentCache(tenantUid, updated);
+    await touchTenantMeta(tenantUid, ['purchasePayments']);
+    const updatedPurchase = await reconcilePurchasePayments(tenantUid, existing.purchaseId, now);
+    return { payment: updated, purchase: updatedPurchase };
+  },
+
+  deletePurchasePayment: async (paymentId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const list = await listTenantPurchasePaymentsRaw(tenantUid);
+    const existing = list.find((p) => p.id === paymentId);
+    if (!existing) throw new Error('Purchase payment record not found');
+
+    const now = new Date().toISOString();
+    await remove(ref(rtdb, `tenants/${tenantUid}/purchasePayments/${paymentId}`));
+    removeTenantPurchasePaymentCache(tenantUid, paymentId);
+    await touchTenantMeta(tenantUid, ['purchasePayments']);
+    const updatedPurchase = await reconcilePurchasePayments(tenantUid, existing.purchaseId, now);
+    return { ok: true, purchase: updatedPurchase };
+  },
+
+  getPurchasesAnalytics: async (params?: {
+    range?: string;
+    startDate?: string;
+    endDate?: string;
+  }) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [purchases, payments, suppliers] = await Promise.all([
+      listTenantPurchasesRaw(tenantUid),
+      listTenantPurchasePaymentsRaw(tenantUid),
+      listTenantSuppliersBaseRaw(tenantUid),
+    ]);
+    return computePurchaseAnalyticsFromData(purchases, payments, suppliers, params);
   },
 
   // ==================== SUPER ADMIN ====================

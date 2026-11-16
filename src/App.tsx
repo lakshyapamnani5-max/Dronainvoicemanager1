@@ -25,6 +25,10 @@ import { CustomerDetailsPage, CustomersPage } from './pages/customer/CustomersPa
 import { GstCustomerPage } from './pages/customer/GstCustomerPage';
 import { InvoiceDetailsPage, InvoicesListPage } from './pages/customer/InvoicesPages';
 import { PaymentsPage } from './pages/customer/PaymentsPage';
+import { PurchaseDetailsPage } from './pages/customer/PurchaseDetailsPage';
+import { PurchaseEditorPage } from './pages/customer/PurchaseEditorPage';
+import { PurchaseScannerPage } from './pages/customer/PurchaseScannerPage';
+import { PurchasesDashboardPage } from './pages/customer/PurchasesDashboardPage';
 import { QuotationDetailsPage, QuotationsListPage } from './pages/customer/QuotationsPages';
 import { RateCardPage } from './pages/customer/RateCardPage';
 import { OutstandingReportPage, SalesReportsPage } from './pages/customer/ReportsPages';
@@ -36,26 +40,33 @@ import {
 
 function useRouter() {
   const [path, setPath] = React.useState<string>(() => window.location.pathname || '/');
+  const [search, setSearch] = React.useState<string>(() => window.location.search || '');
 
   React.useEffect(() => {
-    const onPop = () => setPath(window.location.pathname || '/');
+    const onPop = () => {
+      setPath(window.location.pathname || '/');
+      setSearch(window.location.search || '');
+    };
     window.addEventListener('popstate', onPop);
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
   const navigate = React.useCallback((nextPath: string) => {
-    if (nextPath !== window.location.pathname) {
+    const currentFull = `${window.location.pathname}${window.location.search}`;
+    if (nextPath !== currentFull) {
       window.history.pushState({}, '', nextPath);
     }
-    setPath(nextPath);
+    const qIdx = nextPath.indexOf('?');
+    setPath(qIdx >= 0 ? nextPath.slice(0, qIdx) || '/' : nextPath || '/');
+    setSearch(qIdx >= 0 ? nextPath.slice(qIdx) : '');
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   }, []);
 
-  return { path, navigate };
+  return { path, search, navigate };
 }
 
 function AppRouter() {
-  const { path, navigate } = useRouter();
+  const { path, search, navigate } = useRouter();
   const { session, loading } = useAuth();
 
   const publicPaths = ['/login', '/admin/login', '/register', '/forgot-password'];
@@ -380,6 +391,74 @@ function AppRouter() {
         breadcrumbs={[bizName, 'Quotations', id]}
       >
         <QuotationDetailsPage quotationId={id} navigate={navigate} />
+      </AppShell>
+    );
+  }
+
+  if (path === '/purchases') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Purchases & Payables"
+        breadcrumbs={[bizName, 'Purchases']}
+        primaryAction={{
+          label: 'Create Purchase',
+          onClick: () => navigate('/purchases/new'),
+        }}
+      >
+        <PurchasesDashboardPage navigate={navigate} />
+      </AppShell>
+    );
+  }
+  if (path === '/purchases/new') {
+    const fromScan = search.includes('fromScan=1');
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title={fromScan ? 'Review Scanned Purchase Bill' : 'Create Purchase Bill'}
+        breadcrumbs={[bizName, 'Purchases', fromScan ? 'Review Scan' : 'Create']}
+      >
+        <PurchaseEditorPage fromScan={fromScan} navigate={navigate} />
+      </AppShell>
+    );
+  }
+  if (path === '/purchases/scan') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Scan Purchase Bill (PaddleOCR)"
+        breadcrumbs={[bizName, 'Purchases', 'Scan Bill']}
+      >
+        <PurchaseScannerPage navigate={navigate} />
+      </AppShell>
+    );
+  }
+  if (path.startsWith('/purchases/') && path.endsWith('/edit')) {
+    const id = path.replace('/purchases/', '').replace('/edit', '');
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Edit Purchase Bill"
+        breadcrumbs={[bizName, 'Purchases', 'Edit']}
+      >
+        <PurchaseEditorPage editId={id} navigate={navigate} />
+      </AppShell>
+    );
+  }
+  if (path.startsWith('/purchases/')) {
+    const id = path.replace('/purchases/', '');
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Purchase Bill Details"
+        breadcrumbs={[bizName, 'Purchases', id]}
+      >
+        <PurchaseDetailsPage purchaseId={id} navigate={navigate} />
       </AppShell>
     );
   }

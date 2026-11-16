@@ -14,8 +14,11 @@ import type {
   Payment,
   PaymentMethod,
   PlatformSettings,
+  PurchaseOcrRawResponse,
   Quotation,
   RateCardItem,
+  SavePurchasePayload,
+  Supplier,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
@@ -284,6 +287,89 @@ export const notificationsApi = {
   list: () => rtdbService.listNotifications(),
   markRead: (id: string) => rtdbService.markNotificationRead(id),
   markAllRead: () => rtdbService.markAllNotificationsRead(),
+};
+
+export const suppliersApi = {
+  list: (params?: { search?: string; includeArchived?: boolean }) =>
+    rtdbService.listSuppliers(params),
+  get: (id: string) => rtdbService.getSupplier(id),
+  create: (payload: Partial<Supplier>) => rtdbService.createSupplier(payload),
+  update: (id: string, payload: Partial<Supplier>) => rtdbService.updateSupplier(id, payload),
+  remove: (id: string) => rtdbService.deleteSupplier(id),
+};
+
+export const purchasesApi = {
+  list: (params?: {
+    search?: string;
+    status?: string;
+    supplierId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) => rtdbService.listPurchases(params),
+  get: (id: string) => rtdbService.getPurchase(id),
+  create: (payload: SavePurchasePayload) => rtdbService.savePurchase(payload),
+  update: (id: string, payload: SavePurchasePayload) => rtdbService.savePurchase(payload, id),
+  remove: (id: string) => rtdbService.deletePurchase(id),
+  getAnalytics: (params?: { range?: string; startDate?: string; endDate?: string }) =>
+    rtdbService.getPurchasesAnalytics(params),
+};
+
+export const purchasePaymentsApi = {
+  list: (params?: {
+    search?: string;
+    supplierId?: string;
+    purchaseId?: string;
+    startDate?: string;
+    endDate?: string;
+  }) => rtdbService.listPurchasePayments(params),
+  record: (payload: {
+    purchaseId: string;
+    paymentDate: string;
+    amount: number;
+    paymentMethod: PaymentMethod;
+    referenceId?: string;
+    notes?: string;
+    allowAdvance?: boolean;
+  }) => rtdbService.recordPurchasePayment(payload),
+  update: (
+    id: string,
+    payload: {
+      paymentDate?: string;
+      amount?: number;
+      paymentMethod?: PaymentMethod;
+      referenceId?: string;
+      notes?: string;
+    }
+  ) => rtdbService.updatePurchasePayment(id, payload),
+  remove: (id: string) => rtdbService.deletePurchasePayment(id),
+};
+
+export const purchaseOcrApi = {
+  extract: async (params: {
+    fileName: string;
+    mimeType: string;
+    base64Data: string;
+  }): Promise<PurchaseOcrRawResponse> => {
+    const res = await fetch('/api/ocr/purchase', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
+      },
+      body: JSON.stringify(params),
+    });
+    const body = (await res.json().catch(() => ({}))) as Partial<PurchaseOcrRawResponse> & {
+      error?: string;
+      code?: string;
+    };
+    if (!res.ok || !body.success) {
+      throw new ApiError(
+        body.error || `PaddleOCR extraction failed (HTTP ${res.status})`,
+        res.status || 500
+      );
+    }
+    return body as PurchaseOcrRawResponse;
+  },
 };
 
 export const adminApi = {

@@ -23,7 +23,19 @@
       ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
       "$uid": {
         ".read": "auth != null && ((auth.uid === $uid && root.child('users').child(auth.uid).child('status').val() === 'active') || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
-        ".write": "auth != null && ((auth.uid === $uid && root.child('users').child(auth.uid).child('status').val() === 'active') || root.child('users').child(auth.uid).child('role').val() === 'super_admin')"
+        ".write": "auth != null && ((auth.uid === $uid && root.child('users').child(auth.uid).child('status').val() === 'active') || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        "suppliers": {
+          ".indexOn": ["gstin", "createdAt", "name"]
+        },
+        "purchases": {
+          ".indexOn": ["billNumber", "supplierId", "billDate", "dueDate", "status", "createdAt"]
+        },
+        "purchasePayments": {
+          ".indexOn": ["purchaseId", "supplierId", "paymentDate", "createdAt"]
+        },
+        "purchaseAttachments": {
+          ".indexOn": ["purchaseId", "createdAt"]
+        }
       }
     },
     "activityLogs": {

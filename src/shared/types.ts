@@ -456,3 +456,266 @@ export interface GstinLookupResponse {
   cachedAt?: number;
 }
 
+// ==================== PURCHASES MANAGEMENT MODULE ====================
+
+export type PurchaseType = 'gst' | 'non_gst' | 'import' | 'composition';
+export type PurchaseStatus = 'draft' | 'unpaid' | 'partially_paid' | 'paid' | 'overdue';
+
+export interface Supplier {
+  id: string;
+  userUid: string;
+  name: string;
+  companyName: string;
+  email: string;
+  phone: string;
+  gstin: string;
+  billingAddress: string;
+  state: string;
+  stateCode: string;
+  notes: string;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+  totalPurchases?: number;
+  totalPaid?: number;
+  outstandingBalance?: number;
+  billCount?: number;
+}
+
+export interface SupplierSnapshot {
+  id: string;
+  name: string;
+  companyName: string;
+  email: string;
+  phone: string;
+  gstin: string;
+  billingAddress: string;
+  state: string;
+  stateCode: string;
+}
+
+export type OcrConfidenceLevel = 'high' | 'review' | 'invalid';
+
+export interface OcrFieldValidation {
+  confidence: number | null;
+  level: OcrConfidenceLevel;
+  message?: string;
+}
+
+export interface PurchaseLineItemInput extends LineItemInput {
+  ocrConfidence?: number | null;
+  ocrStatus?: OcrConfidenceLevel;
+  ocrMessage?: string;
+}
+
+export interface ComputedPurchaseLineItem extends ComputedLineItem {
+  ocrConfidence?: number | null;
+  ocrStatus?: OcrConfidenceLevel;
+  ocrMessage?: string;
+}
+
+export interface PurchaseAttachment {
+  id: string;
+  userUid: string;
+  purchaseId: string;
+  fileName: string;
+  mimeType: string;
+  sizeBytes: number;
+  storagePath: string;
+  downloadUrl: string;
+  pageCount?: number;
+  createdAt: string;
+}
+
+export interface Purchase {
+  id: string;
+  userUid: string;
+  billNumber: string;
+  referenceNumber: string;
+  supplierId: string;
+  supplierSnapshot: SupplierSnapshot;
+  billDate: string;
+  dueDate: string;
+  paymentTerms: string;
+  purchaseType: PurchaseType;
+  isGst: boolean;
+  taxMode: TaxPricingMode;
+  taxSupplyMode: TaxSupplyMode;
+  isInterState: boolean;
+  placeOfSupply: string;
+  roundOffEnabled: boolean;
+  status: PurchaseStatus;
+  items: ComputedPurchaseLineItem[];
+  subtotal: number;
+  itemDiscountTotal: number;
+  invoiceDiscountType: DiscountType;
+  invoiceDiscountValue: number;
+  invoiceDiscountAmount: number;
+  totalDiscount: number;
+  taxableAmount: number;
+  cgstTotal: number;
+  sgstTotal: number;
+  igstTotal: number;
+  totalTax: number;
+  additionalCharges: number;
+  roundOff: number;
+  grandTotal: number;
+  amountPaid: number;
+  balanceDue: number;
+  amountInWords: string;
+  notes: string;
+  ocrUsed: boolean;
+  ocrWarnings?: string[];
+  attachmentId?: string;
+  attachmentMeta?: {
+    id: string;
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    downloadUrl: string;
+    storagePath: string;
+    pageCount?: number;
+  } | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface PurchasePayment {
+  id: string;
+  userUid: string;
+  purchaseId: string;
+  billNumber?: string;
+  supplierId: string;
+  supplierName?: string;
+  paymentDate: string;
+  amount: number;
+  paymentMethod: PaymentMethod;
+  referenceId: string;
+  notes: string;
+  paymentNumber: string;
+  isAdvance?: boolean;
+  createdAt: string;
+}
+
+export interface SavePurchasePayload {
+  supplierId: string;
+  billNumber: string;
+  referenceNumber?: string;
+  billDate: string;
+  dueDate: string;
+  paymentTerms?: string;
+  purchaseType: PurchaseType;
+  taxMode: TaxPricingMode;
+  taxSupplyMode: TaxSupplyMode;
+  placeOfSupply?: string;
+  roundOffEnabled: boolean;
+  invoiceDiscountType?: DiscountType;
+  invoiceDiscountValue?: number;
+  additionalCharges?: number;
+  notes?: string;
+  saveAsDraft?: boolean;
+  ocrUsed?: boolean;
+  ocrWarnings?: string[];
+  items: PurchaseLineItemInput[];
+  initialPayment?: {
+    amount: number;
+    paymentDate: string;
+    paymentMethod: PaymentMethod;
+    referenceId?: string;
+    notes?: string;
+    allowAdvance?: boolean;
+  };
+  attachmentFile?: {
+    fileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    base64Data: string;
+    pageCount?: number;
+  };
+}
+
+export interface PurchaseOcrField<T = string | number | null> {
+  value: T;
+  confidence: number | null;
+}
+
+export interface PurchaseOcrRawResponse {
+  success: true;
+  engine: string;
+  pageCount: number;
+  processingMs: number;
+  supplier: {
+    businessName: PurchaseOcrField<string>;
+    gstin: PurchaseOcrField<string>;
+    address: PurchaseOcrField<string>;
+    state: PurchaseOcrField<string>;
+    phone: PurchaseOcrField<string>;
+    email: PurchaseOcrField<string>;
+  };
+  invoice: {
+    invoiceNumber: PurchaseOcrField<string>;
+    invoiceDate: PurchaseOcrField<string>;
+    dueDate: PurchaseOcrField<string>;
+    poNumber: PurchaseOcrField<string>;
+  };
+  items: Array<{
+    name: PurchaseOcrField<string>;
+    description?: PurchaseOcrField<string>;
+    hsnSac: PurchaseOcrField<string>;
+    quantity: PurchaseOcrField<number>;
+    unit: PurchaseOcrField<string>;
+    rate: PurchaseOcrField<number>;
+    discount: PurchaseOcrField<number>;
+    taxableValue: PurchaseOcrField<number>;
+    gstRate: PurchaseOcrField<number>;
+    cgst: PurchaseOcrField<number>;
+    sgst: PurchaseOcrField<number>;
+    igst: PurchaseOcrField<number>;
+    lineTotal: PurchaseOcrField<number>;
+  }>;
+  summary: {
+    subtotal: PurchaseOcrField<number>;
+    totalDiscount: PurchaseOcrField<number>;
+    totalTaxableValue: PurchaseOcrField<number>;
+    totalGst: PurchaseOcrField<number>;
+    cgstTotal?: PurchaseOcrField<number>;
+    sgstTotal?: PurchaseOcrField<number>;
+    igstTotal?: PurchaseOcrField<number>;
+    additionalCharges: PurchaseOcrField<number>;
+    roundOff: PurchaseOcrField<number>;
+    grandTotal: PurchaseOcrField<number>;
+  };
+  rawText?: string;
+}
+
+export interface PurchaseAnalyticsData {
+  summary: {
+    totalPurchases: number;
+    totalPurchaseBills: number;
+    amountPaid: number;
+    outstandingPayables: number;
+    overduePayables: number;
+    totalVendors: number;
+    draftBills: number;
+  };
+  purchaseSeries: Array<{
+    period: string;
+    label: string;
+    purchased: number;
+    paid: number;
+    billCount: number;
+  }>;
+  statusBreakdown: Array<{ status: PurchaseStatus; count: number; amount: number }>;
+  topSuppliers: Array<{
+    supplierId: string;
+    name: string;
+    companyName: string;
+    gstin: string;
+    totalPurchases: number;
+    outstanding: number;
+    billCount: number;
+  }>;
+  recentPurchases: Purchase[];
+}
+
+

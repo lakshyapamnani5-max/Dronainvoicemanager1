@@ -11,11 +11,20 @@ import {
   XAxis,
   YAxis,
 } from 'recharts';
-import { ArrowDownRight, ArrowUpRight, Plus, Receipt } from 'lucide-react';
+import { ArrowDownRight, ArrowUpRight, Camera, Plus, Receipt, ShoppingCart } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { analyticsApi, cachedRead } from '../../lib/api';
+import { analyticsApi, cachedRead, purchasesApi } from '../../lib/api';
 import { formatINR } from '../../shared/gstCalculator';
-import type { Customer, CustomerAnalyticsData, Invoice, Payment, Quotation } from '../../shared/types';
+import type {
+  Customer,
+  CustomerAnalyticsData,
+  Invoice,
+  Payment,
+  Purchase,
+  PurchasePayment,
+  Quotation,
+  Supplier,
+} from '../../shared/types';
 import { formatDate } from '../../lib/utils';
 import { EmptyState } from '../../components/AppShell';
 import { InvoiceStatusLabel } from '../../components/StatusText';
@@ -56,6 +65,9 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
       quotations: e.quotations as Quotation[],
       payments: e.payments as Payment[],
       customers: e.customers as Customer[],
+      purchases: e.purchases as Purchase[],
+      purchasePayments: e.purchasePayments as PurchasePayment[],
+      suppliers: e.suppliers as Supplier[],
     };
   }, []);
 
@@ -65,6 +77,9 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
     quotations: Quotation[];
     payments: Payment[];
     customers: Customer[];
+    purchases: Purchase[];
+    purchasePayments: PurchasePayment[];
+    suppliers: Supplier[];
   } | null>(initialSnap);
   const [loading, setLoading] = React.useState(() => !initialSnap);
   const [error, setError] = React.useState<string | null>(null);
@@ -75,7 +90,17 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
     if (!silent) setLoading(true);
     setError(null);
     try {
-      await analyticsApi.getDashboard({ range: 'all' });
+      const [salesRes] = await Promise.allSettled([
+        analyticsApi.getDashboard({ range: 'all' }),
+        purchasesApi.getAnalytics({ range: 'all' }),
+      ]);
+      if (salesRes.status === 'rejected' && !silent) {
+        setError(
+          salesRes.reason instanceof Error
+            ? salesRes.reason.message
+            : 'Failed to load analytics'
+        );
+      }
       const next = readCacheSnapshot(tenantUid);
       if (next) setSnapshot(next);
     } catch (err) {
@@ -100,7 +125,10 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
         changed.has('invoices') ||
         changed.has('quotations') ||
         changed.has('payments') ||
-        changed.has('customers')
+        changed.has('customers') ||
+        changed.has('purchases') ||
+        changed.has('purchasePayments') ||
+        changed.has('suppliers')
       ) {
         const next = readCacheSnapshot(tenantUid);
         if (next) setSnapshot(next);
@@ -128,7 +156,31 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
     return computed;
   }, [snapshot, range, customStart, customEnd]);
 
+  const purchaseAnalytics = React.useMemo(() => {
+    if (!snapshot) return null;
+    return cachedRead.computePurchaseAnalyticsFromData(
+      snapshot.purchases,
+      snapshot.purchasePayments,
+      snapshot.suppliers,
+      {
+        range,
+        startDate: range === 'custom' ? customStart : undefined,
+        endDate: range === 'custom' ? customEnd : undefined,
+      }
+    );
+  }, [snapshot, range, customStart, customEnd]);
+
+  const combinedSeries = React.useMemo(() => {
+    if (!snapshot) return [];
+    return cachedRead.computeCombinedSalesVsPurchases(snapshot.invoices, snapshot.purchases, {
+      range,
+      startDate: range === 'custom' ? customStart : undefined,
+      endDate: range === 'custom' ? customEnd : undefined,
+    });
+  }, [snapshot, range, customStart, customEnd]);
+
   const s = data?.summary;
+  const ps = purchaseAnalytics?.summary;
 
   return (
     <div className="space-y-6">
@@ -383,6 +435,137 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
           </CardContent>
         </Card>
       </div>
+
+      {/* Purchases & Cashflow Summary (Separate from Sales Totals) */}
+      <div className="space-y-3">
+        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2">
+          <div>
+            <h2 className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+              Purchases &amp; Payables Summary
+            </h2>
+            <p className="text-xs text-zinc-500">
+              Supplier expenses tracked independently from sales revenue
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => navigate('/purchases/scan')}>
+              <Camera className="h-3.5 w-3.5" />
+              Scan Bill
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => navigate('/purchases')}>
+              <ShoppingCart className="h-3.5 w-3.5" />
+              View Purchases
+            </Button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 xl:grid-cols-4 gap-3 sm:gap-4">
+          <Card className="p-3.5 sm:p-5">
+            <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Total Purchases
+            </div>
+            <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100 truncate">
+              {formatINR(ps?.totalPurchases || 0)}
+            </div>
+            <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
+              Supplier bills in period
+            </div>
+          </Card>
+
+          <Card className="p-3.5 sm:p-5">
+            <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Purchase Bills
+            </div>
+            <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+              {ps?.totalPurchaseBills || 0}
+            </div>
+            <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
+              {ps?.totalVendors || 0} active vendors
+            </div>
+          </Card>
+
+          <Card className="p-3.5 sm:p-5">
+            <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Paid to Suppliers
+            </div>
+            <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-emerald-600 dark:text-emerald-400 truncate">
+              {formatINR(ps?.amountPaid || 0)}
+            </div>
+            <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
+              Purchase payments settled
+            </div>
+          </Card>
+
+          <Card className="p-3.5 sm:p-5">
+            <div className="text-xs font-medium text-zinc-500 dark:text-zinc-400">
+              Outstanding Payables
+            </div>
+            <div className="mt-1.5 sm:mt-2 text-lg sm:text-2xl font-bold font-mono tabular-nums text-[#F57C00] truncate">
+              {formatINR(ps?.outstandingPayables || 0)}
+            </div>
+            <div className="mt-1 text-[11px] sm:text-xs text-zinc-500">
+              {ps && ps.overduePayables > 0
+                ? `Overdue: ${formatINR(ps.overduePayables)}`
+                : 'Unpaid supplier balance'}
+            </div>
+          </Card>
+        </div>
+      </div>
+
+      {/* Combined Sales vs Purchases Trend Chart */}
+      <Card>
+        <CardHeader>
+          <CardTitle>Sales vs Purchases Trend</CardTitle>
+          <CardDescription>
+            Sales revenue compared against purchase value and gross difference across the selected window
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          {loading ? (
+            <Skeleton className="h-56 sm:h-72 w-full" />
+          ) : combinedSeries.length > 0 ? (
+            <div className="h-56 sm:h-72 w-full min-w-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={combinedSeries}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#e4e4e7" vertical={false} />
+                  <XAxis dataKey="label" tick={{ fontSize: 11 }} />
+                  <YAxis tick={{ fontSize: 11 }} />
+                  <Tooltip
+                    formatter={(val) => formatINR(Number(val ?? 0))}
+                    contentStyle={{
+                      borderRadius: '8px',
+                      border: '1px solid #e4e4e7',
+                      fontSize: '12px',
+                    }}
+                  />
+                  <Bar
+                    dataKey="salesRevenue"
+                    name="Sales Revenue"
+                    fill="#F57C00"
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="purchaseValue"
+                    name="Purchase Value"
+                    fill="#18181B"
+                    radius={[4, 4, 0, 0]}
+                  />
+                  <Bar
+                    dataKey="grossDifference"
+                    name="Gross Difference"
+                    fill="#16A34A"
+                    radius={[4, 4, 0, 0]}
+                  />
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          ) : (
+            <div className="h-56 flex items-center justify-center text-xs text-zinc-500">
+              No sales or purchase activity recorded in this date range.
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Customer Analytics Row */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">

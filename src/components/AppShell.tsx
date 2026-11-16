@@ -22,6 +22,7 @@ import {
   Settings,
   ShieldAlert,
   ShieldCheck,
+  ShoppingCart,
   Sun,
   UserCircle2,
   Users,
@@ -52,6 +53,7 @@ const CUSTOMER_NAV: Array<{ group: string; items: NavItem[] }> = [
     items: [
       { label: 'Invoices', path: '/invoices', icon: Receipt },
       { label: 'Quotations', path: '/quotations', icon: FileCheck2 },
+      { label: 'Purchases', path: '/purchases', icon: ShoppingCart },
       { label: 'Customers', path: '/customers', icon: Users },
       { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
       { label: 'Rate Card', path: '/rate-card', icon: Package },
@@ -254,6 +256,7 @@ export function AppShell({
         '/admin/settings',
       ].some((p) => currentPath === p || currentPath.startsWith(p + '/'))
     : [
+        '/purchases',
         '/gst-customer',
         '/rate-card',
         '/payments',
@@ -273,6 +276,7 @@ export function AppShell({
         { label: 'Platform Settings', path: '/admin/settings', icon: Settings },
       ]
     : [
+        { label: 'Purchases', path: '/purchases', icon: ShoppingCart },
         { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
         { label: 'Rate Card', path: '/rate-card', icon: Package },
         { label: 'Payments', path: '/payments', icon: CreditCard },
