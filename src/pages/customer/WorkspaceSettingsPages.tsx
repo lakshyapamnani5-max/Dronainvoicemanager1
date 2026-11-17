@@ -5,7 +5,9 @@ import { authApi, businessApi, cachedRead } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type { BusinessProfile, Invoice, TemplateId } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
-import { INVOICE_THEMES } from '../../components/invoice/invoiceThemeRegistry';
+import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
+import { INVOICE_THEMES, normalizeTemplateId } from '../../components/invoice/invoiceThemeRegistry';
+import type { StandardTemplateId } from '../../components/invoice/invoiceThemeTypes';
 import { PWAInstallButton } from '../../components/PWAComponents';
 import { SignatureControl } from '../../components/SignatureControl';
 import { Button } from '../../components/ui/button';
@@ -309,13 +311,18 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
   const { session, updateLocalBusinessProfile } = useAuth();
   const { notify } = useToast();
   const profile = session?.businessProfile;
-  const activeTemplate =
+  const activeTemplate = normalizeTemplateId(
     docType === 'invoice'
-      ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
-      : profile?.defaultQuotationTemplate || 'gst_theme_1';
+      ? profile?.defaultInvoiceTemplate
+      : profile?.defaultQuotationTemplate
+  );
 
   const [previewId, setPreviewId] = React.useState<TemplateId>(activeTemplate);
   const [saving, setSaving] = React.useState(false);
+
+  React.useEffect(() => {
+    setPreviewId(activeTemplate);
+  }, [activeTemplate]);
 
   const isGstDefault = profile?.defaultIsGst !== false;
   const sampleRecord: Invoice = {
@@ -496,17 +503,28 @@ export function CustomerSettingsPage() {
   const [pwForm, setPwForm] = React.useState({ currentPassword: '', newPassword: '' });
   const [changingPw, setChangingPw] = React.useState(false);
   const [savingSig, setSavingSig] = React.useState(false);
+  const [savingTheme, setSavingTheme] = React.useState(false);
+  const [selectedTheme, setSelectedTheme] = React.useState<StandardTemplateId>(() =>
+    normalizeTemplateId(session?.businessProfile?.defaultInvoiceTemplate)
+  );
 
   const tenantUid = session?.effectiveUser.uid;
   React.useEffect(() => {
     if (session?.businessProfile) {
       setForm(session.businessProfile);
+      setSelectedTheme(normalizeTemplateId(session.businessProfile.defaultInvoiceTemplate));
     } else if (tenantUid) {
       const cachedProf = cachedRead.getTenantEntry(tenantUid).profile;
-      if (cachedProf) setForm(cachedProf);
+      if (cachedProf) {
+        setForm(cachedProf);
+        setSelectedTheme(normalizeTemplateId(cachedProf.defaultInvoiceTemplate));
+      }
     }
     businessApi.getProfile().then((res) => {
-      if (res.profile) setForm(res.profile);
+      if (res.profile) {
+        setForm(res.profile);
+        setSelectedTheme(normalizeTemplateId(res.profile.defaultInvoiceTemplate));
+      }
     }).catch(() => {});
   }, [tenantUid, session?.businessProfile]);
 
@@ -534,6 +552,24 @@ export function CustomerSettingsPage() {
       notify('error', err instanceof Error ? err.message : 'Failed to save settings');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSetDefaultTheme = async (themeId: StandardTemplateId) => {
+    setSavingTheme(true);
+    try {
+      const res = await businessApi.updateProfile({
+        defaultInvoiceTemplate: themeId,
+        defaultQuotationTemplate: themeId,
+      });
+      setForm(res.profile);
+      updateLocalBusinessProfile(res.profile);
+      setSelectedTheme(themeId);
+      notify('success', 'Default invoice theme updated for all invoices');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update default theme');
+    } finally {
+      setSavingTheme(false);
     }
   };
 
@@ -670,6 +706,24 @@ export function CustomerSettingsPage() {
           </CardContent>
         </Card>
       </form>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Default Invoice &amp; Quotation Theme</CardTitle>
+          <CardDescription>
+            Choose from all {INVOICE_THEMES.length} PDF &amp; A4 themes. New mobile and GST invoices save in your selected default theme.
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <InvoiceThemeSelector
+            currentThemeId={selectedTheme}
+            defaultThemeId={form.defaultInvoiceTemplate}
+            onSelectTheme={(t) => setSelectedTheme(t)}
+            onSetAsDefault={handleSetDefaultTheme}
+            isSettingDefault={savingTheme}
+          />
+        </CardContent>
+      </Card>
 
       <Card>
         <CardHeader>

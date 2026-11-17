@@ -23,17 +23,24 @@ import {
   uploadBytes,
 } from 'firebase/storage';
 import { firebaseAuth, firebaseStorage, getSecondaryAuth, rtdb } from './firebase';
+import { mergeDocumentWithLiveSnapshotsSync } from './liveSnapshots';
 import {
+  allocateLocalDocNumber,
+  cascadeBusinessSnapshotInCache,
+  cascadeCustomerSnapshotInCache,
   clearAllRuntimeSessionCaches,
   dedupeFetch,
+  enqueuePendingSyncOp,
   getAdminCache,
   getCachedPublicSettings,
   getCachedSession,
   getCachedSessionTimestamp,
+  getPendingSyncOps,
   getTenantEntry,
   getTenantExpiryCheckDate,
   getTenantOverdueCheckDate,
   getTenantPurchaseOverdueCheckDate,
+  hasPendingSyncForProfile,
   hasTenantCollectionData,
   invalidateAdminSlices,
   invalidateTenantCollection,
@@ -42,6 +49,7 @@ import {
   markNotificationReadCache,
   markTenantSyncedNow,
   prependTenantActivityLogCache,
+  removePendingSyncOp,
   removeTenantCustomerCache,
   removeTenantPaymentCache,
   removeTenantPurchaseCache,
@@ -58,6 +66,7 @@ import {
   setTenantPurchaseOverdueCheckDate,
   subscribeAdminCache,
   subscribeTenantCache,
+  syncRemoteCounterCache,
   upsertTenantCustomerCache,
   upsertTenantInvoiceCache,
   upsertTenantNotificationCache,
@@ -689,6 +698,227 @@ async function touchTenantMeta(tenantUid: string, cols: TenantCollection[]): Pro
   }
 }
 
+const syncFlushInFlight = new Map<string, Promise<void>>();
+let onlineSyncListenerRegistered = false;
+
+function buildRtdbBusinessSnapshotPatch(profile: BusinessProfile): Record<string, unknown> {
+  return {
+    businessName: profile.businessName,
+    ownerName: profile.ownerName,
+    logoDataUrl: profile.logoDataUrl,
+    address: profile.address,
+    email: profile.email,
+    phone: profile.phone,
+    gstin: profile.gstin,
+    pan: profile.pan,
+    state: profile.state,
+    bankName: profile.bankName,
+    accountNumber: profile.accountNumber,
+    ifsc: profile.ifsc,
+    upiId: profile.upiId,
+    upiQrDataUrl: profile.upiId ? '' : profile.upiQrDataUrl,
+    signatureLabel: profile.signatureLabel,
+    signatureDataUrl: profile.signatureDataUrl,
+  };
+}
+
+export async function flushTenantSyncQueue(tenantUid: string): Promise<void> {
+  if (!tenantUid) return;
+  const existingLock = syncFlushInFlight.get(tenantUid);
+  if (existingLock) return existingLock;
+
+  const task = (async () => {
+    while (true) {
+      const ops = getPendingSyncOps(tenantUid);
+      if (ops.length === 0) break;
+      const op = ops[0];
+      try {
+        if (op.kind === 'upsert_profile') {
+          await set(ref(rtdb, `businessProfiles/${tenantUid}`), stripUndefined(op.profile));
+          if (op.userPatch) {
+            await update(ref(rtdb, `users/${tenantUid}`), op.userPatch);
+          }
+
+          const metaCols: TenantCollection[] = ['profile'];
+          const docPatch: Record<string, unknown> = {};
+          const bizSnapPatch = op.cascadeBusinessSnapshot
+            ? buildRtdbBusinessSnapshotPatch(op.profile)
+            : null;
+
+          if (op.cascadeDefaultInvoiceTemplate || bizSnapPatch) {
+            const invoicesSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
+            if (invoicesSnap.exists()) {
+              const raw = invoicesSnap.val() as Record<string, Record<string, unknown>>;
+              for (const invId of Object.keys(raw)) {
+                if (op.cascadeDefaultInvoiceTemplate) {
+                  docPatch[`tenants/${tenantUid}/invoices/${invId}/templateId`] =
+                    op.cascadeDefaultInvoiceTemplate;
+                }
+                if (bizSnapPatch) {
+                  for (const [k, v] of Object.entries(bizSnapPatch)) {
+                    docPatch[`tenants/${tenantUid}/invoices/${invId}/businessSnapshot/${k}`] =
+                      v ?? '';
+                  }
+                }
+              }
+              metaCols.push('invoices');
+            }
+          }
+
+          if (op.cascadeDefaultQuotationTemplate || bizSnapPatch) {
+            const quotationsSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
+            if (quotationsSnap.exists()) {
+              const raw = quotationsSnap.val() as Record<string, Record<string, unknown>>;
+              for (const quoId of Object.keys(raw)) {
+                if (op.cascadeDefaultQuotationTemplate) {
+                  docPatch[`tenants/${tenantUid}/quotations/${quoId}/templateId`] =
+                    op.cascadeDefaultQuotationTemplate;
+                }
+                if (bizSnapPatch) {
+                  for (const [k, v] of Object.entries(bizSnapPatch)) {
+                    docPatch[`tenants/${tenantUid}/quotations/${quoId}/businessSnapshot/${k}`] =
+                      v ?? '';
+                  }
+                }
+              }
+              metaCols.push('quotations');
+            }
+          }
+
+          if (Object.keys(docPatch).length > 0) {
+            await update(ref(rtdb), docPatch);
+          }
+          void touchTenantMeta(tenantUid, metaCols);
+        } else if (op.kind === 'upsert_customer') {
+          await set(
+            ref(rtdb, `tenants/${tenantUid}/customers/${op.customer.id}`),
+            stripUndefined(op.customer)
+          );
+          const metaCols: TenantCollection[] = ['customers'];
+
+          if (op.cascadeSnapshot) {
+            const custSnap: CustomerSnapshot = {
+              id: op.customer.id,
+              name: op.customer.name,
+              companyName: op.customer.companyName,
+              email: op.customer.email,
+              phone: op.customer.phone,
+              gstin: op.customer.gstin,
+              billingAddress: op.customer.billingAddress,
+              shippingAddress: op.customer.shippingAddress,
+              state: op.customer.state,
+            };
+            const docPatch: Record<string, unknown> = {};
+            const [invSnap, quoSnap] = await Promise.all([
+              get(ref(rtdb, `tenants/${tenantUid}/invoices`)),
+              get(ref(rtdb, `tenants/${tenantUid}/quotations`)),
+            ]);
+            if (invSnap.exists()) {
+              const raw = invSnap.val() as Record<string, Record<string, unknown>>;
+              for (const [invId, invVal] of Object.entries(raw)) {
+                if (String(invVal.customerId || '') === op.customer.id) {
+                  docPatch[`tenants/${tenantUid}/invoices/${invId}/customerSnapshot`] =
+                    stripUndefined(custSnap);
+                }
+              }
+            }
+            if (quoSnap.exists()) {
+              const raw = quoSnap.val() as Record<string, Record<string, unknown>>;
+              for (const [quoId, quoVal] of Object.entries(raw)) {
+                if (String(quoVal.customerId || '') === op.customer.id) {
+                  docPatch[`tenants/${tenantUid}/quotations/${quoId}/customerSnapshot`] =
+                    stripUndefined(custSnap);
+                }
+              }
+            }
+            if (Object.keys(docPatch).length > 0) {
+              await update(ref(rtdb), docPatch);
+              metaCols.push('invoices', 'quotations');
+            }
+          }
+          void touchTenantMeta(tenantUid, metaCols);
+        } else if (op.kind === 'upsert_invoice') {
+          await set(
+            ref(rtdb, `tenants/${tenantUid}/invoices/${op.invoice.id}`),
+            stripUndefined(op.invoice)
+          );
+          if (op.seqAlloc) {
+            const counterRef = ref(
+              rtdb,
+              `tenants/${tenantUid}/counters/${op.seqAlloc.counterKey}`
+            );
+            await runTransaction(counterRef, (cur) =>
+              Math.max(typeof cur === 'number' ? cur : 0, op.seqAlloc!.seq)
+            );
+          }
+          void touchTenantMeta(tenantUid, ['invoices']);
+        } else if (op.kind === 'upsert_quotation') {
+          await set(
+            ref(rtdb, `tenants/${tenantUid}/quotations/${op.quotation.id}`),
+            stripUndefined(op.quotation)
+          );
+          if (op.seqAlloc) {
+            const counterRef = ref(
+              rtdb,
+              `tenants/${tenantUid}/counters/${op.seqAlloc.counterKey}`
+            );
+            await runTransaction(counterRef, (cur) =>
+              Math.max(typeof cur === 'number' ? cur : 0, op.seqAlloc!.seq)
+            );
+          }
+          void touchTenantMeta(tenantUid, ['quotations']);
+        } else if (op.kind === 'upsert_payment') {
+          await set(
+            ref(rtdb, `tenants/${tenantUid}/payments/${op.payment.id}`),
+            stripUndefined(op.payment)
+          );
+          await update(
+            ref(rtdb, `tenants/${tenantUid}/invoices/${op.invoicePatch.invoiceId}`),
+            {
+              amountPaid: op.invoicePatch.amountPaid,
+              balanceDue: op.invoicePatch.balanceDue,
+              status: op.invoicePatch.status,
+              updatedAt: op.invoicePatch.updatedAt,
+            }
+          );
+          if (op.seqAlloc) {
+            const counterRef = ref(
+              rtdb,
+              `tenants/${tenantUid}/counters/${op.seqAlloc.counterKey}`
+            );
+            await runTransaction(counterRef, (cur) =>
+              Math.max(typeof cur === 'number' ? cur : 0, op.seqAlloc!.seq)
+            );
+          }
+          void touchTenantMeta(tenantUid, ['payments', 'invoices']);
+        }
+        removePendingSyncOp(tenantUid, op.id);
+      } catch {
+        // Keep op in localStorage queue to retry automatically on next trigger / online
+        break;
+      }
+    }
+  })().finally(() => {
+    if (syncFlushInFlight.get(tenantUid) === task) {
+      syncFlushInFlight.delete(tenantUid);
+    }
+  });
+
+  syncFlushInFlight.set(tenantUid, task);
+  return task;
+}
+
+function registerOnlineSyncListener(): void {
+  if (onlineSyncListenerRegistered || typeof window === 'undefined') return;
+  onlineSyncListenerRegistered = true;
+  window.addEventListener('online', () => {
+    const sess = getCachedSession();
+    if (sess?.effectiveUser?.role === 'business') {
+      void flushTenantSyncQueue(sess.effectiveUser.uid);
+    }
+  });
+}
+
 async function ensurePlatformSettings(): Promise<PlatformSettings> {
   return dedupeFetch('platformSettings', async () => {
     const snap = await get(ref(rtdb, 'platformSettings'));
@@ -728,10 +958,12 @@ async function logActivity(params: {
   };
 
   const clean = stripUndefined(entry);
+  if (entry.targetTenantUid) {
+    prependTenantActivityLogCache(entry.targetTenantUid, entry);
+  }
   await set(ref(rtdb, `activityLogs/${id}`), clean);
   if (entry.targetTenantUid) {
     await set(ref(rtdb, `tenants/${entry.targetTenantUid}/activityLogs/${id}`), clean);
-    prependTenantActivityLogCache(entry.targetTenantUid, entry);
   }
 }
 
@@ -775,6 +1007,7 @@ async function allocateDocumentNumber(
     return val + 1;
   });
   const seq = Number(result.snapshot.val() || 1);
+  syncRemoteCounterCache(tenantUid, `${docType}_${year}`, seq);
   return `${prefix}-${year}-${String(seq).padStart(4, '0')}`;
 }
 
@@ -1388,12 +1621,17 @@ async function resolveCurrentAuthContext(forceRefresh = false): Promise<{
 
     let businessProfile: BusinessProfile | null = null;
     if (effectiveUser.role === 'business') {
-      const profSnap = await get(ref(rtdb, `businessProfiles/${effectiveUser.uid}`));
-      if (profSnap.exists()) {
-        businessProfile = normalizeBusinessProfile(
-          effectiveUser.uid,
-          profSnap.val() as Record<string, unknown>
-        );
+      if (hasPendingSyncForProfile(effectiveUser.uid)) {
+        businessProfile = getTenantEntry(effectiveUser.uid).profile || null;
+      }
+      if (!businessProfile) {
+        const profSnap = await get(ref(rtdb, `businessProfiles/${effectiveUser.uid}`));
+        if (profSnap.exists()) {
+          businessProfile = normalizeBusinessProfile(
+            effectiveUser.uid,
+            profSnap.val() as Record<string, unknown>
+          );
+        }
       }
     }
 
@@ -1405,6 +1643,10 @@ async function resolveCurrentAuthContext(forceRefresh = false): Promise<{
       impersonationSession,
     };
     updateRuntimeSessionCache(sessionState);
+    if (effectiveUser.role === 'business') {
+      registerOnlineSyncListener();
+      void flushTenantSyncQueue(effectiveUser.uid);
+    }
     return sessionState;
   });
 }
@@ -1417,6 +1659,7 @@ async function requireTenantContext() {
   if (ctx.effectiveUser.status !== 'active' && !ctx.isImpersonating) {
     throw new Error('Business account is inactive');
   }
+  registerOnlineSyncListener();
   return ctx;
 }
 
@@ -1536,13 +1779,32 @@ async function listTenantInvoicesRaw(tenantUid: string, forceRefresh = false): P
   }
   return dedupeFetch(`tenant:${tenantUid}:invoices`, async () => {
     const snap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
-    const rawList = snap.exists()
+    const remoteList = snap.exists()
       ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
           .map(normalizeInvoice)
-          .sort((a, b) =>
-            `${b.invoiceDate}_${b.createdAt}`.localeCompare(`${a.invoiceDate}_${a.createdAt}`)
-          )
       : [];
+
+    const byId = new Map<string, Invoice>(remoteList.map((i) => [i.id, i]));
+    for (const op of getPendingSyncOps(tenantUid)) {
+      if (op.kind === 'upsert_invoice') {
+        byId.set(op.invoice.id, op.invoice);
+      } else if (op.kind === 'upsert_payment') {
+        const cur = byId.get(op.invoicePatch.invoiceId);
+        if (cur) {
+          byId.set(cur.id, {
+            ...cur,
+            amountPaid: op.invoicePatch.amountPaid,
+            balanceDue: op.invoicePatch.balanceDue,
+            status: op.invoicePatch.status,
+            updatedAt: op.invoicePatch.updatedAt,
+          });
+        }
+      }
+    }
+
+    const rawList = Array.from(byId.values()).sort((a, b) =>
+      `${b.invoiceDate}_${b.createdAt}`.localeCompare(`${a.invoiceDate}_${a.createdAt}`)
+    );
     setTenantCollectionData(tenantUid, 'invoices', rawList, true);
     return syncOverdueInvoicesFromList(tenantUid, rawList);
   });
@@ -1557,13 +1819,21 @@ async function listTenantQuotationsRaw(
   }
   return dedupeFetch(`tenant:${tenantUid}:quotations`, async () => {
     const snap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
-    const rawList = snap.exists()
+    const remoteList = snap.exists()
       ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
           .map(normalizeQuotation)
-          .sort((a, b) =>
-            `${b.quotationDate}_${b.createdAt}`.localeCompare(`${a.quotationDate}_${a.createdAt}`)
-          )
       : [];
+
+    const byId = new Map<string, Quotation>(remoteList.map((q) => [q.id, q]));
+    for (const op of getPendingSyncOps(tenantUid)) {
+      if (op.kind === 'upsert_quotation') {
+        byId.set(op.quotation.id, op.quotation);
+      }
+    }
+
+    const rawList = Array.from(byId.values()).sort((a, b) =>
+      `${b.quotationDate}_${b.createdAt}`.localeCompare(`${a.quotationDate}_${a.createdAt}`)
+    );
     setTenantCollectionData(tenantUid, 'quotations', rawList, true);
     return syncExpiredQuotationsFromList(tenantUid, rawList);
   });
@@ -1575,13 +1845,21 @@ async function listTenantPaymentsRaw(tenantUid: string, forceRefresh = false): P
   }
   return dedupeFetch(`tenant:${tenantUid}:payments`, async () => {
     const snap = await get(ref(rtdb, `tenants/${tenantUid}/payments`));
-    const list = snap.exists()
+    const remoteList = snap.exists()
       ? Object.values(snap.val() as Record<string, Record<string, unknown>>)
           .map(normalizePayment)
-          .sort((a, b) =>
-            `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
-          )
       : [];
+
+    const byId = new Map<string, Payment>(remoteList.map((p) => [p.id, p]));
+    for (const op of getPendingSyncOps(tenantUid)) {
+      if (op.kind === 'upsert_payment') {
+        byId.set(op.payment.id, op.payment);
+      }
+    }
+
+    const list = Array.from(byId.values()).sort((a, b) =>
+      `${b.paymentDate}_${b.createdAt}`.localeCompare(`${a.paymentDate}_${a.createdAt}`)
+    );
     setTenantCollectionData(tenantUid, 'payments', list, true);
     return list;
   });
@@ -1596,11 +1874,21 @@ async function listTenantCustomersBaseRaw(
   }
   return dedupeFetch(`tenant:${tenantUid}:customers`, async () => {
     const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers`));
-    const rawList = custSnap.exists()
+    const remoteList = custSnap.exists()
       ? Object.values(custSnap.val() as Record<string, Record<string, unknown>>)
           .map(normalizeCustomer)
-          .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
       : [];
+
+    const byId = new Map<string, Customer>(remoteList.map((c) => [c.id, c]));
+    for (const op of getPendingSyncOps(tenantUid)) {
+      if (op.kind === 'upsert_customer') {
+        byId.set(op.customer.id, op.customer);
+      }
+    }
+
+    const rawList = Array.from(byId.values()).sort((a, b) =>
+      b.createdAt.localeCompare(a.createdAt)
+    );
     setTenantCollectionData(tenantUid, 'customers', rawList, true);
     return rawList;
   });
@@ -2571,6 +2859,18 @@ export function ensureTenantMetaListener(tenantUid: string): () => void {
         }
       };
 
+      void checkAndRefresh('profile', async (uid) => {
+        if (hasPendingSyncForProfile(uid)) return;
+        const profSnap = await get(ref(rtdb, `businessProfiles/${uid}`));
+        if (profSnap.exists()) {
+          const prof = normalizeBusinessProfile(
+            uid,
+            profSnap.val() as Record<string, unknown>
+          );
+          setTenantProfileCache(uid, prof, true);
+          cascadeBusinessSnapshotInCache(uid, prof);
+        }
+      });
       void checkAndRefresh('invoices', listTenantInvoicesRaw);
       void checkAndRefresh('quotations', listTenantQuotationsRaw);
       void checkAndRefresh('payments', listTenantPaymentsRaw);
@@ -3106,7 +3406,10 @@ export const rtdbService = {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
     const cachedProf = getTenantEntry(tenantUid).profile || ctx.businessProfile;
-    if (cachedProf && isTenantCollectionFresh(tenantUid, 'profile')) {
+    if (
+      cachedProf &&
+      (isTenantCollectionFresh(tenantUid, 'profile') || hasPendingSyncForProfile(tenantUid))
+    ) {
       return { profile: cachedProf };
     }
     const snap = await get(ref(rtdb, `businessProfiles/${tenantUid}`));
@@ -3189,79 +3492,65 @@ export const rtdbService = {
       updatedAt: now,
     };
 
-    await set(ref(rtdb, `businessProfiles/${tenantUid}`), stripUndefined(updated));
-    await update(ref(rtdb, `users/${tenantUid}`), {
+    const userPatch = {
       businessName: updated.businessName,
       ownerName: updated.ownerName,
       phone: updated.phone,
       gstin: updated.gstin,
       updatedAt: now,
-    });
+    };
+
+    // Instant localStorage update + snapshot cascade for fast UX & immediate downloads
     setTenantProfileCache(tenantUid, updated, true);
+    cascadeBusinessSnapshotInCache(tenantUid, updated);
+
+    const cacheEntry = getTenantEntry(tenantUid);
+    if (input.defaultInvoiceTemplate && cacheEntry.invoices.length > 0) {
+      setTenantCollectionData(
+        tenantUid,
+        'invoices',
+        cacheEntry.invoices.map((inv) => ({
+          ...inv,
+          templateId: input.defaultInvoiceTemplate as TemplateId,
+        })),
+        true
+      );
+    }
+    if (input.defaultQuotationTemplate && cacheEntry.quotations.length > 0) {
+      setTenantCollectionData(
+        tenantUid,
+        'quotations',
+        cacheEntry.quotations.map((quo) => ({
+          ...quo,
+          templateId: input.defaultQuotationTemplate as TemplateId,
+        })),
+        true
+      );
+    }
+
     updateRuntimeSessionCache({
       ...ctx,
       businessProfile: updated,
       effectiveUser: {
         ...ctx.effectiveUser,
-        businessName: updated.businessName,
-        ownerName: updated.ownerName,
-        phone: updated.phone,
-        gstin: updated.gstin,
-        updatedAt: now,
+        ...userPatch,
       },
     });
-    await touchTenantMeta(tenantUid, ['profile']);
 
-    // When a template is selected as default, update all existing invoices/quotations to that theme
-    if (input.defaultInvoiceTemplate) {
-      try {
-        const invoicesSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
-        if (invoicesSnap.exists()) {
-          const raw = invoicesSnap.val() as Record<string, Record<string, unknown>>;
-          const updates: Record<string, unknown> = {};
-          for (const invId of Object.keys(raw)) {
-            updates[`tenants/${tenantUid}/invoices/${invId}/templateId`] = input.defaultInvoiceTemplate;
-          }
-          if (Object.keys(updates).length > 0) {
-            await update(ref(rtdb), updates);
-          }
-        }
-        const e = getTenantEntry(tenantUid);
-        if (e.invoices && e.invoices.length > 0) {
-          e.invoices.forEach((inv) => {
-            inv.templateId = input.defaultInvoiceTemplate as TemplateId;
-          });
-        }
-      } catch (err) {
-        console.warn('Failed to cascade default template to all invoices:', err);
-      }
-    }
+    // Queue Firebase RTDB sync & flush in background
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_profile',
+      profile: updated,
+      userPatch,
+      cascadeDefaultInvoiceTemplate: input.defaultInvoiceTemplate,
+      cascadeDefaultQuotationTemplate: input.defaultQuotationTemplate,
+      cascadeBusinessSnapshot: true,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
 
-    if (input.defaultQuotationTemplate) {
-      try {
-        const quotationsSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
-        if (quotationsSnap.exists()) {
-          const raw = quotationsSnap.val() as Record<string, Record<string, unknown>>;
-          const updates: Record<string, unknown> = {};
-          for (const quoId of Object.keys(raw)) {
-            updates[`tenants/${tenantUid}/quotations/${quoId}/templateId`] = input.defaultQuotationTemplate;
-          }
-          if (Object.keys(updates).length > 0) {
-            await update(ref(rtdb), updates);
-          }
-        }
-        const e = getTenantEntry(tenantUid);
-        if (e.quotations && e.quotations.length > 0) {
-          e.quotations.forEach((quo) => {
-            quo.templateId = input.defaultQuotationTemplate as TemplateId;
-          });
-        }
-      } catch (err) {
-        console.warn('Failed to cascade default template to all quotations:', err);
-      }
-    }
-
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -3269,7 +3558,7 @@ export const rtdbService = {
       entityType: 'business_profile',
       entityId: tenantUid,
       summary: `Updated business profile & preferences for ${updated.businessName}`,
-    });
+    }).catch(() => {});
 
     return { profile: updated };
   },
@@ -3328,11 +3617,16 @@ export const rtdbService = {
       updatedAt: now,
     };
 
-    await set(ref(rtdb, `tenants/${tenantUid}/customers/${id}`), stripUndefined(customer));
     upsertTenantCustomerCache(tenantUid, customer);
-    await touchTenantMeta(tenantUid, ['customers']);
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_customer',
+      customer,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
 
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -3340,7 +3634,7 @@ export const rtdbService = {
       entityType: 'customer',
       entityId: id,
       summary: `Added customer ${customer.companyName || name}`,
-    });
+    }).catch(() => {});
 
     return {
       customer: {
@@ -3385,12 +3679,19 @@ export const rtdbService = {
       updatedAt: new Date().toISOString(),
     };
 
-    await set(custRef, stripUndefined(updated));
     upsertTenantCustomerCache(tenantUid, updated);
-    await touchTenantMeta(tenantUid, ['customers']);
+    cascadeCustomerSnapshotInCache(tenantUid, updated);
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_customer',
+      customer: updated,
+      cascadeSnapshot: true,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
 
     const isUnarchiving = existing.archived && !updated.archived;
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -3398,12 +3699,16 @@ export const rtdbService = {
       entityType: 'customer',
       entityId: customerId,
       summary: isUnarchiving ? `Unarchived customer ${name}` : `Updated customer ${name}`,
-    });
+    }).catch(() => {});
 
-    const refreshed = (await listTenantCustomersRaw(tenantUid, { includeArchived: true })).find(
-      (c) => c.id === customerId
-    );
-    return { customer: refreshed || updated };
+    const cacheEntry = getTenantEntry(tenantUid);
+    const enriched = enrichCustomersWithStats(
+      [updated],
+      cacheEntry.invoices,
+      cacheEntry.quotations,
+      { includeArchived: true }
+    )[0];
+    return { customer: enriched || updated };
   },
 
   deleteCustomer: async (customerId: string) => {
@@ -3466,7 +3771,12 @@ export const rtdbService = {
     endDate?: string;
   }) => {
     const ctx = await requireTenantContext();
-    let list = await listTenantInvoicesRaw(ctx.effectiveUser.uid);
+    const tenantUid = ctx.effectiveUser.uid;
+    const [rawList] = await Promise.all([
+      listTenantInvoicesRaw(tenantUid),
+      listTenantCustomersBaseRaw(tenantUid),
+    ]);
+    let list = rawList.map((inv) => mergeDocumentWithLiveSnapshotsSync(inv));
 
     if (params?.status && params.status !== 'all') {
       list = list.filter((i) => i.status === params.status);
@@ -3500,14 +3810,15 @@ export const rtdbService = {
       listTenantInvoicesRaw(tenantUid),
       listTenantPaymentsRaw(tenantUid),
       listTenantActivityLogsRaw(tenantUid),
+      listTenantCustomersBaseRaw(tenantUid),
     ]);
     const invoice = invoices.find((i) => i.id === invoiceId);
     if (!invoice) throw new Error('Invoice not found');
 
-    const invoiceCopy: Invoice = {
+    const invoiceCopy: Invoice = mergeDocumentWithLiveSnapshotsSync({
       ...invoice,
       payments: payments.filter((p) => p.invoiceId === invoiceId),
-    };
+    });
     const auditLogs = allLogs
       .filter((l) => l.entityType === 'invoice' && l.entityId === invoiceId)
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -3541,6 +3852,7 @@ export const rtdbService = {
       const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`));
       if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
       customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+      upsertTenantCustomerCache(tenantUid, customer);
     }
 
     const resolvedLogo = resolveDocumentLogo(profile.logoDataUrl, input.logoDataUrl);
@@ -3606,24 +3918,39 @@ export const rtdbService = {
 
     const now = new Date().toISOString();
 
-    if (input.saveLogoToProfile && input.logoDataUrl !== undefined) {
-      await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
-        logoDataUrl: businessSnapshot.logoDataUrl,
-        updatedAt: now,
-      });
-      profile = { ...profile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
-      setTenantProfileCache(tenantUid, profile, true);
+    let profileUpdated = false;
+    let nextProfile = profile;
+    if (
+      input.saveLogoToProfile &&
+      input.logoDataUrl !== undefined &&
+      businessSnapshot.logoDataUrl !== nextProfile.logoDataUrl
+    ) {
+      nextProfile = { ...nextProfile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
+      profileUpdated = true;
     }
-    if (input.saveUpiToProfile && input.upiId !== undefined) {
-      await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
-        upiId: businessSnapshot.upiId,
-        updatedAt: now,
-      });
-      profile = { ...profile, upiId: businessSnapshot.upiId, updatedAt: now };
+    if (
+      input.saveUpiToProfile &&
+      input.upiId !== undefined &&
+      businessSnapshot.upiId !== nextProfile.upiId
+    ) {
+      nextProfile = { ...nextProfile, upiId: businessSnapshot.upiId, updatedAt: now };
+      profileUpdated = true;
+    }
+    if (profileUpdated) {
+      profile = nextProfile;
       setTenantProfileCache(tenantUid, profile, true);
+      cascadeBusinessSnapshotInCache(tenantUid, profile);
+      updateRuntimeSessionCache({ ...ctx, businessProfile: profile });
+      enqueuePendingSyncOp(tenantUid, {
+        id: generateId('sync'),
+        kind: 'upsert_profile',
+        profile,
+        cascadeBusinessSnapshot: true,
+        createdAt: Date.now(),
+      });
     }
 
-    let targetId = existingInvoiceId || generateId('inv');
+    const targetId = existingInvoiceId || generateId('inv');
     let invoiceNumber = '';
     let status: InvoiceStatus = 'draft';
     let finalizedAt: string | null = null;
@@ -3632,6 +3959,7 @@ export const rtdbService = {
     let balanceDue = calc.grandTotal;
     let sourceQuotationId: string | null = null;
     let wasAlreadyFinalized = false;
+    let seqAlloc: { counterKey: string; seq: number } | undefined;
 
     if (existingInvoiceId) {
       let existing = getTenantEntry(tenantUid).invoices.find((i) => i.id === existingInvoiceId);
@@ -3651,12 +3979,15 @@ export const rtdbService = {
           invoiceNumber = existing.invoiceNumber;
           status = 'draft';
         } else {
-          invoiceNumber = await allocateDocumentNumber(
+          const allocated = allocateLocalDocNumber(
             tenantUid,
             'INV',
             profile.invoicePrefix,
-            invoiceDate
+            invoiceDate,
+            getTenantEntry(tenantUid).invoices.map((i) => i.invoiceNumber)
           );
+          invoiceNumber = allocated.docNumber;
+          seqAlloc = { counterKey: allocated.counterKey, seq: allocated.seq };
           status = dueDate < todayISO() ? 'overdue' : 'unpaid';
           finalizedAt = now;
         }
@@ -3682,12 +4013,15 @@ export const rtdbService = {
         invoiceNumber = `DRAFT-${generateId().slice(0, 6).toUpperCase()}`;
         status = 'draft';
       } else {
-        invoiceNumber = await allocateDocumentNumber(
+        const allocated = allocateLocalDocNumber(
           tenantUid,
           'INV',
           profile.invoicePrefix,
-          invoiceDate
+          invoiceDate,
+          getTenantEntry(tenantUid).invoices.map((i) => i.invoiceNumber)
         );
+        invoiceNumber = allocated.docNumber;
+        seqAlloc = { counterKey: allocated.counterKey, seq: allocated.seq };
         status = dueDate < todayISO() ? 'overdue' : 'unpaid';
         finalizedAt = now;
       }
@@ -3735,12 +4069,18 @@ export const rtdbService = {
       items: calc.items.map((it, idx) => ({ ...it, id: it.id || `itm_${idx + 1}` })),
     };
 
-    await set(ref(rtdb, `tenants/${tenantUid}/invoices/${targetId}`), stripUndefined(savedInvoice));
     upsertTenantInvoiceCache(tenantUid, savedInvoice);
-    await touchTenantMeta(tenantUid, ['invoices']);
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_invoice',
+      invoice: savedInvoice,
+      seqAlloc,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
 
     if (!isDraft && !wasAlreadyFinalized) {
-      await createNotification({
+      void createNotification({
         userUid: tenantUid,
         type: 'invoice_created',
         title: 'New invoice generated',
@@ -3749,10 +4089,10 @@ export const rtdbService = {
         }.`,
         entityType: 'invoice',
         entityId: targetId,
-      });
+      }).catch(() => {});
     }
 
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -3772,7 +4112,7 @@ export const rtdbService = {
         : isDraft
           ? `Saved draft invoice ${invoiceNumber}`
           : `Issued invoice ${invoiceNumber} for INR ${calc.grandTotal.toFixed(2)}`,
-    });
+    }).catch(() => {});
 
     return { invoice: savedInvoice };
   },
@@ -3888,7 +4228,12 @@ export const rtdbService = {
     endDate?: string;
   }) => {
     const ctx = await requireTenantContext();
-    let list = await listTenantQuotationsRaw(ctx.effectiveUser.uid);
+    const tenantUid = ctx.effectiveUser.uid;
+    const [rawList] = await Promise.all([
+      listTenantQuotationsRaw(tenantUid),
+      listTenantCustomersBaseRaw(tenantUid),
+    ]);
+    let list = rawList.map((q) => mergeDocumentWithLiveSnapshotsSync(q));
 
     if (params?.status && params.status !== 'all') {
       list = list.filter((q) => q.status === params.status);
@@ -3918,10 +4263,13 @@ export const rtdbService = {
   getQuotation: async (quotationId: string) => {
     const ctx = await requireTenantContext();
     const tenantUid = ctx.effectiveUser.uid;
-    const quotations = await listTenantQuotationsRaw(tenantUid);
+    const [quotations] = await Promise.all([
+      listTenantQuotationsRaw(tenantUid),
+      listTenantCustomersBaseRaw(tenantUid),
+    ]);
     const quotation = quotations.find((q) => q.id === quotationId);
     if (!quotation) throw new Error('Quotation not found');
-    return { quotation };
+    return { quotation: mergeDocumentWithLiveSnapshotsSync(quotation) };
   },
 
   saveQuotation: async (input: SaveDocumentPayload, existingQuotationId?: string) => {
@@ -3942,6 +4290,7 @@ export const rtdbService = {
       const custSnap = await get(ref(rtdb, `tenants/${tenantUid}/customers/${input.customerId}`));
       if (!custSnap.exists()) throw new Error('Selected customer does not belong to this workspace');
       customer = normalizeCustomer(custSnap.val() as Record<string, unknown>);
+      upsertTenantCustomerCache(tenantUid, customer);
     }
 
     const resolvedLogo = resolveDocumentLogo(profile.logoDataUrl, input.logoDataUrl);
@@ -4005,27 +4354,43 @@ export const rtdbService = {
 
     const now = new Date().toISOString();
 
-    if (input.saveLogoToProfile && input.logoDataUrl !== undefined) {
-      await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
-        logoDataUrl: businessSnapshot.logoDataUrl,
-        updatedAt: now,
-      });
-      profile = { ...profile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
-      setTenantProfileCache(tenantUid, profile, true);
+    let profileUpdated = false;
+    let nextProfile = profile;
+    if (
+      input.saveLogoToProfile &&
+      input.logoDataUrl !== undefined &&
+      businessSnapshot.logoDataUrl !== nextProfile.logoDataUrl
+    ) {
+      nextProfile = { ...nextProfile, logoDataUrl: businessSnapshot.logoDataUrl, updatedAt: now };
+      profileUpdated = true;
     }
-    if (input.saveUpiToProfile && input.upiId !== undefined) {
-      await update(ref(rtdb, `businessProfiles/${tenantUid}`), {
-        upiId: businessSnapshot.upiId,
-        updatedAt: now,
-      });
-      profile = { ...profile, upiId: businessSnapshot.upiId, updatedAt: now };
+    if (
+      input.saveUpiToProfile &&
+      input.upiId !== undefined &&
+      businessSnapshot.upiId !== nextProfile.upiId
+    ) {
+      nextProfile = { ...nextProfile, upiId: businessSnapshot.upiId, updatedAt: now };
+      profileUpdated = true;
+    }
+    if (profileUpdated) {
+      profile = nextProfile;
       setTenantProfileCache(tenantUid, profile, true);
+      cascadeBusinessSnapshotInCache(tenantUid, profile);
+      updateRuntimeSessionCache({ ...ctx, businessProfile: profile });
+      enqueuePendingSyncOp(tenantUid, {
+        id: generateId('sync'),
+        kind: 'upsert_profile',
+        profile,
+        cascadeBusinessSnapshot: true,
+        createdAt: Date.now(),
+      });
     }
 
     const targetId = existingQuotationId || generateId('quo');
     let quotationNumber = '';
     let status: QuotationStatus = 'draft';
     let createdAt = now;
+    let seqAlloc: { counterKey: string; seq: number } | undefined;
 
     if (existingQuotationId) {
       let existing = getTenantEntry(tenantUid).quotations.find((q) => q.id === existingQuotationId);
@@ -4036,24 +4401,34 @@ export const rtdbService = {
       }
       if (existing.status !== 'draft') throw new Error('Only draft quotations can be edited');
       createdAt = existing.createdAt;
-      quotationNumber = isDraft
-        ? existing.quotationNumber
-        : await allocateDocumentNumber(
-            tenantUid,
-            'QUO',
-            profile.quotationPrefix,
-            quotationDate
-          );
+      if (isDraft) {
+        quotationNumber = existing.quotationNumber;
+      } else {
+        const allocated = allocateLocalDocNumber(
+          tenantUid,
+          'QUO',
+          profile.quotationPrefix,
+          quotationDate,
+          getTenantEntry(tenantUid).quotations.map((q) => q.quotationNumber)
+        );
+        quotationNumber = allocated.docNumber;
+        seqAlloc = { counterKey: allocated.counterKey, seq: allocated.seq };
+      }
       status = isDraft ? 'draft' : validUntil < todayISO() ? 'expired' : 'sent';
     } else {
-      quotationNumber = isDraft
-        ? `QDRAFT-${generateId().slice(0, 5).toUpperCase()}`
-        : await allocateDocumentNumber(
-            tenantUid,
-            'QUO',
-            profile.quotationPrefix,
-            quotationDate
-          );
+      if (isDraft) {
+        quotationNumber = `QDRAFT-${generateId().slice(0, 5).toUpperCase()}`;
+      } else {
+        const allocated = allocateLocalDocNumber(
+          tenantUid,
+          'QUO',
+          profile.quotationPrefix,
+          quotationDate,
+          getTenantEntry(tenantUid).quotations.map((q) => q.quotationNumber)
+        );
+        quotationNumber = allocated.docNumber;
+        seqAlloc = { counterKey: allocated.counterKey, seq: allocated.seq };
+      }
       status = isDraft ? 'draft' : validUntil < todayISO() ? 'expired' : 'sent';
     }
 
@@ -4093,11 +4468,17 @@ export const rtdbService = {
       items: calc.items.map((it, idx) => ({ ...it, id: it.id || `qit_${idx + 1}` })),
     };
 
-    await set(ref(rtdb, `tenants/${tenantUid}/quotations/${targetId}`), stripUndefined(saved));
     upsertTenantQuotationCache(tenantUid, saved);
-    await touchTenantMeta(tenantUid, ['quotations']);
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_quotation',
+      quotation: saved,
+      seqAlloc,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
 
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -4111,7 +4492,7 @@ export const rtdbService = {
       entityType: 'quotation',
       entityId: targetId,
       summary: `${existingQuotationId ? 'Updated' : 'Created'} quotation ${quotationNumber} (INR ${calc.grandTotal.toFixed(2)})`,
-    });
+    }).catch(() => {});
 
     return { quotation: saved };
   },
@@ -4332,16 +4713,28 @@ export const rtdbService = {
     if (inv.status === 'draft') throw new Error('Cannot record payment on a draft invoice');
     if (inv.status === 'cancelled') throw new Error('Cannot record payment on a cancelled invoice');
 
+    const hasPaymentsLoaded = hasTenantCollectionData(tenantUid, 'payments');
     const refId = sanitizeStr(input.referenceId, 80);
     if (refId) {
-      const existingPayments = await listTenantPaymentsRaw(tenantUid);
+      const existingPayments = hasPaymentsLoaded
+        ? getTenantEntry(tenantUid).payments
+        : await listTenantPaymentsRaw(tenantUid);
       if (existingPayments.some((p) => p.referenceId && p.referenceId === refId)) {
         throw new Error(`Duplicate payment reference ID "${refId}" detected`);
       }
     }
 
     const paymentDate = sanitizeStr(input.paymentDate, 10) || todayISO();
-    const receiptNumber = await allocateDocumentNumber(tenantUid, 'RCP', 'RCP', paymentDate);
+    const existingReceiptNums = getTenantEntry(tenantUid).payments.map((p) => p.receiptNumber);
+    const allocated = allocateLocalDocNumber(
+      tenantUid,
+      'RCP',
+      'RCP',
+      paymentDate,
+      existingReceiptNums
+    );
+    const receiptNumber = allocated.docNumber;
+    const seqAlloc = { counterKey: allocated.counterKey, seq: allocated.seq };
     const payId = generateId('pay');
     const now = new Date().toISOString();
 
@@ -4361,21 +4754,61 @@ export const rtdbService = {
       createdAt: now,
     };
 
-    await set(ref(rtdb, `tenants/${tenantUid}/payments/${payId}`), stripUndefined(payment));
-    upsertTenantPaymentCache(tenantUid, payment);
-    await touchTenantMeta(tenantUid, ['payments']);
-    await reconcileInvoicePayments(tenantUid, inv.id, now);
+    const paidBeforePaise = hasPaymentsLoaded
+      ? getTenantEntry(tenantUid)
+          .payments.filter((p) => p.invoiceId === inv.id)
+          .reduce((sum, p) => sum + toPaise(p.amount), 0)
+      : toPaise(inv.amountPaid || 0);
+    const paidPaise = paidBeforePaise + amountPaise;
+    const grandPaise = toPaise(inv.grandTotal);
+    const balancePaise = Math.max(0, grandPaise - paidPaise);
+    const nextStatus: InvoiceStatus =
+      balancePaise === 0
+        ? 'paid'
+        : inv.dueDate < todayISO()
+          ? 'overdue'
+          : paidPaise > 0
+            ? 'partially_paid'
+            : 'unpaid';
 
-    await createNotification({
+    const amountPaid = fromPaise(paidPaise);
+    const balanceDue = fromPaise(balancePaise);
+    const updatedInv: Invoice = {
+      ...inv,
+      amountPaid,
+      balanceDue,
+      status: nextStatus,
+      updatedAt: now,
+    };
+
+    upsertTenantPaymentCache(tenantUid, payment);
+    upsertTenantInvoiceCache(tenantUid, updatedInv);
+    enqueuePendingSyncOp(tenantUid, {
+      id: generateId('sync'),
+      kind: 'upsert_payment',
+      payment,
+      invoicePatch: {
+        invoiceId: inv.id,
+        amountPaid,
+        balanceDue,
+        status: nextStatus,
+        updatedAt: now,
+      },
+      seqAlloc,
+      createdAt: Date.now(),
+    });
+    void flushTenantSyncQueue(tenantUid);
+
+    void createNotification({
       userUid: tenantUid,
       type: 'payment_received',
       title: 'Payment recorded',
       message: `Received INR ${fromPaise(amountPaise).toFixed(2)} against ${inv.invoiceNumber}.`,
       entityType: 'payment',
       entityId: payId,
-    });
+    }).catch(() => {});
 
-    await logActivity({
+    void logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
       impersonationSessionId: ctx.impersonationSession?.id,
@@ -4383,9 +4816,9 @@ export const rtdbService = {
       entityType: 'payment',
       entityId: payId,
       summary: `Recorded ${input.paymentMethod} payment of INR ${fromPaise(amountPaise).toFixed(2)} on ${inv.invoiceNumber} (${receiptNumber})`,
-    });
+    }).catch(() => {});
 
-    return { payment };
+    return { payment, invoice: updatedInv };
   },
 
   updatePayment: async (

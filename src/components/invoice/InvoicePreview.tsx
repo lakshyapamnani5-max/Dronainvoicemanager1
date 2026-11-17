@@ -2,6 +2,8 @@ import * as React from 'react';
 import QRCode from 'qrcode';
 import type { Invoice, Quotation, TemplateId } from '../../shared/types';
 import { buildUpiPaymentUri } from '../../shared/gstCalculator';
+import { getCachedSession, subscribeTenantCache } from '../../lib/localCache';
+import { mergeDocumentWithLiveSnapshotsSync } from '../../lib/liveSnapshots';
 import { getThemeById, normalizeTemplateId } from './invoiceThemeRegistry';
 
 export interface InvoicePreviewProps {
@@ -14,11 +16,29 @@ export interface InvoicePreviewProps {
 
 export function InvoicePreview({
   docType,
-  record,
+  record: rawRecord,
   templateOverride,
   a4Ratio = false,
   className = '',
 }: InvoicePreviewProps) {
+  const [cacheTick, setCacheTick] = React.useState(0);
+  const tenantUid = rawRecord.userUid || getCachedSession()?.effectiveUser.uid || '';
+
+  React.useEffect(() => {
+    if (!tenantUid) return;
+    return subscribeTenantCache(tenantUid, (changed) => {
+      if (changed.has('profile') || changed.has('customers')) {
+        setCacheTick((t) => t + 1);
+      }
+    });
+  }, [tenantUid]);
+
+  const record = React.useMemo(
+    () => mergeDocumentWithLiveSnapshotsSync(rawRecord),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [rawRecord, cacheTick]
+  );
+
   const [qrUrl, setQrUrl] = React.useState<string>('');
   const activeTemplateId = normalizeTemplateId(templateOverride || record.templateId);
   const theme = getThemeById(activeTemplateId);

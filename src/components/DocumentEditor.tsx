@@ -52,7 +52,7 @@ import type {
 } from '../shared/types';
 import { DocumentPreviewSheet } from './DocumentPreviewSheet';
 import { InvoiceThemeSelector } from './invoice/InvoiceThemeSelector';
-import { INVOICE_THEMES } from './invoice/invoiceThemeRegistry';
+import { INVOICE_THEMES, normalizeTemplateId } from './invoice/invoiceThemeRegistry';
 import type { StandardTemplateId } from './invoice/invoiceThemeTypes';
 import { HsnSacSelector } from './HsnSacSelector';
 import { Button } from './ui/button';
@@ -251,12 +251,13 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const [roundOffEnabled, setRoundOffEnabled] = React.useState(
     () => hydratedDoc?.roundOffEnabled ?? true
   );
-  const [templateId, setTemplateId] = React.useState<TemplateId>(
-    () =>
+  const [templateId, setTemplateId] = React.useState<TemplateId>(() =>
+    normalizeTemplateId(
       hydratedDoc?.templateId ||
-      (docType === 'invoice'
-        ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
-        : profile?.defaultQuotationTemplate || 'gst_theme_1')
+        (docType === 'invoice'
+          ? profile?.defaultInvoiceTemplate
+          : profile?.defaultQuotationTemplate)
+    )
   );
   const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
 
@@ -374,9 +375,11 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     }
     if (!userTouchedTemplateRef.current) {
       setTemplateId(
-        docType === 'invoice'
-          ? profile.defaultInvoiceTemplate || 'classic_gst'
-          : profile.defaultQuotationTemplate || 'classic_gst'
+        normalizeTemplateId(
+          docType === 'invoice'
+            ? profile.defaultInvoiceTemplate
+            : profile.defaultQuotationTemplate
+        )
       );
     }
     if (!userTouchedTermsRef.current) {
@@ -440,7 +443,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               setTaxMode(inv.taxMode);
               setTaxSupplyMode(inv.taxSupplyMode);
               setRoundOffEnabled(inv.roundOffEnabled);
-              setTemplateId(inv.templateId);
+              setTemplateId(normalizeTemplateId(inv.templateId));
               setNotes(inv.notes);
               setTerms(inv.terms);
               setLogoDataUrl(inv.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
@@ -471,7 +474,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               setTaxMode(quo.taxMode);
               setTaxSupplyMode(quo.taxSupplyMode);
               setRoundOffEnabled(quo.roundOffEnabled);
-              setTemplateId(quo.templateId);
+              setTemplateId(normalizeTemplateId(quo.templateId));
               setNotes(quo.notes);
               setTerms(quo.terms);
               setLogoDataUrl(quo.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
@@ -1296,7 +1299,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                   <div className="space-y-1">
                     <Label>A4 Template</Label>
                     <Select
-                      value={templateId}
+                      value={normalizeTemplateId(templateId)}
                       onChange={(e) => {
                         userTouchedTemplateRef.current = true;
                         setTemplateId(e.target.value as TemplateId);
@@ -1319,6 +1322,24 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                       />
                     </div>
                   ) : null}
+                </div>
+
+                {/* All Invoice Themes visual picker (especially helpful on mobile where live preview is collapsed) */}
+                <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                  <InvoiceThemeSelector
+                    currentThemeId={templateId}
+                    defaultThemeId={
+                      docType === 'invoice'
+                        ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
+                        : profile?.defaultQuotationTemplate || 'gst_theme_1'
+                    }
+                    onSelectTheme={(themeId) => {
+                      userTouchedTemplateRef.current = true;
+                      setTemplateId(themeId);
+                    }}
+                    onSetAsDefault={handleSetDefaultTheme}
+                    isSettingDefault={settingDefaultTheme}
+                  />
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">

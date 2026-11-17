@@ -11,12 +11,15 @@ import {
   Plus,
   Settings,
   Share2,
+  Sparkles,
+  Star,
   Sun,
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useTheme } from '../../contexts/ThemeContext';
 import {
+  businessApi,
   cachedRead,
   customersApi,
   invoicesApi,
@@ -31,12 +34,20 @@ import type {
   CustomerSnapshot,
   Invoice,
   LineItemInput,
+  PaymentMethod,
   RateCardItem,
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
 } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
+import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
+import {
+  INVOICE_THEMES,
+  getThemeById,
+  normalizeTemplateId,
+} from '../../components/invoice/invoiceThemeRegistry';
+import type { StandardTemplateId } from '../../components/invoice/invoiceThemeTypes';
 import { Button } from '../../components/ui/button';
 import { Dialog } from '../../components/ui/dialog';
 import { Input, Label, Select, Textarea } from '../../components/ui/input';
@@ -44,7 +55,10 @@ import { useToast } from '../../components/ui/toast';
 
 interface QuickSalePageProps {
   navigate: (path: string) => void;
+  onBack?: () => void;
 }
+
+type SaveActionMode = 'save' | 'save_and_new' | 'save_and_download';
 
 const UNIT_OPTIONS = [
   'Nos',
@@ -105,12 +119,13 @@ function emptyItemDraft(defaultTaxRate = 0): QuickItemDraft {
   };
 }
 
-export function QuickSalePage({ navigate }: QuickSalePageProps) {
-  const { session } = useAuth();
+export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
+  const { session, updateLocalBusinessProfile } = useAuth();
   const { theme, toggleTheme } = useTheme();
   const { notify } = useToast();
   const tenantUid = session?.effectiveUser.uid;
   const profile = session?.businessProfile;
+  const defaultThemeNorm = normalizeTemplateId(profile?.defaultInvoiceTemplate);
 
   const [customers, setCustomers] = React.useState<Customer[]>(() => {
     if (!tenantUid || !cachedRead.hasTenantCollectionData(tenantUid, 'customers')) return [];
@@ -160,19 +175,58 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
 
   const [items, setItems] = React.useState<LineItemInput[]>([]);
   const [manualTotalStr, setManualTotalStr] = React.useState('');
+  const [advanceAmountStr, setAdvanceAmountStr] = React.useState('');
+  const [advanceMethod, setAdvanceMethod] = React.useState<PaymentMethod>('Cash');
 
   // Tax & Bill Settings
   const [gstEnabled, setGstEnabled] = React.useState<boolean>(false);
   const [taxMode, setTaxMode] = React.useState<TaxPricingMode>('exclusive');
   const [taxSupplyMode, setTaxSupplyMode] = React.useState<TaxSupplyMode>('auto');
   const [roundOffEnabled, setRoundOffEnabled] = React.useState<boolean>(true);
-  const [templateId, setTemplateId] = React.useState<TemplateId>(
-    profile?.defaultInvoiceTemplate || 'classic_gst'
+  const [templateId, setTemplateId] = React.useState<StandardTemplateId>(() =>
+    normalizeTemplateId(profile?.defaultInvoiceTemplate)
   );
+  const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
+  const [saveThemeAsDefaultOnApply, setSaveThemeAsDefaultOnApply] = React.useState(false);
   const [notes, setNotes] = React.useState('');
   const [paymentTermsDays, setPaymentTermsDays] = React.useState<number>(
     profile?.defaultPaymentTermsDays ?? 15
   );
+
+  const userTouchedTemplateRef = React.useRef(false);
+  const userTouchedTermsRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!profile) return;
+    if (!userTouchedTemplateRef.current) {
+      setTemplateId(normalizeTemplateId(profile.defaultInvoiceTemplate));
+    }
+    if (!userTouchedTermsRef.current && profile.defaultPaymentTermsDays !== undefined) {
+      setPaymentTermsDays(profile.defaultPaymentTermsDays);
+    }
+  }, [profile?.defaultInvoiceTemplate, profile?.defaultPaymentTermsDays, profile]);
+
+  const handleSetDefaultTheme = async (newThemeId: StandardTemplateId) => {
+    try {
+      setSettingDefaultTheme(true);
+      const res = await businessApi.updateProfile({
+        defaultInvoiceTemplate: newThemeId,
+        defaultQuotationTemplate: newThemeId,
+      });
+      updateLocalBusinessProfile(res.profile);
+      userTouchedTemplateRef.current = false;
+      setTemplateId(newThemeId);
+      setSaveThemeAsDefaultOnApply(false);
+      notify(
+        'success',
+        `${getThemeById(newThemeId).name} set as default theme for all new invoices`
+      );
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update default theme');
+    } finally {
+      setSettingDefaultTheme(false);
+    }
+  };
 
   // Screen / Dialog / Menu states
   const [subScreen, setSubScreen] = React.useState<'sale' | 'add_item'>('sale');
@@ -185,6 +239,9 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
   const [saleSettingsOpen, setSaleSettingsOpen] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [previewOpen, setPreviewOpen] = React.useState(false);
+  const [advancePromptMode, setAdvancePromptMode] = React.useState<SaveActionMode | null>(null);
+  const [promptAdvanceStr, setPromptAdvanceStr] = React.useState('');
+  const [promptAdvanceMethod, setPromptAdvanceMethod] = React.useState<PaymentMethod>('Cash');
   const [saving, setSaving] = React.useState(false);
   const [savedInvoice, setSavedInvoice] = React.useState<Invoice | null>(null);
   const [lastQuickSavedInvoice, setLastQuickSavedInvoice] = React.useState<Invoice | null>(null);
@@ -192,6 +249,14 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
 
   const dateInputRef = React.useRef<HTMLInputElement>(null);
   const itemNameInputRef = React.useRef<HTMLInputElement>(null);
+
+  const handleBackNavigation = () => {
+    if (onBack) {
+      onBack();
+    } else {
+      navigate('/dashboard');
+    }
+  };
 
   const nextSeqNumber = existingInvoiceCount + 1;
   const yearStr = invoiceDate.slice(0, 4) || String(new Date().getFullYear());
@@ -250,6 +315,11 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
     : Number.isFinite(manualAmountNum) && manualAmountNum > 0
       ? manualAmountNum
       : 0;
+
+  const parsedAdvanceAmount = React.useMemo(() => {
+    const val = Number(advanceAmountStr);
+    return Number.isFinite(val) && val > 0 ? val : 0;
+  }, [advanceAmountStr]);
 
   const buildPreviewRecord = React.useCallback((): Invoice => {
     const placeOfSupply = selectedCustomerObj?.state || profile?.state || 'Maharashtra';
@@ -325,12 +395,20 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
 
     const dueDate =
       saleMode === 'cash' ? invoiceDate : addDays(invoiceDate, paymentTermsDays);
+    const previewPaid =
+      saleMode === 'cash' ? calc.grandTotal : parsedAdvanceAmount;
+    const previewBalance = Math.max(0, calc.grandTotal - previewPaid);
 
     return {
       id: 'preview',
       userUid: tenantUid || '',
       invoiceNumber: predictedInvoiceCode,
-      status: saleMode === 'cash' ? 'paid' : 'unpaid',
+      status:
+        previewBalance === 0
+          ? 'paid'
+          : previewPaid > 0
+            ? 'partially_paid'
+            : 'unpaid',
       customerId: customerSnapshot.id,
       customerSnapshot,
       businessSnapshot,
@@ -353,8 +431,8 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
       totalTax: calc.totalTax,
       roundOff: calc.roundOff,
       grandTotal: calc.grandTotal,
-      amountPaid: saleMode === 'cash' ? calc.grandTotal : 0,
-      balanceDue: saleMode === 'cash' ? 0 : calc.grandTotal,
+      amountPaid: previewPaid,
+      balanceDue: previewBalance,
       amountInWords: calc.amountInWords,
       templateId,
       notes,
@@ -382,6 +460,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
     saleMode,
     invoiceDate,
     paymentTermsDays,
+    parsedAdvanceAmount,
     tenantUid,
     predictedInvoiceCode,
     referenceNumber,
@@ -493,39 +572,52 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
     setPhoneNumber('');
     setItems([]);
     setManualTotalStr('');
+    setAdvanceAmountStr('');
+    setAdvanceMethod('Cash');
     setReferenceNumber('');
     setNotes('');
     setInvoiceDate(new Date().toISOString().slice(0, 10));
+    userTouchedTemplateRef.current = false;
+    setTemplateId(normalizeTemplateId(profile?.defaultInvoiceTemplate));
   };
 
-  const handleSaveSale = async (mode: 'save' | 'save_and_new' | 'save_and_download') => {
-    const trimmedCustomer = customerName.trim();
-    if (!trimmedCustomer) {
+  const validateSaleInputs = (): LineItemInput[] | null => {
+    if (!customerName.trim()) {
       notify('error', 'Customer name is required');
-      return;
+      return null;
     }
+    if (items.length > 0) return items;
+    const amt = Number(manualTotalStr);
+    if (!Number.isFinite(amt) || amt <= 0) {
+      notify('error', 'Add at least one item or enter a Total Amount');
+      return null;
+    }
+    return [
+      {
+        name: 'Sale Bill',
+        description: '',
+        hsnSac: '',
+        quantity: 1,
+        unit: 'Nos',
+        rate: amt,
+        discountType: 'percent',
+        discountValue: 0,
+        taxRate: 0,
+      },
+    ];
+  };
 
-    let finalItems: LineItemInput[] = items;
-    if (finalItems.length === 0) {
-      const amt = Number(manualTotalStr);
-      if (!Number.isFinite(amt) || amt <= 0) {
-        notify('error', 'Add at least one item or enter a Total Amount');
-        return;
-      }
-      finalItems = [
-        {
-          name: 'Sale Bill',
-          description: '',
-          hsnSac: '',
-          quantity: 1,
-          unit: 'Nos',
-          rate: amt,
-          discountType: 'percent',
-          discountValue: 0,
-          taxRate: 0,
-        },
-      ];
-    }
+  const executeSaveSale = async (
+    mode: SaveActionMode,
+    overrideAdvanceAmount?: number,
+    overrideAdvanceMethod?: PaymentMethod
+  ) => {
+    const finalItems = validateSaleInputs();
+    if (!finalItems) return;
+    const trimmedCustomer = customerName.trim();
+    const advanceToRecord =
+      overrideAdvanceAmount !== undefined ? overrideAdvanceAmount : parsedAdvanceAmount;
+    const methodToRecord = overrideAdvanceMethod || advanceMethod;
 
     setSaving(true);
     try {
@@ -563,6 +655,8 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
         saleMode === 'cash' ? invoiceDate : addDays(invoiceDate, paymentTermsDays);
       const isBillGst = items.length > 0 ? effectiveIsGst : false;
 
+      const activeTemplateToSave: TemplateId = normalizeTemplateId(templateId);
+
       const createdRes = await invoicesApi.create({
         customerId: resolvedCustomerId,
         invoiceDate,
@@ -574,7 +668,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
         taxMode,
         taxSupplyMode,
         roundOffEnabled,
-        templateId,
+        templateId: activeTemplateToSave,
         notes: notes.trim(),
         terms: profile?.termsAndConditions || '',
         saveAsDraft: false,
@@ -584,15 +678,26 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
       let finalInvoice = createdRes.invoice;
 
       if (saleMode === 'cash' && finalInvoice.grandTotal > 0) {
-        await paymentsApi.record({
+        const payRes = await paymentsApi.record({
           invoiceId: finalInvoice.id,
           paymentDate: invoiceDate,
           amount: finalInvoice.grandTotal,
           paymentMethod: 'Cash',
           notes: 'Cash sale',
         });
-        const refreshed = await invoicesApi.get(finalInvoice.id);
-        finalInvoice = refreshed.invoice;
+        finalInvoice = payRes.invoice || finalInvoice;
+      } else if (saleMode === 'credit' && advanceToRecord > 0) {
+        const payRes = await paymentsApi.record({
+          invoiceId: finalInvoice.id,
+          paymentDate: invoiceDate,
+          amount: advanceToRecord,
+          paymentMethod: methodToRecord,
+          notes:
+            advanceToRecord > finalInvoice.grandTotal
+              ? 'Advance payment (includes excess credit)'
+              : 'Advance payment on sale',
+        });
+        finalInvoice = payRes.invoice || finalInvoice;
       }
 
       setExistingInvoiceCount((c) => c + 1);
@@ -616,6 +721,18 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
     }
   };
 
+  const handleSaveTrigger = (mode: SaveActionMode) => {
+    if (!validateSaleInputs()) return;
+    // When saving a Credit bill and user hasn't entered Advance Paid yet, ask if any advance was paid
+    if (saleMode === 'credit' && advanceAmountStr.trim() === '') {
+      setPromptAdvanceStr('');
+      setPromptAdvanceMethod(advanceMethod);
+      setAdvancePromptMode(mode);
+      return;
+    }
+    void executeSaveSale(mode);
+  };
+
   const handleDownloadInvoicePdf = async (inv: Invoice) => {
     setDownloadingPdf(true);
     try {
@@ -629,7 +746,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
   };
 
   const handleShareInvoice = async (inv: Invoice) => {
-    const summary = `Bill ${inv.invoiceNumber} from ${inv.businessSnapshot.businessName} | Customer: ${inv.customerSnapshot.companyName || inv.customerSnapshot.name} | Total: ${formatINR(inv.grandTotal)} | Status: ${inv.status.replace('_', ' ').toUpperCase()}`;
+    const summary = `Bill ${inv.invoiceNumber} from ${inv.businessSnapshot.businessName} | Customer: ${inv.customerSnapshot.companyName || inv.customerSnapshot.name} | Total: ${formatINR(inv.grandTotal)} | Paid: ${formatINR(inv.amountPaid)} | Balance: ${formatINR(inv.balanceDue)}`;
     try {
       if (navigator.share) {
         await navigator.share({ title: inv.invoiceNumber, text: summary });
@@ -658,8 +775,8 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
         : draftAfterDisc;
 
     return (
-      <div className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex justify-center">
-        <div className="w-full max-w-lg min-h-[100dvh] bg-zinc-100 dark:bg-zinc-950 lg:border-x lg:border-zinc-200 dark:lg:border-zinc-800 flex flex-col shadow-sm">
+      <div className="flex-1 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex justify-center">
+        <div className="w-full max-w-lg flex-1 bg-zinc-100 dark:bg-zinc-950 lg:border-x lg:border-zinc-200 dark:lg:border-zinc-800 flex flex-col shadow-sm">
           {/* Top Header */}
           <header className="sticky top-0 z-30 h-14 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 px-2 flex items-center justify-between">
             <div className="flex items-center gap-1 min-w-0">
@@ -701,7 +818,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           </header>
 
           {/* Item Form Body */}
-          <div className="flex-1 bg-white dark:bg-zinc-900 px-4 pt-5 pb-24 space-y-4">
+          <div className="flex-1 bg-white dark:bg-zinc-900 px-4 pt-5 pb-6 space-y-4">
             {/* Item Name Notched Input */}
             <div className="relative">
               <div
@@ -980,8 +1097,8 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
             ) : null}
           </div>
 
-          {/* Bottom Split Action Bar */}
-          <div className="sticky bottom-0 z-30 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 grid grid-cols-2 h-14 pb-[env(safe-area-inset-bottom)]">
+          {/* Bottom Split Action Bar (sits cleanly above mobile bottom bar) */}
+          <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] lg:bottom-0 z-30 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 grid grid-cols-2 h-14">
             <button
               type="button"
               onClick={handleItemSaveAndNew}
@@ -1003,21 +1120,19 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
   }
 
   // ==================== SCREEN 1: SALE / BILL SCREEN ====================
+  const promptAdvanceNum = Number(promptAdvanceStr);
+  const promptAdvanceValid =
+    Number.isFinite(promptAdvanceNum) && promptAdvanceNum > 0 ? promptAdvanceNum : 0;
+
   return (
-    <div className="min-h-[100dvh] bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex justify-center">
-      <div className="w-full max-w-lg min-h-[100dvh] bg-zinc-100 dark:bg-zinc-950 lg:border-x lg:border-zinc-200 dark:lg:border-zinc-800 flex flex-col relative shadow-sm">
+    <div className="flex-1 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex justify-center">
+      <div className="w-full max-w-lg flex-1 bg-zinc-100 dark:bg-zinc-950 lg:border-x lg:border-zinc-200 dark:lg:border-zinc-800 flex flex-col relative shadow-sm">
         {/* Top Bar */}
         <header className="sticky top-0 z-30 h-14 bg-white dark:bg-zinc-900 border-b border-zinc-200 dark:border-zinc-800 px-2 flex items-center justify-between gap-2">
           <div className="flex items-center gap-1 min-w-0">
             <button
               type="button"
-              onClick={() => {
-                if (window.history.length > 1) {
-                  window.history.back();
-                } else {
-                  navigate('/dashboard');
-                }
-              }}
+              onClick={handleBackNavigation}
               className="flex h-11 w-11 items-center justify-center rounded-full text-zinc-800 dark:text-zinc-100 hover:bg-zinc-100 dark:hover:bg-zinc-800 active:bg-zinc-200 dark:active:bg-zinc-700 cursor-pointer shrink-0"
               aria-label="Back"
             >
@@ -1300,8 +1415,57 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
         {/* Divider Band */}
         <div className="h-2.5 bg-zinc-100 dark:bg-zinc-950 shrink-0" />
 
-        {/* Total Amount Section */}
-        <div className="flex-1 bg-white dark:bg-zinc-900 px-4 py-5 space-y-4">
+        {/* Advance Paid (Above Total Amount) + Total Amount Section */}
+        <div className="flex-1 bg-white dark:bg-zinc-900 px-4 py-4 space-y-4">
+          {saleMode === 'credit' ? (
+            <div className="space-y-2 pb-3 border-b border-zinc-100 dark:border-zinc-800">
+              <div className="flex items-center justify-between gap-4">
+                <div>
+                  <span className="text-[14px] font-medium text-zinc-700 dark:text-zinc-300">
+                    Advance Paid
+                  </span>
+                  <span className="ml-1.5 text-xs text-zinc-400 dark:text-zinc-500">
+                    (Optional)
+                  </span>
+                </div>
+                <div className="flex items-center gap-2 border-b border-dashed border-zinc-300 dark:border-zinc-700 pb-1 min-w-[140px] max-w-[190px] justify-between">
+                  <span className="text-[15px] font-medium text-zinc-600 dark:text-zinc-400">
+                    ₹
+                  </span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min="0"
+                    value={advanceAmountStr}
+                    onChange={(e) => setAdvanceAmountStr(e.target.value)}
+                    placeholder="0"
+                    aria-label="Advance Paid"
+                    className="w-full bg-transparent text-right text-[15px] font-mono font-semibold text-zinc-900 dark:text-zinc-100 placeholder:text-zinc-300 dark:placeholder:text-zinc-600 focus:outline-none tabular-nums"
+                  />
+                </div>
+              </div>
+
+              {parsedAdvanceAmount > 0 ? (
+                <div className="flex items-center justify-between gap-2 text-xs">
+                  <span className="text-zinc-500 dark:text-zinc-400">Payment Mode</span>
+                  <select
+                    value={advanceMethod}
+                    onChange={(e) => setAdvanceMethod(e.target.value as PaymentMethod)}
+                    aria-label="Advance payment method"
+                    className="rounded-md border border-zinc-200 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-800 px-2.5 py-1 text-xs font-medium text-zinc-800 dark:text-zinc-100 focus:outline-none cursor-pointer"
+                  >
+                    <option value="Cash">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Credit/Debit Card">Card</option>
+                    <option value="Cheque">Cheque</option>
+                  </select>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+
           <div className="flex items-center justify-between gap-4">
             <span className="text-[16px] font-semibold text-zinc-900 dark:text-zinc-100">
               Total Amount
@@ -1330,6 +1494,28 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
               )}
             </div>
           </div>
+
+          {saleMode === 'credit' && parsedAdvanceAmount > 0 && displayTotalAmount > 0 ? (
+            <div className="flex items-center justify-between text-xs pt-1">
+              {parsedAdvanceAmount > displayTotalAmount ? (
+                <>
+                  <span className="font-medium text-amber-700 dark:text-amber-400">
+                    Excess Advance Credit
+                  </span>
+                  <span className="font-mono font-semibold text-amber-700 dark:text-amber-400 tabular-nums">
+                    +{formatINR(parsedAdvanceAmount - displayTotalAmount)}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className="font-medium text-zinc-500 dark:text-zinc-400">Balance Due</span>
+                  <span className="font-mono font-semibold text-[#F57C00] tabular-nums">
+                    {formatINR(Math.max(0, displayTotalAmount - parsedAdvanceAmount))}
+                  </span>
+                </>
+              )}
+            </div>
+          ) : null}
 
           {computedFromItems && effectiveIsGst && computedFromItems.totalTax > 0 ? (
             <div className="flex items-center justify-between text-xs text-zinc-500 dark:text-zinc-400 pt-1">
@@ -1367,12 +1553,12 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           ) : null}
         </div>
 
-        {/* Sticky Bottom Action Bar */}
-        <div className="sticky bottom-0 z-30 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex items-stretch h-14 pb-[env(safe-area-inset-bottom)]">
+        {/* Sticky Sale Action Bar (sits cleanly above mobile bottom navigation bar) */}
+        <div className="sticky bottom-[calc(4rem+env(safe-area-inset-bottom))] lg:bottom-0 z-30 bg-white dark:bg-zinc-900 border-t border-zinc-200 dark:border-zinc-800 flex items-stretch h-14">
           <button
             type="button"
             disabled={saving}
-            onClick={() => handleSaveSale('save_and_new')}
+            onClick={() => handleSaveTrigger('save_and_new')}
             className="flex-1 flex items-center justify-center bg-white dark:bg-zinc-900 text-zinc-700 dark:text-zinc-200 font-semibold text-[15px] hover:bg-zinc-50 dark:hover:bg-zinc-800 active:bg-zinc-100 dark:active:bg-zinc-700 border-r border-zinc-200 dark:border-zinc-800 disabled:opacity-50 cursor-pointer"
           >
             Save &amp; New
@@ -1380,7 +1566,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           <button
             type="button"
             disabled={saving}
-            onClick={() => handleSaveSale('save')}
+            onClick={() => handleSaveTrigger('save')}
             className="flex-1 flex items-center justify-center bg-[#F57C00] text-white font-semibold text-[15px] hover:bg-[#E65100] active:bg-[#D84315] disabled:opacity-50 cursor-pointer"
           >
             {saving ? 'Saving...' : 'Save'}
@@ -1403,7 +1589,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
                     type="button"
                     onClick={() => {
                       setMenuOpen(false);
-                      void handleSaveSale('save_and_download');
+                      handleSaveTrigger('save_and_download');
                     }}
                     className="w-full flex items-center gap-2.5 px-3.5 py-2.5 text-left text-zinc-800 dark:text-zinc-200 hover:bg-zinc-50 dark:hover:bg-zinc-800 cursor-pointer"
                   >
@@ -1449,6 +1635,102 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           </div>
         </div>
 
+        {/* Ask Any Advance Paid Modal (shown on Save in Credit mode if not entered yet) */}
+        <Dialog
+          open={Boolean(advancePromptMode)}
+          onClose={() => setAdvancePromptMode(null)}
+          title="Any Advance Paid?"
+          description="Enter any advance payment received against this bill, or save as full credit."
+        >
+          <div className="space-y-4">
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 p-3.5 space-y-3">
+              {/* Advance Paid input positioned above Total Amount */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Advance Paid (₹)</Label>
+                  <Input
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min="0"
+                    autoFocus
+                    value={promptAdvanceStr}
+                    onChange={(e) => setPromptAdvanceStr(e.target.value)}
+                    placeholder="0"
+                    className="font-mono"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Payment Method</Label>
+                  <Select
+                    value={promptAdvanceMethod}
+                    onChange={(e) => setPromptAdvanceMethod(e.target.value as PaymentMethod)}
+                  >
+                    <option value="Cash">Cash</option>
+                    <option value="UPI">UPI</option>
+                    <option value="Bank Transfer">Bank Transfer</option>
+                    <option value="Credit/Debit Card">Credit/Debit Card</option>
+                    <option value="Cheque">Cheque</option>
+                  </Select>
+                </div>
+              </div>
+
+              <div className="border-t border-zinc-200 dark:border-zinc-800 pt-2.5 space-y-1.5 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-zinc-500 dark:text-zinc-400">Total Amount</span>
+                  <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
+                    {formatINR(displayTotalAmount)}
+                  </span>
+                </div>
+                {promptAdvanceValid > displayTotalAmount ? (
+                  <div className="flex items-center justify-between text-xs font-medium text-amber-700 dark:text-amber-400">
+                    <span>Excess / Advance Credit</span>
+                    <span className="font-mono font-semibold tabular-nums">
+                      +{formatINR(promptAdvanceValid - displayTotalAmount)}
+                    </span>
+                  </div>
+                ) : (
+                  <div className="flex items-center justify-between text-xs font-medium">
+                    <span className="text-zinc-500 dark:text-zinc-400">Balance Due</span>
+                    <span className="font-mono font-semibold text-[#F57C00] tabular-nums">
+                      {formatINR(Math.max(0, displayTotalAmount - promptAdvanceValid))}
+                    </span>
+                  </div>
+                )}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={saving}
+                onClick={() => {
+                  const m = advancePromptMode!;
+                  setAdvancePromptMode(null);
+                  setAdvanceAmountStr('0');
+                  void executeSaveSale(m, 0, promptAdvanceMethod);
+                }}
+              >
+                No Advance, Save Bill
+              </Button>
+              <Button
+                type="button"
+                disabled={saving}
+                onClick={() => {
+                  const m = advancePromptMode!;
+                  setAdvancePromptMode(null);
+                  setAdvanceAmountStr(promptAdvanceValid > 0 ? String(promptAdvanceValid) : '0');
+                  setAdvanceMethod(promptAdvanceMethod);
+                  void executeSaveSale(m, promptAdvanceValid, promptAdvanceMethod);
+                }}
+              >
+                {promptAdvanceValid > 0 ? 'Save with Advance' : 'Save Bill'}
+              </Button>
+            </div>
+          </div>
+        </Dialog>
+
         {/* Invoice Number / Reference Sheet */}
         <Dialog
           open={invoiceNoModalOpen}
@@ -1484,8 +1766,111 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           open={saleSettingsOpen}
           onClose={() => setSaleSettingsOpen(false)}
           title="Sale & Bill Settings"
+          maxWidthClass="max-w-xl"
         >
           <div className="space-y-4">
+            {/* All Invoice Themes Picker */}
+            <div className="space-y-2.5 rounded-xl border border-zinc-200 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-950/60 p-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <Sparkles className="h-4 w-4 text-[#F57C00] shrink-0" />
+                  <span className="text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                    Invoice Theme ({INVOICE_THEMES.length} Themes)
+                  </span>
+                  {templateId === defaultThemeNorm ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 text-emerald-700 dark:bg-emerald-950/40 dark:text-emerald-300 px-2 py-0.5 text-[10px] font-medium border border-emerald-200 dark:border-emerald-800">
+                      <Check className="h-2.5 w-2.5" />
+                      Default
+                    </span>
+                  ) : null}
+                </div>
+
+                {templateId !== defaultThemeNorm ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={settingDefaultTheme}
+                    onClick={() => void handleSetDefaultTheme(templateId)}
+                    className="h-7 px-2.5 text-xs"
+                  >
+                    <Star className="h-3.5 w-3.5 text-[#F57C00] fill-[#F57C00]/20" />
+                    <span>{settingDefaultTheme ? 'Saving...' : 'Set as Default'}</span>
+                  </Button>
+                ) : null}
+              </div>
+
+              <div className="grid grid-cols-3 gap-2">
+                {INVOICE_THEMES.map((t) => {
+                  const isSelected = templateId === t.id;
+                  const isDefault = defaultThemeNorm === t.id;
+                  const Thumb = t.thumbnail;
+                  return (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => {
+                        userTouchedTemplateRef.current = true;
+                        setTemplateId(t.id);
+                      }}
+                      className={`flex flex-col items-center rounded-lg border p-1.5 text-center transition-all cursor-pointer ${
+                        isSelected
+                          ? 'border-[#F57C00] bg-orange-50/80 dark:bg-orange-950/25 ring-2 ring-[#F57C00]/20 shadow-xs'
+                          : 'border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 hover:border-zinc-300 dark:hover:border-zinc-700'
+                      }`}
+                    >
+                      <div className="relative w-full h-16 mb-1.5 rounded overflow-hidden bg-zinc-50 dark:bg-zinc-800 flex items-center justify-center p-1">
+                        <Thumb isSelected={isSelected} />
+                        {isDefault ? (
+                          <span
+                            className="absolute top-1 right-1 bg-emerald-600 text-white rounded-full p-0.5 shadow-sm"
+                            title="Default theme"
+                          >
+                            <Check className="h-2.5 w-2.5" />
+                          </span>
+                        ) : null}
+                        {t.orientation === 'landscape' ? (
+                          <span className="absolute bottom-1 left-1 bg-zinc-900/80 text-white text-[8px] font-medium px-1 rounded">
+                            Landscape
+                          </span>
+                        ) : null}
+                      </div>
+                      <span
+                        className={`w-full truncate text-[11px] font-semibold ${
+                          isSelected
+                            ? 'text-[#F57C00]'
+                            : 'text-zinc-800 dark:text-zinc-200'
+                        }`}
+                      >
+                        {t.name}
+                      </span>
+                      <span className="w-full truncate text-[9px] text-zinc-500 dark:text-zinc-400">
+                        {t.orientation === 'landscape' ? 'A4 Horizontal' : t.tagline}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {templateId !== defaultThemeNorm ? (
+                <label className="flex items-center gap-2 pt-1 text-xs text-zinc-600 dark:text-zinc-300 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={saveThemeAsDefaultOnApply}
+                    onChange={(e) => setSaveThemeAsDefaultOnApply(e.target.checked)}
+                    className="h-4 w-4 accent-[#F57C00] cursor-pointer"
+                  />
+                  <span>
+                    Save <span className="font-semibold">{getThemeById(templateId).name}</span> as default theme for future invoices
+                  </span>
+                </label>
+              ) : (
+                <p className="text-[11px] text-zinc-500 dark:text-zinc-400">
+                  Bills save using your selected default theme (<span className="font-medium text-zinc-700 dark:text-zinc-200">{getThemeById(defaultThemeNorm).name}</span>).
+                </p>
+              )}
+            </div>
+
             <div className="flex items-center justify-between gap-3 rounded-lg border border-zinc-200 dark:border-zinc-800 p-3">
               <div>
                 <div className="text-sm font-medium text-zinc-900 dark:text-zinc-100">
@@ -1537,19 +1922,22 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
                   min="0"
                   max="365"
                   value={paymentTermsDays}
-                  onChange={(e) => setPaymentTermsDays(Math.max(0, Number(e.target.value) || 0))}
+                  onChange={(e) => {
+                    userTouchedTermsRef.current = true;
+                    setPaymentTermsDays(Math.max(0, Number(e.target.value) || 0));
+                  }}
                 />
               </div>
               <div className="space-y-1">
-                <Label>PDF Template</Label>
-                <Select
-                  value={templateId}
-                  onChange={(e) => setTemplateId(e.target.value as TemplateId)}
-                >
-                  <option value="classic_gst">Classic GST</option>
-                  <option value="executive_minimal">Executive Minimal</option>
-                  <option value="compact_commercial">Compact Commercial</option>
-                </Select>
+                <Label>Active Theme</Label>
+                <div className="flex h-11 sm:h-9 items-center justify-between rounded-lg border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 px-3 text-xs font-medium text-zinc-800 dark:text-zinc-200 truncate">
+                  <span className="truncate">{getThemeById(templateId).name}</span>
+                  {templateId === defaultThemeNorm ? (
+                    <span className="ml-1.5 text-[10px] font-semibold text-emerald-600 dark:text-emerald-400 shrink-0">
+                      Default
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
 
@@ -1591,8 +1979,17 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
               >
                 Full GST Editor
               </Button>
-              <Button type="button" onClick={() => setSaleSettingsOpen(false)}>
-                Apply
+              <Button
+                type="button"
+                disabled={settingDefaultTheme}
+                onClick={async () => {
+                  if (saveThemeAsDefaultOnApply && templateId !== defaultThemeNorm) {
+                    await handleSetDefaultTheme(templateId);
+                  }
+                  setSaleSettingsOpen(false);
+                }}
+              >
+                {settingDefaultTheme ? 'Saving...' : 'Apply'}
               </Button>
             </div>
           </div>
@@ -1603,9 +2000,23 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
           open={previewOpen}
           onClose={() => setPreviewOpen(false)}
           title="Bill Preview"
-          maxWidthClass="max-w-3xl"
+          maxWidthClass={
+            normalizeTemplateId(templateId) === 'landscape_theme_2' ? 'max-w-5xl' : 'max-w-3xl'
+          }
         >
           <div className="space-y-4">
+            <div className="p-2 border border-zinc-200 dark:border-zinc-800 rounded-xl bg-zinc-50/60 dark:bg-zinc-900/60">
+              <InvoiceThemeSelector
+                currentThemeId={templateId}
+                defaultThemeId={defaultThemeNorm}
+                onSelectTheme={(t) => {
+                  userTouchedTemplateRef.current = true;
+                  setTemplateId(t);
+                }}
+                onSetAsDefault={handleSetDefaultTheme}
+                isSettingDefault={settingDefaultTheme}
+              />
+            </div>
             <DocumentPreviewSheet
               docType="invoice"
               record={buildPreviewRecord()}
@@ -1620,7 +2031,7 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
                 disabled={saving}
                 onClick={() => {
                   setPreviewOpen(false);
-                  void handleSaveSale('save_and_download');
+                  handleSaveTrigger('save_and_download');
                 }}
               >
                 <Download className="h-4 w-4" />
@@ -1653,7 +2064,11 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
                 <div className="flex items-center justify-between text-sm">
                   <span className="text-zinc-500 dark:text-zinc-400">Sale Type</span>
                   <span className="font-medium text-zinc-900 dark:text-zinc-100">
-                    {savedInvoice.status === 'paid' ? 'Cash (Paid)' : 'Credit (Unpaid)'}
+                    {savedInvoice.status === 'paid'
+                      ? 'Paid'
+                      : savedInvoice.status === 'partially_paid'
+                        ? 'Partially Paid (Advance)'
+                        : 'Credit (Unpaid)'}
                   </span>
                 </div>
                 <div className="flex items-center justify-between text-sm">
@@ -1662,12 +2077,28 @@ export function QuickSalePage({ navigate }: QuickSalePageProps) {
                     {formatDisplayDateDDMMYYYY(savedInvoice.invoiceDate)}
                   </span>
                 </div>
+                {savedInvoice.amountPaid > 0 ? (
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="text-zinc-500 dark:text-zinc-400">Amount Paid</span>
+                    <span className="font-mono font-medium text-emerald-600 dark:text-emerald-400 tabular-nums">
+                      {formatINR(savedInvoice.amountPaid)}
+                    </span>
+                  </div>
+                ) : null}
                 <div className="flex items-center justify-between border-t border-zinc-200 dark:border-zinc-800 pt-2 text-base font-bold">
                   <span className="text-zinc-900 dark:text-zinc-100">Total Amount</span>
                   <span className="font-mono text-zinc-900 dark:text-zinc-100 tabular-nums">
                     {formatINR(savedInvoice.grandTotal)}
                   </span>
                 </div>
+                {savedInvoice.balanceDue > 0 ? (
+                  <div className="flex items-center justify-between text-sm font-semibold">
+                    <span className="text-zinc-600 dark:text-zinc-300">Balance Due</span>
+                    <span className="font-mono text-[#F57C00] tabular-nums">
+                      {formatINR(savedInvoice.balanceDue)}
+                    </span>
+                  </div>
+                ) : null}
               </div>
 
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">

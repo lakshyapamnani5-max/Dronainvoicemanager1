@@ -43,6 +43,7 @@ import {
 function useRouter() {
   const [path, setPath] = React.useState<string>(() => window.location.pathname || '/');
   const [search, setSearch] = React.useState<string>(() => window.location.search || '');
+  const historyStackRef = React.useRef<string[]>([]);
 
   React.useEffect(() => {
     const onPop = () => {
@@ -55,20 +56,45 @@ function useRouter() {
 
   const navigate = React.useCallback((nextPath: string) => {
     const currentFull = `${window.location.pathname}${window.location.search}`;
+    const currentPathOnly = window.location.pathname || '/';
+    const nextQIdx = nextPath.indexOf('?');
+    const nextPathOnly = nextQIdx >= 0 ? nextPath.slice(0, nextQIdx) || '/' : nextPath || '/';
+
     if (nextPath !== currentFull) {
+      if (
+        currentPathOnly !== nextPathOnly &&
+        !['/login', '/admin/login', '/register', '/forgot-password', '/'].includes(currentPathOnly)
+      ) {
+        historyStackRef.current.push(currentFull);
+      }
       window.history.pushState({}, '', nextPath);
     }
-    const qIdx = nextPath.indexOf('?');
-    setPath(qIdx >= 0 ? nextPath.slice(0, qIdx) || '/' : nextPath || '/');
-    setSearch(qIdx >= 0 ? nextPath.slice(qIdx) : '');
+    setPath(nextPathOnly);
+    setSearch(nextQIdx >= 0 ? nextPath.slice(nextQIdx) : '');
     window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
   }, []);
 
-  return { path, search, navigate };
+  const goBack = React.useCallback(
+    (fallback = '/dashboard') => {
+      const prev = historyStackRef.current.pop();
+      if (prev) {
+        const qIdx = prev.indexOf('?');
+        window.history.pushState({}, '', prev);
+        setPath(qIdx >= 0 ? prev.slice(0, qIdx) || '/' : prev || '/');
+        setSearch(qIdx >= 0 ? prev.slice(qIdx) : '');
+        window.scrollTo({ top: 0, behavior: 'instant' as ScrollBehavior });
+        return;
+      }
+      navigate(fallback);
+    },
+    [navigate]
+  );
+
+  return { path, search, navigate, goBack };
 }
 
 function AppRouter() {
-  const { path, search, navigate } = useRouter();
+  const { path, search, navigate, goBack } = useRouter();
   const { session, loading } = useAuth();
 
   const publicPaths = ['/login', '/admin/login', '/register', '/forgot-password'];
@@ -271,7 +297,19 @@ function AppRouter() {
   const bizName = session.effectiveUser.businessName || 'Workspace';
 
   if (path === '/sale/new') {
-    return <QuickSalePage navigate={navigate} />;
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Sale"
+        breadcrumbs={[bizName, 'Sale']}
+        hideTopBar
+        hideFooter
+        fullBleed
+      >
+        <QuickSalePage navigate={navigate} onBack={() => goBack('/dashboard')} />
+      </AppShell>
+    );
   }
 
   if (path === '/dashboard') {

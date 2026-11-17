@@ -16,6 +16,7 @@ import type {
 } from '../shared/types';
 import { formatDate } from './utils';
 import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import { resolveLatestDocumentForDownload } from './liveSnapshots';
 
 async function generateUpiQrDataUrl(
   upiId: string,
@@ -71,9 +72,10 @@ async function loadLogoForPdf(
 
 export async function generateDocumentPdf(
   docType: 'invoice' | 'quotation',
-  record: Invoice | Quotation,
+  inputRecord: Invoice | Quotation,
   overrideTemplate?: TemplateId
 ): Promise<void> {
+  const record = await resolveLatestDocumentForDownload(inputRecord);
   const normId = normalizeTemplateId(overrideTemplate || record.templateId);
   const isLandscape = normId === 'landscape_theme_2';
   const pdf = new jsPDF({

@@ -2,10 +2,13 @@ import type {
   ActivityLog,
   AuthSessionState,
   BusinessProfile,
+  BusinessSnapshot,
   Customer,
+  CustomerSnapshot,
   GstinLookupResponse,
   ImpersonationSession,
   Invoice,
+  InvoiceStatus,
   NotificationItem,
   Payment,
   PlatformSettings,
@@ -61,6 +64,7 @@ export interface TenantCacheEntry {
   purchasePayments: PurchasePayment[];
   purchaseAttachments: PurchaseAttachment[];
   syncedAt: Partial<Record<TenantCollection, number>>;
+  counters?: Record<string, number>;
   lastOverdueCheckDate?: string;
   lastPurchaseOverdueCheckDate?: string;
   lastExpiryCheckDate?: string;
@@ -147,6 +151,7 @@ function emptyTenantEntry(): TenantCacheEntry {
     purchasePayments: [],
     purchaseAttachments: [],
     syncedAt: {},
+    counters: {},
     lastAccessedAt: Date.now(),
   };
 }
@@ -237,6 +242,7 @@ function buildCompactTenantPayload(
     purchasePayments: entry.purchasePayments,
     purchaseAttachments: entry.purchaseAttachments.slice(0, maxDocs),
     syncedAt: entry.syncedAt,
+    counters: entry.counters || {},
     lastOverdueCheckDate: entry.lastOverdueCheckDate,
     lastPurchaseOverdueCheckDate: entry.lastPurchaseOverdueCheckDate,
     lastExpiryCheckDate: entry.lastExpiryCheckDate,
@@ -318,6 +324,7 @@ function readTenantEntryFromStorage(tenantUid: string): TenantCacheEntry | null 
         ? parsed.purchaseAttachments
         : [],
       syncedAt: parsed.syncedAt && typeof parsed.syncedAt === 'object' ? parsed.syncedAt : {},
+      counters: parsed.counters && typeof parsed.counters === 'object' ? parsed.counters : {},
       lastOverdueCheckDate: parsed.lastOverdueCheckDate,
       lastPurchaseOverdueCheckDate: parsed.lastPurchaseOverdueCheckDate,
       lastExpiryCheckDate: parsed.lastExpiryCheckDate,
@@ -464,6 +471,144 @@ export function upsertTenantCustomerCache(tenantUid: string, customer: Customer)
   sessionSynced.add(`${tenantUid}:customers`);
   persistTenantEntry(tenantUid, entry);
   emitTenantCache(tenantUid, ['customers']);
+}
+
+export function cascadeCustomerSnapshotInCache(tenantUid: string, customer: Customer): void {
+  const entry = getTenantEntry(tenantUid);
+  const snapshot: CustomerSnapshot = {
+    id: customer.id,
+    name: customer.name,
+    companyName: customer.companyName,
+    email: customer.email,
+    phone: customer.phone,
+    gstin: customer.gstin,
+    billingAddress: customer.billingAddress,
+    shippingAddress: customer.shippingAddress,
+    state: customer.state,
+  };
+  let changedInvoices = false;
+  let changedQuotes = false;
+
+  const nextInvoices = entry.invoices.map((inv) => {
+    if (inv.customerId !== customer.id) return inv;
+    changedInvoices = true;
+    return { ...inv, customerSnapshot: snapshot };
+  });
+  const nextQuotes = entry.quotations.map((quo) => {
+    if (quo.customerId !== customer.id) return quo;
+    changedQuotes = true;
+    return { ...quo, customerSnapshot: snapshot };
+  });
+
+  if (!changedInvoices && !changedQuotes) return;
+  if (changedInvoices) entry.invoices = nextInvoices;
+  if (changedQuotes) entry.quotations = nextQuotes;
+  persistTenantEntry(tenantUid, entry);
+  const cols: TenantCollection[] = [];
+  if (changedInvoices) cols.push('invoices');
+  if (changedQuotes) cols.push('quotations');
+  emitTenantCache(tenantUid, cols);
+}
+
+export function cascadeBusinessSnapshotInCache(
+  tenantUid: string,
+  profile: BusinessProfile
+): void {
+  const entry = getTenantEntry(tenantUid);
+  const patchSnapshot = (prev: BusinessSnapshot): BusinessSnapshot => ({
+    ...prev,
+    businessName: profile.businessName || prev.businessName,
+    ownerName: profile.ownerName ?? prev.ownerName,
+    logoDataUrl: profile.logoDataUrl || prev.logoDataUrl,
+    address: profile.address,
+    email: profile.email,
+    phone: profile.phone,
+    gstin: profile.gstin,
+    pan: profile.pan,
+    state: profile.state || prev.state,
+    bankName: profile.bankName,
+    accountNumber: profile.accountNumber,
+    ifsc: profile.ifsc,
+    upiId: profile.upiId,
+    upiQrDataUrl: profile.upiId ? '' : profile.upiQrDataUrl || prev.upiQrDataUrl,
+    signatureLabel: profile.signatureLabel || prev.signatureLabel,
+    signatureDataUrl: profile.signatureDataUrl || prev.signatureDataUrl,
+  });
+
+  let changedInvoices = false;
+  let changedQuotes = false;
+
+  if (entry.invoices.length > 0) {
+    entry.invoices = entry.invoices.map((inv) => ({
+      ...inv,
+      businessSnapshot: patchSnapshot(inv.businessSnapshot),
+    }));
+    changedInvoices = true;
+  }
+  if (entry.quotations.length > 0) {
+    entry.quotations = entry.quotations.map((quo) => ({
+      ...quo,
+      businessSnapshot: patchSnapshot(quo.businessSnapshot),
+    }));
+    changedQuotes = true;
+  }
+
+  if (!changedInvoices && !changedQuotes) return;
+  persistTenantEntry(tenantUid, entry);
+  const cols: TenantCollection[] = [];
+  if (changedInvoices) cols.push('invoices');
+  if (changedQuotes) cols.push('quotations');
+  emitTenantCache(tenantUid, cols);
+}
+
+export function allocateLocalDocNumber(
+  tenantUid: string,
+  docType: 'INV' | 'QUO' | 'RCP' | 'PPAY',
+  prefix: string,
+  dateIso: string,
+  existingNumbers: string[] = []
+): { docNumber: string; seq: number; year: string; counterKey: string } {
+  const entry = getTenantEntry(tenantUid);
+  const year = /^\d{4}/.test(dateIso) ? dateIso.slice(0, 4) : String(new Date().getFullYear());
+  const counterKey = `${docType}_${year}`;
+  const stored = Number(entry.counters?.[counterKey] || 0);
+
+  let maxFromDocs = 0;
+  const escapedPrefix = prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const pattern = new RegExp(`^${escapedPrefix}-${year}-(\\d+)$`);
+  for (const num of existingNumbers) {
+    const m = pattern.exec(num);
+    if (m) {
+      const parsed = Number(m[1]);
+      if (Number.isFinite(parsed) && parsed > maxFromDocs) {
+        maxFromDocs = parsed;
+      }
+    }
+  }
+
+  const nextSeq = Math.max(stored, maxFromDocs) + 1;
+  entry.counters = { ...(entry.counters || {}), [counterKey]: nextSeq };
+  persistTenantEntry(tenantUid, entry);
+
+  return {
+    docNumber: `${prefix}-${year}-${String(nextSeq).padStart(4, '0')}`,
+    seq: nextSeq,
+    year,
+    counterKey,
+  };
+}
+
+export function syncRemoteCounterCache(
+  tenantUid: string,
+  counterKey: string,
+  remoteVal: number
+): void {
+  const entry = getTenantEntry(tenantUid);
+  const current = Number(entry.counters?.[counterKey] || 0);
+  if (remoteVal > current) {
+    entry.counters = { ...(entry.counters || {}), [counterKey]: remoteVal };
+    persistTenantEntry(tenantUid, entry);
+  }
 }
 
 export function removeTenantCustomerCache(tenantUid: string, customerId: string): void {
@@ -1043,4 +1188,160 @@ export function dedupeFetch<T>(key: string, fetcher: () => Promise<T>): Promise<
   inFlight.set(key, promise);
   return promise;
 }
+
+// ==================== PENDING FIREBASE SYNC QUEUE ====================
+
+const PENDING_SYNC_PREFIX = 'drona_v1_pending_sync_';
+
+export type PendingSyncOp =
+  | {
+      id: string;
+      kind: 'upsert_profile';
+      profile: BusinessProfile;
+      userPatch?: Record<string, unknown>;
+      cascadeDefaultInvoiceTemplate?: string;
+      cascadeDefaultQuotationTemplate?: string;
+      cascadeBusinessSnapshot?: boolean;
+      createdAt: number;
+    }
+  | {
+      id: string;
+      kind: 'upsert_customer';
+      customer: Customer;
+      cascadeSnapshot?: boolean;
+      createdAt: number;
+    }
+  | {
+      id: string;
+      kind: 'upsert_invoice';
+      invoice: Invoice;
+      seqAlloc?: { counterKey: string; seq: number };
+      createdAt: number;
+    }
+  | {
+      id: string;
+      kind: 'upsert_quotation';
+      quotation: Quotation;
+      seqAlloc?: { counterKey: string; seq: number };
+      createdAt: number;
+    }
+  | {
+      id: string;
+      kind: 'upsert_payment';
+      payment: Payment;
+      invoicePatch: {
+        invoiceId: string;
+        amountPaid: number;
+        balanceDue: number;
+        status: InvoiceStatus;
+        updatedAt: string;
+      };
+      seqAlloc?: { counterKey: string; seq: number };
+      createdAt: number;
+    };
+
+const pendingSyncMemory = new Map<string, PendingSyncOp[]>();
+
+function readPendingSyncFromStorage(tenantUid: string): PendingSyncOp[] {
+  const existing = pendingSyncMemory.get(tenantUid);
+  if (existing) return existing;
+  if (!hasStorage()) return [];
+  try {
+    const raw = window.localStorage.getItem(`${PENDING_SYNC_PREFIX}${tenantUid}`);
+    if (!raw) {
+      pendingSyncMemory.set(tenantUid, []);
+      return [];
+    }
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed) ? (parsed as PendingSyncOp[]) : [];
+    pendingSyncMemory.set(tenantUid, list);
+    return list;
+  } catch {
+    return [];
+  }
+}
+
+function writePendingSyncToStorage(tenantUid: string, ops: PendingSyncOp[]): void {
+  pendingSyncMemory.set(tenantUid, ops);
+  if (!hasStorage()) return;
+  try {
+    if (ops.length === 0) {
+      window.localStorage.removeItem(`${PENDING_SYNC_PREFIX}${tenantUid}`);
+    } else {
+      window.localStorage.setItem(`${PENDING_SYNC_PREFIX}${tenantUid}`, JSON.stringify(ops));
+    }
+  } catch {
+    // ignore quota issues; memory queue still persists for current session
+  }
+}
+
+export function getPendingSyncOps(tenantUid: string): PendingSyncOp[] {
+  return [...readPendingSyncFromStorage(tenantUid)];
+}
+
+export function enqueuePendingSyncOp(tenantUid: string, op: PendingSyncOp): void {
+  const list = readPendingSyncFromStorage(tenantUid);
+  // Coalesce consecutive profile or same-entity updates to keep queue compact and fast
+  const filtered = list.filter((existing) => {
+    if (op.kind === 'upsert_profile' && existing.kind === 'upsert_profile') {
+      // Preserve cascade flags if an earlier pending op requested them
+      if (existing.cascadeDefaultInvoiceTemplate && !op.cascadeDefaultInvoiceTemplate) {
+        op.cascadeDefaultInvoiceTemplate = existing.cascadeDefaultInvoiceTemplate;
+      }
+      if (existing.cascadeDefaultQuotationTemplate && !op.cascadeDefaultQuotationTemplate) {
+        op.cascadeDefaultQuotationTemplate = existing.cascadeDefaultQuotationTemplate;
+      }
+      if (existing.cascadeBusinessSnapshot) {
+        op.cascadeBusinessSnapshot = true;
+      }
+      return false;
+    }
+    if (
+      op.kind === 'upsert_customer' &&
+      existing.kind === 'upsert_customer' &&
+      existing.customer.id === op.customer.id
+    ) {
+      if (existing.cascadeSnapshot) op.cascadeSnapshot = true;
+      return false;
+    }
+    if (
+      op.kind === 'upsert_invoice' &&
+      existing.kind === 'upsert_invoice' &&
+      existing.invoice.id === op.invoice.id
+    ) {
+      if (existing.seqAlloc && !op.seqAlloc) op.seqAlloc = existing.seqAlloc;
+      return false;
+    }
+    if (
+      op.kind === 'upsert_quotation' &&
+      existing.kind === 'upsert_quotation' &&
+      existing.quotation.id === op.quotation.id
+    ) {
+      if (existing.seqAlloc && !op.seqAlloc) op.seqAlloc = existing.seqAlloc;
+      return false;
+    }
+    return true;
+  });
+  filtered.push(op);
+  writePendingSyncToStorage(tenantUid, filtered);
+}
+
+export function removePendingSyncOp(tenantUid: string, opId: string): void {
+  const list = readPendingSyncFromStorage(tenantUid);
+  const next = list.filter((op) => op.id !== opId);
+  if (next.length !== list.length) {
+    writePendingSyncToStorage(tenantUid, next);
+  }
+}
+
+export function hasPendingSyncForProfile(tenantUid: string): boolean {
+  return readPendingSyncFromStorage(tenantUid).some((op) => op.kind === 'upsert_profile');
+}
+
+export function hasPendingSyncForCustomer(tenantUid: string, customerId: string): boolean {
+  return readPendingSyncFromStorage(tenantUid).some(
+    (op) => op.kind === 'upsert_customer' && op.customer.id === customerId
+  );
+}
+
 
