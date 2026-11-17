@@ -72,8 +72,7 @@ const CUSTOMER_NAV: Array<{ group: string; items: NavItem[] }> = [
     group: 'Workspace',
     items: [
       { label: 'Business Profile', path: '/business-profile', icon: Building2 },
-      { label: 'Invoice Templates', path: '/templates/invoices', icon: LayoutTemplate },
-      { label: 'Quotation Templates', path: '/templates/quotations', icon: FileText },
+      { label: 'Invoice / Quotation Themes', path: '/templates/invoices', icon: LayoutTemplate },
       { label: 'Settings', path: '/settings', icon: Settings },
     ],
   },
@@ -260,8 +259,7 @@ export function AppShell({
         { label: 'Outstanding Reports', path: '/reports/outstanding', icon: FileSpreadsheet },
         { label: 'Sales Reports', path: '/reports/sales', icon: BarChart3 },
         { label: 'Business Profile', path: '/business-profile', icon: Building2 },
-        { label: 'Invoice Templates', path: '/templates/invoices', icon: LayoutTemplate },
-        { label: 'Quotation Templates', path: '/templates/quotations', icon: FileText },
+        { label: 'Invoice / Quotation Themes', path: '/templates/invoices', icon: LayoutTemplate },
         { label: 'Workspace Settings', path: '/settings', icon: Settings },
       ];
 

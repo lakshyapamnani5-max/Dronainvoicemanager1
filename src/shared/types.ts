@@ -28,6 +28,14 @@ export type PaymentMethod =
 export type TaxPricingMode = 'exclusive' | 'inclusive';
 export type TaxSupplyMode = 'auto' | 'intra' | 'inter';
 export type DiscountType = 'percent' | 'fixed';
+export type QuotationTemplateId =
+  | 'executive_gold'
+  | 'modern_minimal'
+  | 'corporate_blue'
+  | 'french_classic'
+  | 'drona_signature'
+  | 'landscape_pro';
+
 export type TemplateId =
   | 'gst_theme_1'
   | 'gst_theme_2'
@@ -40,7 +48,8 @@ export type TemplateId =
   | 'landscape_theme_2'
   | 'classic_gst'
   | 'executive_minimal'
-  | 'compact_commercial';
+  | 'compact_commercial'
+  | QuotationTemplateId;
 
 export interface UserRecord {
   uid: string;
@@ -254,6 +263,13 @@ export interface Quotation {
   grandTotal: number;
   amountInWords: string;
   templateId: TemplateId;
+  quotationTitle?: string;
+  projectDescription?: string;
+  deliveryTimeline?: string;
+  paymentTerms?: string;
+  preparedBy?: string;
+  showPaymentInstructions?: boolean;
+  paymentInstructions?: string;
   notes: string;
   terms: string;
   convertedInvoiceId: string | null;

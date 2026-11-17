@@ -622,27 +622,15 @@ function AppRouter() {
       </AppShell>
     );
   }
-  if (path === '/templates/invoices') {
+  if (path === '/templates/invoices' || path === '/templates/quotations') {
     return (
       <AppShell
         currentPath={path}
         navigate={navigate}
-        title="Invoice Templates"
-        breadcrumbs={[bizName, 'Templates', 'Invoices']}
+        title="Invoice / Quotation Themes"
+        breadcrumbs={[bizName, 'Invoice / Quotation Themes']}
       >
-        <TemplatesGalleryPage docType="invoice" />
-      </AppShell>
-    );
-  }
-  if (path === '/templates/quotations') {
-    return (
-      <AppShell
-        currentPath={path}
-        navigate={navigate}
-        title="Quotation Templates"
-        breadcrumbs={[bizName, 'Templates', 'Quotations']}
-      >
-        <TemplatesGalleryPage docType="quotation" />
+        <TemplatesGalleryPage docType={path === '/templates/quotations' ? 'quotation' : 'invoice'} />
       </AppShell>
     );
   }

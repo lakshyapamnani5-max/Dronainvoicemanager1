@@ -16,6 +16,7 @@ import type {
 } from '../shared/types';
 import { formatDate } from './utils';
 import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import { generateQuotationPdf } from '../components/quotation/quotationPdfGenerator';
 import { resolveLatestDocumentForDownload } from './liveSnapshots';
 
 async function generateUpiQrDataUrl(
@@ -75,6 +76,10 @@ export async function generateDocumentPdf(
   inputRecord: Invoice | Quotation,
   overrideTemplate?: TemplateId
 ): Promise<void> {
+  if (docType === 'quotation') {
+    await generateQuotationPdf(inputRecord as Quotation, overrideTemplate);
+    return;
+  }
   const record = await resolveLatestDocumentForDownload(inputRecord);
   const normId = normalizeTemplateId(overrideTemplate || record.templateId);
   const isLandscape = normId === 'landscape_theme_2';

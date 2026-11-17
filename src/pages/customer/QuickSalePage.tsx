@@ -211,7 +211,6 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
       setSettingDefaultTheme(true);
       const res = await businessApi.updateProfile({
         defaultInvoiceTemplate: newThemeId,
-        defaultQuotationTemplate: newThemeId,
       });
       updateLocalBusinessProfile(res.profile);
       userTouchedTemplateRef.current = false;

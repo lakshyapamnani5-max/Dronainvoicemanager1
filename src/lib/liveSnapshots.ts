@@ -9,6 +9,8 @@ import {
   upsertTenantCustomerCache,
 } from './localCache';
 import { getStateFromGstin } from '../shared/indianStates';
+import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import { normalizeQuotationTemplateId } from '../components/quotation/quotationThemeRegistry';
 import type {
   BusinessProfile,
   BusinessSnapshot,
@@ -159,12 +161,8 @@ function normalizeRemoteProfile(
     defaultTaxRate: Number(raw.defaultTaxRate ?? 18),
     defaultTaxMode: (raw.defaultTaxMode as BusinessProfile['defaultTaxMode']) || 'exclusive',
     defaultPaymentTermsDays: Number(raw.defaultPaymentTermsDays ?? 15),
-    defaultInvoiceTemplate:
-      (raw.defaultInvoiceTemplate as BusinessProfile['defaultInvoiceTemplate']) ||
-      'gst_theme_1',
-    defaultQuotationTemplate:
-      (raw.defaultQuotationTemplate as BusinessProfile['defaultQuotationTemplate']) ||
-      'gst_theme_1',
+    defaultInvoiceTemplate: normalizeTemplateId(raw.defaultInvoiceTemplate as string),
+    defaultQuotationTemplate: normalizeQuotationTemplateId(raw.defaultQuotationTemplate as string),
     termsAndConditions: String(raw.termsAndConditions || ''),
     signatureLabel: String(raw.signatureLabel || 'Authorized Signatory'),
     signatureDataUrl: String(raw.signatureDataUrl || ''),

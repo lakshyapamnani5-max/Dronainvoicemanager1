@@ -54,6 +54,12 @@ import { DocumentPreviewSheet } from './DocumentPreviewSheet';
 import { InvoiceThemeSelector } from './invoice/InvoiceThemeSelector';
 import { INVOICE_THEMES, normalizeTemplateId } from './invoice/invoiceThemeRegistry';
 import type { StandardTemplateId } from './invoice/invoiceThemeTypes';
+import { QuotationThemeSelector } from './quotation/QuotationThemeSelector';
+import {
+  QUOTATION_THEMES,
+  normalizeQuotationTemplateId,
+} from './quotation/quotationThemeRegistry';
+import type { QuotationTemplateId } from './quotation/quotationThemeTypes';
 import { HsnSacSelector } from './HsnSacSelector';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
@@ -80,7 +86,7 @@ function ScaledA4Preview({
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const sheetRef = React.useRef<HTMLDivElement>(null);
-  const isLandscape = templateId === 'landscape_theme_2';
+  const isLandscape = templateId === 'landscape_theme_2' || templateId === 'landscape_pro';
   const baseW = isLandscape ? 1123 : 794;
   const baseH = isLandscape ? 794 : 1123;
   const [scale, setScale] = React.useState(0.55);
@@ -227,7 +233,28 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       defaultDue
   );
   const [paymentTerms, setPaymentTerms] = React.useState(
-    () => initialHydrated?.inv?.paymentTerms || `Net ${defaultTermsDays}`
+    () =>
+      initialHydrated?.inv?.paymentTerms ||
+      initialHydrated?.quo?.paymentTerms ||
+      (docType === 'invoice' ? `Net ${defaultTermsDays}` : '')
+  );
+  const [quotationTitle, setQuotationTitle] = React.useState(
+    () => initialHydrated?.quo?.quotationTitle || ''
+  );
+  const [projectDescription, setProjectDescription] = React.useState(
+    () => initialHydrated?.quo?.projectDescription || ''
+  );
+  const [deliveryTimeline, setDeliveryTimeline] = React.useState(
+    () => initialHydrated?.quo?.deliveryTimeline || ''
+  );
+  const [preparedBy, setPreparedBy] = React.useState(
+    () => initialHydrated?.quo?.preparedBy || profile?.ownerName || ''
+  );
+  const [showPaymentInstructions, setShowPaymentInstructions] = React.useState<boolean>(
+    () => Boolean(initialHydrated?.quo?.showPaymentInstructions)
+  );
+  const [paymentInstructions, setPaymentInstructions] = React.useState(
+    () => initialHydrated?.quo?.paymentInstructions || ''
   );
   const [referenceNumber, setReferenceNumber] = React.useState(
     () => hydratedDoc?.referenceNumber || ''
@@ -252,25 +279,27 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     () => hydratedDoc?.roundOffEnabled ?? true
   );
   const [templateId, setTemplateId] = React.useState<TemplateId>(() =>
-    normalizeTemplateId(
-      hydratedDoc?.templateId ||
-        (docType === 'invoice'
-          ? profile?.defaultInvoiceTemplate
-          : profile?.defaultQuotationTemplate)
-    )
+    docType === 'invoice'
+      ? normalizeTemplateId(hydratedDoc?.templateId || profile?.defaultInvoiceTemplate)
+      : normalizeQuotationTemplateId(hydratedDoc?.templateId || profile?.defaultQuotationTemplate)
   );
   const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
 
-  const handleSetDefaultTheme = async (newThemeId: StandardTemplateId) => {
+  const handleSetDefaultTheme = async (newThemeId: StandardTemplateId | QuotationTemplateId) => {
     try {
       setSettingDefaultTheme(true);
-      const res = await businessApi.updateProfile({
-        defaultInvoiceTemplate: newThemeId,
-        defaultQuotationTemplate: newThemeId,
-      });
+      const res =
+        docType === 'invoice'
+          ? await businessApi.updateProfile({ defaultInvoiceTemplate: newThemeId })
+          : await businessApi.updateProfile({ defaultQuotationTemplate: newThemeId });
       updateLocalBusinessProfile(res.profile);
       setTemplateId(newThemeId);
-      notify('success', `Theme set as default. All existing and new invoices will show on this theme.`);
+      notify(
+        'success',
+        docType === 'invoice'
+          ? 'Default invoice theme updated for all new invoices.'
+          : 'Default quotation theme updated for all new quotations.'
+      );
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'Failed to update default theme');
     } finally {
@@ -375,12 +404,13 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     }
     if (!userTouchedTemplateRef.current) {
       setTemplateId(
-        normalizeTemplateId(
-          docType === 'invoice'
-            ? profile.defaultInvoiceTemplate
-            : profile.defaultQuotationTemplate
-        )
+        docType === 'invoice'
+          ? normalizeTemplateId(profile.defaultInvoiceTemplate)
+          : normalizeQuotationTemplateId(profile.defaultQuotationTemplate)
       );
+    }
+    if (docType === 'quotation' && !preparedBy && profile.ownerName) {
+      setPreparedBy(profile.ownerName);
     }
     if (!userTouchedTermsRef.current) {
       setTerms(profile.termsAndConditions || '');
@@ -474,7 +504,14 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               setTaxMode(quo.taxMode);
               setTaxSupplyMode(quo.taxSupplyMode);
               setRoundOffEnabled(quo.roundOffEnabled);
-              setTemplateId(normalizeTemplateId(quo.templateId));
+              setTemplateId(normalizeQuotationTemplateId(quo.templateId));
+              setQuotationTitle(quo.quotationTitle || '');
+              setProjectDescription(quo.projectDescription || '');
+              setDeliveryTimeline(quo.deliveryTimeline || '');
+              setPaymentTerms(quo.paymentTerms || '');
+              setPreparedBy(quo.preparedBy || profile?.ownerName || '');
+              setShowPaymentInstructions(Boolean(quo.showPaymentInstructions));
+              setPaymentInstructions(quo.paymentInstructions || '');
               setNotes(quo.notes);
               setTerms(quo.terms);
               setLogoDataUrl(quo.businessSnapshot.logoDataUrl || profile?.logoDataUrl || '');
@@ -635,6 +672,13 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       status: 'sent',
       quotationDate: docDate,
       validUntil: dueDate,
+      quotationTitle: quotationTitle.trim() || undefined,
+      projectDescription: projectDescription.trim() || undefined,
+      deliveryTimeline: deliveryTimeline.trim() || undefined,
+      paymentTerms: paymentTerms.trim() || undefined,
+      preparedBy: preparedBy.trim() || undefined,
+      showPaymentInstructions,
+      paymentInstructions: showPaymentInstructions ? paymentInstructions.trim() : undefined,
       convertedInvoiceId: null,
     };
     return quoPreview;
@@ -660,6 +704,12 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     docDate,
     dueDate,
     paymentTerms,
+    quotationTitle,
+    projectDescription,
+    deliveryTimeline,
+    preparedBy,
+    showPaymentInstructions,
+    paymentInstructions,
     today,
     existingDocNumber,
     existingStatus,
@@ -845,14 +895,24 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         taxMode,
         taxSupplyMode,
         roundOffEnabled,
-        templateId,
+        templateId:
+          docType === 'invoice'
+            ? normalizeTemplateId(templateId)
+            : normalizeQuotationTemplateId(templateId),
+        quotationTitle: docType === 'quotation' ? quotationTitle : undefined,
+        projectDescription: docType === 'quotation' ? projectDescription : undefined,
+        deliveryTimeline: docType === 'quotation' ? deliveryTimeline : undefined,
+        preparedBy: docType === 'quotation' ? preparedBy : undefined,
+        showPaymentInstructions: docType === 'quotation' ? showPaymentInstructions : undefined,
+        paymentInstructions:
+          docType === 'quotation' && showPaymentInstructions ? paymentInstructions : undefined,
         notes,
         terms,
         saveAsDraft,
         logoDataUrl,
         saveLogoToProfile,
-        upiId: upiId.trim(),
-        saveUpiToProfile,
+        upiId: docType === 'invoice' ? upiId.trim() : undefined,
+        saveUpiToProfile: docType === 'invoice' ? saveUpiToProfile : false,
         items,
       };
 
@@ -863,7 +923,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           nextProfile.logoDataUrl = logoDataUrl;
           profileChanged = true;
         }
-        if (saveUpiToProfile && upiId.trim() !== profile.upiId) {
+        if (docType === 'invoice' && saveUpiToProfile && upiId.trim() !== profile.upiId) {
           nextProfile.upiId = upiId.trim();
           profileChanged = true;
         }
@@ -1064,10 +1124,14 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           <div className={viewMode === 'split' ? 'xl:col-span-7 space-y-5' : 'space-y-6'}>
             {/* Business Logo & Customer */}
             <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-5">
-              {/* Ask for Business Logo & UPI ID */}
+              {/* Ask for Business Logo & (UPI QR on Invoices / Prepared By on Quotations) */}
               <Card className="lg:col-span-5 order-2 lg:order-1">
                 <CardHeader className="pb-3">
-                  <CardTitle>Business Logo &amp; UPI QR</CardTitle>
+                  <CardTitle>
+                    {docType === 'invoice'
+                      ? 'Business Logo & UPI QR'
+                      : 'Business Logo & Proposal Header'}
+                  </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex items-center gap-3.5">
@@ -1123,48 +1187,77 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     </div>
                   </div>
 
-                  <div className="space-y-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
-                    <Label htmlFor="doc-upi-id">UPI ID (Dynamic Payment QR)</Label>
-                    <Input
-                      id="doc-upi-id"
-                      type="text"
-                      value={upiId}
-                      onChange={(e) => setUpiId(e.target.value)}
-                      placeholder="yourname@okaxis"
-                      className="font-mono text-base sm:text-xs h-11 sm:h-9"
-                    />
-                    {upiId.trim() ? (
-                      !upiId.includes('@') ? (
-                        <p className="text-[11px] text-amber-600 dark:text-amber-400">
-                          Include your @bank handle (e.g. business@okicici) for UPI apps.
-                        </p>
-                      ) : (
-                        <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
-                          QR synced to <span className="font-mono">{upiId.trim()}</span> ·{' '}
-                          <span className="font-mono font-semibold">{formatINR(calc.grandTotal)}</span>
-                        </p>
-                      )
-                    ) : (
-                      <p className="text-[11px] text-zinc-500">
-                        Enter a UPI ID to embed a scannable QR matched to the invoice total.
-                      </p>
-                    )}
-                  </div>
+                  {docType === 'invoice' ? (
+                    <>
+                      <div className="space-y-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                        <Label htmlFor="doc-upi-id">UPI ID (Dynamic Payment QR)</Label>
+                        <Input
+                          id="doc-upi-id"
+                          type="text"
+                          value={upiId}
+                          onChange={(e) => setUpiId(e.target.value)}
+                          placeholder="yourname@okaxis"
+                          className="font-mono text-base sm:text-xs h-11 sm:h-9"
+                        />
+                        {upiId.trim() ? (
+                          !upiId.includes('@') ? (
+                            <p className="text-[11px] text-amber-600 dark:text-amber-400">
+                              Include your @bank handle (e.g. business@okicici) for UPI apps.
+                            </p>
+                          ) : (
+                            <p className="text-[11px] text-emerald-600 dark:text-emerald-400">
+                              QR synced to <span className="font-mono">{upiId.trim()}</span> ·{' '}
+                              <span className="font-mono font-semibold">{formatINR(calc.grandTotal)}</span>
+                            </p>
+                          )
+                        ) : (
+                          <p className="text-[11px] text-zinc-500">
+                            Enter a UPI ID to embed a scannable QR matched to the invoice total.
+                          </p>
+                        )}
+                      </div>
 
-                  <div className="space-y-1.5 pt-1">
-                    <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={saveLogoToProfile && saveUpiToProfile}
-                        onChange={(e) => {
-                          setSaveLogoToProfile(e.target.checked);
-                          setSaveUpiToProfile(e.target.checked);
-                        }}
-                        className="accent-[#F57C00]"
-                      />
-                      Save logo &amp; UPI ID as default for future invoices
-                    </label>
-                  </div>
+                      <div className="space-y-1.5 pt-1">
+                        <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={saveLogoToProfile && saveUpiToProfile}
+                            onChange={(e) => {
+                              setSaveLogoToProfile(e.target.checked);
+                              setSaveUpiToProfile(e.target.checked);
+                            }}
+                            className="accent-[#F57C00]"
+                          />
+                          Save logo &amp; UPI ID as default for future invoices
+                        </label>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <div className="space-y-1.5 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                        <Label htmlFor="doc-prepared-by">Prepared By</Label>
+                        <Input
+                          id="doc-prepared-by"
+                          type="text"
+                          value={preparedBy}
+                          onChange={(e) => setPreparedBy(e.target.value)}
+                          placeholder={profile?.ownerName || 'Sales Executive / Name'}
+                          className="text-base sm:text-xs h-11 sm:h-9"
+                        />
+                      </div>
+                      <div className="space-y-1.5 pt-1">
+                        <label className="flex items-center gap-2 text-xs text-zinc-600 dark:text-zinc-400 cursor-pointer">
+                          <input
+                            type="checkbox"
+                            checked={saveLogoToProfile}
+                            onChange={(e) => setSaveLogoToProfile(e.target.checked)}
+                            className="accent-[#F57C00]"
+                          />
+                          Save logo as default for future quotations
+                        </label>
+                      </div>
+                    </>
+                  )}
 
                   <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800 text-xs text-zinc-500 space-y-0.5">
                     <div className="font-medium text-zinc-700 dark:text-zinc-300 truncate">
@@ -1297,49 +1390,117 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     </Select>
                   </div>
                   <div className="space-y-1">
-                    <Label>A4 Template</Label>
+                    <Label>
+                      {docType === 'invoice' ? 'Invoice Theme' : 'Quotation Theme'}
+                    </Label>
                     <Select
-                      value={normalizeTemplateId(templateId)}
+                      value={
+                        docType === 'invoice'
+                          ? normalizeTemplateId(templateId)
+                          : normalizeQuotationTemplateId(templateId)
+                      }
                       onChange={(e) => {
                         userTouchedTemplateRef.current = true;
                         setTemplateId(e.target.value as TemplateId);
                       }}
                     >
-                      {INVOICE_THEMES.map((t) => (
+                      {(docType === 'invoice' ? INVOICE_THEMES : QUOTATION_THEMES).map((t) => (
                         <option key={t.id} value={t.id}>
                           {t.name} ({t.orientation === 'landscape' ? 'A4 Landscape' : t.tagline})
                         </option>
                       ))}
                     </Select>
                   </div>
-                  {docType === 'invoice' ? (
-                    <div className="space-y-1">
-                      <Label>Payment Terms</Label>
-                      <Input
-                        value={paymentTerms}
-                        onChange={(e) => setPaymentTerms(e.target.value)}
-                        placeholder="Net 15"
-                      />
-                    </div>
-                  ) : null}
+                  <div className="space-y-1">
+                    <Label>
+                      {docType === 'invoice' ? 'Payment Terms' : 'Proposed Payment Terms'}
+                    </Label>
+                    <Input
+                      value={paymentTerms}
+                      onChange={(e) => setPaymentTerms(e.target.value)}
+                      placeholder={
+                        docType === 'invoice' ? 'Net 15' : '50% advance, 50% on delivery'
+                      }
+                    />
+                  </div>
                 </div>
 
-                {/* All Invoice Themes visual picker (especially helpful on mobile where live preview is collapsed) */}
+                {docType === 'quotation' ? (
+                  <div className="space-y-3 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      <div className="space-y-1">
+                        <Label>Quotation Title (Optional)</Label>
+                        <Input
+                          value={quotationTitle}
+                          onChange={(e) => setQuotationTitle(e.target.value)}
+                          placeholder="QUOTATION"
+                        />
+                      </div>
+                      <div className="space-y-1">
+                        <Label>Delivery Timeline (Optional)</Label>
+                        <Input
+                          value={deliveryTimeline}
+                          onChange={(e) => setDeliveryTimeline(e.target.value)}
+                          placeholder="e.g. 2–3 Weeks from approval"
+                        />
+                      </div>
+                    </div>
+                    <div className="space-y-1">
+                      <Label>Project / Service Overview (Optional)</Label>
+                      <Textarea
+                        rows={2}
+                        value={projectDescription}
+                        onChange={(e) => setProjectDescription(e.target.value)}
+                        placeholder="Brief scope summary, deliverables, or project description..."
+                      />
+                    </div>
+                    <div className="space-y-2 pt-1">
+                      <label className="flex items-center gap-2 text-xs font-medium cursor-pointer text-zinc-700 dark:text-zinc-300">
+                        <input
+                          type="checkbox"
+                          checked={showPaymentInstructions}
+                          onChange={(e) => setShowPaymentInstructions(e.target.checked)}
+                          className="h-4 w-4 accent-[#F57C00]"
+                        />
+                        Show proposed payment instructions on quotation (off by default)
+                      </label>
+                      {showPaymentInstructions ? (
+                        <Textarea
+                          rows={2}
+                          value={paymentInstructions}
+                          onChange={(e) => setPaymentInstructions(e.target.value)}
+                          placeholder="Enter optional advance / milestone transfer notes..."
+                        />
+                      ) : null}
+                    </div>
+                  </div>
+                ) : null}
+
+                {/* Visual theme picker for current document type only */}
                 <div className="pt-2 border-t border-zinc-100 dark:border-zinc-800">
-                  <InvoiceThemeSelector
-                    currentThemeId={templateId}
-                    defaultThemeId={
-                      docType === 'invoice'
-                        ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
-                        : profile?.defaultQuotationTemplate || 'gst_theme_1'
-                    }
-                    onSelectTheme={(themeId) => {
-                      userTouchedTemplateRef.current = true;
-                      setTemplateId(themeId);
-                    }}
-                    onSetAsDefault={handleSetDefaultTheme}
-                    isSettingDefault={settingDefaultTheme}
-                  />
+                  {docType === 'invoice' ? (
+                    <InvoiceThemeSelector
+                      currentThemeId={templateId}
+                      defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+                      onSelectTheme={(themeId) => {
+                        userTouchedTemplateRef.current = true;
+                        setTemplateId(themeId);
+                      }}
+                      onSetAsDefault={handleSetDefaultTheme}
+                      isSettingDefault={settingDefaultTheme}
+                    />
+                  ) : (
+                    <QuotationThemeSelector
+                      currentThemeId={templateId}
+                      defaultThemeId={profile?.defaultQuotationTemplate}
+                      onSelectTheme={(themeId) => {
+                        userTouchedTemplateRef.current = true;
+                        setTemplateId(themeId);
+                      }}
+                      onSetAsDefault={handleSetDefaultTheme}
+                      isSettingDefault={settingDefaultTheme}
+                    />
+                  )}
                 </div>
 
                 <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 pt-1">
@@ -1842,7 +2003,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               <Card className="lg:col-span-5">
                 <CardContent className="p-5 space-y-2.5 text-sm">
                   <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
-                    <span>Subtotal</span>
+                    <span>{docType === 'quotation' ? 'Estimated Subtotal' : 'Subtotal'}</span>
                     <span className="font-mono tabular-nums">{formatINR(calc.subtotal)}</span>
                   </div>
                   {calc.totalDiscount > 0 ? (
@@ -1852,23 +2013,25 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     </div>
                   ) : null}
                   <div className="flex justify-between text-zinc-700 dark:text-zinc-300">
-                    <span>Taxable Value</span>
+                    <span>
+                      {docType === 'quotation' ? 'Estimated Taxable Value' : 'Taxable Value'}
+                    </span>
                     <span className="font-mono tabular-nums">{formatINR(calc.taxableAmount)}</span>
                   </div>
                   {isGst ? (
                     calc.isInterState ? (
                       <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
-                        <span>IGST</span>
+                        <span>{docType === 'quotation' ? 'Estimated IGST' : 'IGST'}</span>
                         <span className="font-mono tabular-nums">{formatINR(calc.igstTotal)}</span>
                       </div>
                     ) : (
                       <>
                         <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
-                          <span>CGST</span>
+                          <span>{docType === 'quotation' ? 'Estimated CGST' : 'CGST'}</span>
                           <span className="font-mono tabular-nums">{formatINR(calc.cgstTotal)}</span>
                         </div>
                         <div className="flex justify-between text-zinc-600 dark:text-zinc-400">
-                          <span>SGST</span>
+                          <span>{docType === 'quotation' ? 'Estimated SGST' : 'SGST'}</span>
                           <span className="font-mono tabular-nums">{formatINR(calc.sgstTotal)}</span>
                         </div>
                       </>
@@ -1881,7 +2044,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     </div>
                   ) : null}
                   <div className="flex justify-between border-t border-zinc-200 dark:border-zinc-800 pt-3 text-base font-bold">
-                    <span>Grand Total</span>
+                    <span>{docType === 'quotation' ? 'Quotation Total' : 'Grand Total'}</span>
                     <span className="font-mono tabular-nums text-[#F57C00]">
                       {formatINR(calc.grandTotal)}
                     </span>
@@ -2006,7 +2169,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     Live A4 {docType === 'invoice' ? 'Invoice' : 'Quotation'} Preview
                   </CardTitle>
                   <p className="text-[11px] text-zinc-500">
-                    210 × 297 mm · Updates in real time
+                    {templateId === 'landscape_theme_2' || templateId === 'landscape_pro'
+                      ? '297 × 210 mm · Updates in real time'
+                      : '210 × 297 mm · Updates in real time'}
                   </p>
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -2045,16 +2210,29 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
 
               {/* Theme Carousel Selector */}
               <div className="px-3 pt-2.5 pb-1 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40">
-                <InvoiceThemeSelector
-                  currentThemeId={templateId}
-                  defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
-                  onSelectTheme={(themeId) => {
-                    userTouchedTemplateRef.current = true;
-                    setTemplateId(themeId);
-                  }}
-                  onSetAsDefault={handleSetDefaultTheme}
-                  isSettingDefault={settingDefaultTheme}
-                />
+                {docType === 'invoice' ? (
+                  <InvoiceThemeSelector
+                    currentThemeId={templateId}
+                    defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+                    onSelectTheme={(themeId) => {
+                      userTouchedTemplateRef.current = true;
+                      setTemplateId(themeId);
+                    }}
+                    onSetAsDefault={handleSetDefaultTheme}
+                    isSettingDefault={settingDefaultTheme}
+                  />
+                ) : (
+                  <QuotationThemeSelector
+                    currentThemeId={templateId}
+                    defaultThemeId={profile?.defaultQuotationTemplate}
+                    onSelectTheme={(themeId) => {
+                      userTouchedTemplateRef.current = true;
+                      setTemplateId(themeId);
+                    }}
+                    onSetAsDefault={handleSetDefaultTheme}
+                    isSettingDefault={settingDefaultTheme}
+                  />
+                )}
               </div>
 
               <CardContent className="p-3 sm:p-4 bg-zinc-100 dark:bg-zinc-900/70">
@@ -2095,24 +2273,41 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         onClose={() => setFullPreviewOpen(false)}
         title={`A4 ${docType === 'invoice' ? 'Invoice' : 'Quotation'} Preview`}
         description={
-          templateId === 'landscape_theme_2'
+          templateId === 'landscape_theme_2' || templateId === 'landscape_pro'
             ? 'Full-scale A4 Landscape sheet (297 × 210 mm). Switch themes below or download PDF.'
             : 'Full-scale A4 sheet (210 × 297 mm). Switch themes below or download PDF.'
         }
-        maxWidthClass={templateId === 'landscape_theme_2' ? 'max-w-6xl' : 'max-w-4xl'}
+        maxWidthClass={
+          templateId === 'landscape_theme_2' || templateId === 'landscape_pro'
+            ? 'max-w-6xl'
+            : 'max-w-4xl'
+        }
       >
         <div className="space-y-4">
           <div className="p-2 border rounded-xl bg-zinc-50/50 dark:bg-zinc-900/50">
-            <InvoiceThemeSelector
-              currentThemeId={templateId}
-              defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
-              onSelectTheme={(themeId) => {
-                userTouchedTemplateRef.current = true;
-                setTemplateId(themeId);
-              }}
-              onSetAsDefault={handleSetDefaultTheme}
-              isSettingDefault={settingDefaultTheme}
-            />
+            {docType === 'invoice' ? (
+              <InvoiceThemeSelector
+                currentThemeId={templateId}
+                defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+                onSelectTheme={(themeId) => {
+                  userTouchedTemplateRef.current = true;
+                  setTemplateId(themeId);
+                }}
+                onSetAsDefault={handleSetDefaultTheme}
+                isSettingDefault={settingDefaultTheme}
+              />
+            ) : (
+              <QuotationThemeSelector
+                currentThemeId={templateId}
+                defaultThemeId={profile?.defaultQuotationTemplate}
+                onSelectTheme={(themeId) => {
+                  userTouchedTemplateRef.current = true;
+                  setTemplateId(themeId);
+                }}
+                onSetAsDefault={handleSetDefaultTheme}
+                isSettingDefault={settingDefaultTheme}
+              />
+            )}
           </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setFullPreviewOpen(false)}>

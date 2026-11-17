@@ -21,8 +21,9 @@ import { formatINR } from '../../shared/gstCalculator';
 import type { Customer, Quotation, TemplateId } from '../../shared/types';
 import { EmptyState } from '../../components/AppShell';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
-import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
-import type { StandardTemplateId } from '../../components/invoice/invoiceThemeTypes';
+import { QuotationThemeSelector } from '../../components/quotation/QuotationThemeSelector';
+import { normalizeQuotationTemplateId } from '../../components/quotation/quotationThemeRegistry';
+import type { QuotationTemplateId } from '../../components/quotation/quotationThemeTypes';
 import { QuotationStatusLabel } from '../../components/StatusText';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
@@ -414,28 +415,31 @@ export function QuotationDetailsPage({
   }, [tenantUid, quotationId]);
 
   const [quotation, setQuotation] = React.useState<Quotation | null>(initialDetail);
-  const [selectedThemeId, setSelectedThemeId] = React.useState<TemplateId>(
-    () => initialDetail?.templateId || profile?.defaultQuotationTemplate || 'gst_theme_1'
+  const [selectedThemeId, setSelectedThemeId] = React.useState<QuotationTemplateId>(() =>
+    normalizeQuotationTemplateId(initialDetail?.templateId || profile?.defaultQuotationTemplate)
   );
   const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
 
   React.useEffect(() => {
     if (quotation?.templateId) {
-      setSelectedThemeId(quotation.templateId);
+      setSelectedThemeId(normalizeQuotationTemplateId(quotation.templateId));
     } else if (profile?.defaultQuotationTemplate) {
-      setSelectedThemeId(profile.defaultQuotationTemplate);
+      setSelectedThemeId(normalizeQuotationTemplateId(profile.defaultQuotationTemplate));
     }
   }, [quotation?.templateId, profile?.defaultQuotationTemplate]);
 
-  const handleSetDefaultTheme = async (themeId: StandardTemplateId) => {
+  const handleSetDefaultTheme = async (themeId: QuotationTemplateId) => {
     try {
       setSettingDefaultTheme(true);
       const res = await businessApi.updateProfile({ defaultQuotationTemplate: themeId });
       updateLocalBusinessProfile(res.profile);
       setSelectedThemeId(themeId);
-      notify('success', `Theme set as default. All existing and new quotations will show on this theme.`);
+      notify(
+        'success',
+        'Quotation theme set as default for all new quotations.'
+      );
     } catch (err) {
-      notify('error', 'Failed to update default theme');
+      notify('error', 'Failed to update default quotation theme');
     } finally {
       setSettingDefaultTheme(false);
     }
@@ -598,10 +602,14 @@ export function QuotationDetailsPage({
       </div>
 
       {/* Theme Selector for Quotation View */}
-      <div className="no-print max-w-[820px] mx-auto p-3 border border-zinc-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900 shadow-sm">
-        <InvoiceThemeSelector
+      <div
+        className={`no-print mx-auto p-3 border border-zinc-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900 shadow-sm ${
+          selectedThemeId === 'landscape_pro' ? 'max-w-[1123px]' : 'max-w-[820px]'
+        }`}
+      >
+        <QuotationThemeSelector
           currentThemeId={selectedThemeId}
-          defaultThemeId={profile?.defaultQuotationTemplate || 'gst_theme_1'}
+          defaultThemeId={profile?.defaultQuotationTemplate}
           onSelectTheme={(t) => setSelectedThemeId(t)}
           onSetAsDefault={handleSetDefaultTheme}
           isSettingDefault={settingDefaultTheme}

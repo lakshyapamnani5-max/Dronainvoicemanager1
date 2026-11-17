@@ -24,6 +24,11 @@ import {
 } from 'firebase/storage';
 import { firebaseAuth, firebaseStorage, getSecondaryAuth, rtdb } from './firebase';
 import { mergeDocumentWithLiveSnapshotsSync } from './liveSnapshots';
+import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import {
+  QUOTATION_TEMPLATE_IDS,
+  normalizeQuotationTemplateId,
+} from '../components/quotation/quotationThemeRegistry';
 import {
   allocateLocalDocNumber,
   cascadeBusinessSnapshotInCache,
@@ -147,6 +152,7 @@ export const VALID_TEMPLATE_IDS: readonly TemplateId[] = [
   'classic_gst',
   'executive_minimal',
   'compact_commercial',
+  ...QUOTATION_TEMPLATE_IDS,
 ];
 import type { AdminUserRow, SaveDocumentPayload } from './api';
 import type { GstExportRecord } from '../shared/gstnTypes';
@@ -321,8 +327,8 @@ function normalizeBusinessProfile(uid: string, raw: Record<string, unknown>): Bu
     defaultTaxRate: Number(raw.defaultTaxRate ?? 18),
     defaultTaxMode: (raw.defaultTaxMode as TaxPricingMode) || 'exclusive',
     defaultPaymentTermsDays: Number(raw.defaultPaymentTermsDays ?? 15),
-    defaultInvoiceTemplate: (raw.defaultInvoiceTemplate as TemplateId) || 'classic_gst',
-    defaultQuotationTemplate: (raw.defaultQuotationTemplate as TemplateId) || 'classic_gst',
+    defaultInvoiceTemplate: normalizeTemplateId(raw.defaultInvoiceTemplate as string),
+    defaultQuotationTemplate: normalizeQuotationTemplateId(raw.defaultQuotationTemplate as string),
     termsAndConditions: String(
       raw.termsAndConditions ||
         '1. Goods/services once billed will not be taken back.\n2. Interest @18% p.a. will be charged on delayed payments beyond due date.\n3. Subject to local jurisdiction.'
@@ -444,7 +450,14 @@ function normalizeQuotation(raw: Record<string, unknown>): Quotation {
     roundOff: Number(raw.roundOff ?? 0),
     grandTotal: Number(raw.grandTotal ?? 0),
     amountInWords: String(raw.amountInWords || ''),
-    templateId: (raw.templateId as TemplateId) || 'classic_gst',
+    templateId: normalizeQuotationTemplateId(raw.templateId as string),
+    quotationTitle: raw.quotationTitle ? String(raw.quotationTitle) : undefined,
+    projectDescription: raw.projectDescription ? String(raw.projectDescription) : undefined,
+    deliveryTimeline: raw.deliveryTimeline ? String(raw.deliveryTimeline) : undefined,
+    paymentTerms: raw.paymentTerms ? String(raw.paymentTerms) : undefined,
+    preparedBy: raw.preparedBy ? String(raw.preparedBy) : undefined,
+    showPaymentInstructions: Boolean(raw.showPaymentInstructions),
+    paymentInstructions: raw.paymentInstructions ? String(raw.paymentInstructions) : undefined,
     notes: String(raw.notes || ''),
     terms: String(raw.terms || ''),
     convertedInvoiceId: raw.convertedInvoiceId ? String(raw.convertedInvoiceId) : null,
@@ -749,10 +762,13 @@ export async function flushTenantSyncQueue(tenantUid: string): Promise<void> {
             const invoicesSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
             if (invoicesSnap.exists()) {
               const raw = invoicesSnap.val() as Record<string, Record<string, unknown>>;
+              const nextCascadedInvTpl = op.cascadeDefaultInvoiceTemplate
+                ? normalizeTemplateId(op.cascadeDefaultInvoiceTemplate)
+                : null;
               for (const invId of Object.keys(raw)) {
-                if (op.cascadeDefaultInvoiceTemplate) {
+                if (nextCascadedInvTpl) {
                   docPatch[`tenants/${tenantUid}/invoices/${invId}/templateId`] =
-                    op.cascadeDefaultInvoiceTemplate;
+                    nextCascadedInvTpl;
                 }
                 if (bizSnapPatch) {
                   for (const [k, v] of Object.entries(bizSnapPatch)) {
@@ -769,10 +785,13 @@ export async function flushTenantSyncQueue(tenantUid: string): Promise<void> {
             const quotationsSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
             if (quotationsSnap.exists()) {
               const raw = quotationsSnap.val() as Record<string, Record<string, unknown>>;
+              const nextCascadedQuoTpl = op.cascadeDefaultQuotationTemplate
+                ? normalizeQuotationTemplateId(op.cascadeDefaultQuotationTemplate)
+                : null;
               for (const quoId of Object.keys(raw)) {
-                if (op.cascadeDefaultQuotationTemplate) {
+                if (nextCascadedQuoTpl) {
                   docPatch[`tenants/${tenantUid}/quotations/${quoId}/templateId`] =
-                    op.cascadeDefaultQuotationTemplate;
+                    nextCascadedQuoTpl;
                 }
                 if (bizSnapPatch) {
                   for (const [k, v] of Object.entries(bizSnapPatch)) {
@@ -1055,8 +1074,8 @@ async function seedDemoBusinessWorkspace(
     defaultTaxRate: 18,
     defaultTaxMode: 'exclusive',
     defaultPaymentTermsDays: 15,
-    defaultInvoiceTemplate: 'classic_gst',
-    defaultQuotationTemplate: 'classic_gst',
+    defaultInvoiceTemplate: 'gst_theme_1',
+    defaultQuotationTemplate: 'executive_gold',
     termsAndConditions:
       '1. Goods/services once billed will not be taken back.\n2. Interest @18% p.a. will be charged on delayed payments beyond due date.\n3. Subject to local jurisdiction.',
     signatureLabel: `For ${cfg.businessName}`,
@@ -3476,8 +3495,12 @@ export const rtdbService = {
         0,
         Math.min(365, Number(input.defaultPaymentTermsDays ?? existing.defaultPaymentTermsDays) || 15)
       ),
-      defaultInvoiceTemplate: input.defaultInvoiceTemplate || existing.defaultInvoiceTemplate,
-      defaultQuotationTemplate: input.defaultQuotationTemplate || existing.defaultQuotationTemplate,
+      defaultInvoiceTemplate: input.defaultInvoiceTemplate
+        ? normalizeTemplateId(input.defaultInvoiceTemplate)
+        : normalizeTemplateId(existing.defaultInvoiceTemplate),
+      defaultQuotationTemplate: input.defaultQuotationTemplate
+        ? normalizeQuotationTemplateId(input.defaultQuotationTemplate)
+        : normalizeQuotationTemplateId(existing.defaultQuotationTemplate),
       termsAndConditions: sanitizeStr(
         input.termsAndConditions ?? existing.termsAndConditions,
         1500
@@ -3506,23 +3529,25 @@ export const rtdbService = {
 
     const cacheEntry = getTenantEntry(tenantUid);
     if (input.defaultInvoiceTemplate && cacheEntry.invoices.length > 0) {
+      const nextInvTpl = normalizeTemplateId(input.defaultInvoiceTemplate);
       setTenantCollectionData(
         tenantUid,
         'invoices',
         cacheEntry.invoices.map((inv) => ({
           ...inv,
-          templateId: input.defaultInvoiceTemplate as TemplateId,
+          templateId: nextInvTpl,
         })),
         true
       );
     }
     if (input.defaultQuotationTemplate && cacheEntry.quotations.length > 0) {
+      const nextQuoTpl = normalizeQuotationTemplateId(input.defaultQuotationTemplate);
       setTenantCollectionData(
         tenantUid,
         'quotations',
         cacheEntry.quotations.map((quo) => ({
           ...quo,
-          templateId: input.defaultQuotationTemplate as TemplateId,
+          templateId: nextQuoTpl,
         })),
         true
       );
@@ -3910,11 +3935,9 @@ export const rtdbService = {
     });
 
     const isDraft = Boolean(input.saveAsDraft);
-    const templateId: TemplateId =
-      input.templateId &&
-      VALID_TEMPLATE_IDS.includes(input.templateId as TemplateId)
-        ? input.templateId
-        : profile.defaultInvoiceTemplate;
+    const templateId: TemplateId = normalizeTemplateId(
+      input.templateId || profile.defaultInvoiceTemplate
+    );
 
     const now = new Date().toISOString();
 
@@ -4346,11 +4369,9 @@ export const rtdbService = {
     });
 
     const isDraft = Boolean(input.saveAsDraft);
-    const templateId: TemplateId =
-      input.templateId &&
-      VALID_TEMPLATE_IDS.includes(input.templateId as TemplateId)
-        ? input.templateId
-        : profile.defaultQuotationTemplate;
+    const templateId: TemplateId = normalizeQuotationTemplateId(
+      input.templateId || profile.defaultQuotationTemplate
+    );
 
     const now = new Date().toISOString();
 
@@ -4460,6 +4481,15 @@ export const rtdbService = {
       grandTotal: calc.grandTotal,
       amountInWords: calc.amountInWords,
       templateId,
+      quotationTitle: sanitizeStr(input.quotationTitle, 80) || undefined,
+      projectDescription: sanitizeStr(input.projectDescription, 1000) || undefined,
+      deliveryTimeline: sanitizeStr(input.deliveryTimeline, 120) || undefined,
+      paymentTerms: sanitizeStr(input.paymentTerms, 160) || undefined,
+      preparedBy: sanitizeStr(input.preparedBy, 120) || undefined,
+      showPaymentInstructions: Boolean(input.showPaymentInstructions),
+      paymentInstructions: input.showPaymentInstructions
+        ? sanitizeStr(input.paymentInstructions, 600) || undefined
+        : undefined,
       notes: sanitizeStr(input.notes, 1000),
       terms: sanitizeStr(input.terms ?? profile.termsAndConditions, 1500),
       convertedInvoiceId: null,
@@ -4573,6 +4603,25 @@ export const rtdbService = {
     const newInvId = generateId('inv');
     const now = new Date().toISOString();
 
+    const invoiceBusinessSnapshot: BusinessSnapshot = {
+      businessName: profile.businessName || quo.businessSnapshot.businessName,
+      ownerName: profile.ownerName || quo.businessSnapshot.ownerName,
+      logoDataUrl: profile.logoDataUrl || quo.businessSnapshot.logoDataUrl,
+      address: profile.address || quo.businessSnapshot.address,
+      email: profile.email || quo.businessSnapshot.email,
+      phone: profile.phone || quo.businessSnapshot.phone,
+      gstin: profile.gstin || quo.businessSnapshot.gstin,
+      pan: profile.pan || quo.businessSnapshot.pan,
+      state: profile.state || quo.businessSnapshot.state,
+      bankName: profile.bankName || quo.businessSnapshot.bankName,
+      accountNumber: profile.accountNumber || quo.businessSnapshot.accountNumber,
+      ifsc: profile.ifsc || quo.businessSnapshot.ifsc,
+      upiId: profile.upiId || quo.businessSnapshot.upiId,
+      upiQrDataUrl: profile.upiId ? '' : profile.upiQrDataUrl || quo.businessSnapshot.upiQrDataUrl,
+      signatureLabel: profile.signatureLabel || quo.businessSnapshot.signatureLabel,
+      signatureDataUrl: profile.signatureDataUrl || quo.businessSnapshot.signatureDataUrl,
+    };
+
     const invoice: Invoice = {
       id: newInvId,
       userUid: tenantUid,
@@ -4580,10 +4629,10 @@ export const rtdbService = {
       status: 'unpaid',
       customerId: quo.customerId,
       customerSnapshot: quo.customerSnapshot,
-      businessSnapshot: quo.businessSnapshot,
+      businessSnapshot: invoiceBusinessSnapshot,
       invoiceDate: today,
       dueDate,
-      paymentTerms: `Net ${profile.defaultPaymentTermsDays}`,
+      paymentTerms: quo.paymentTerms || `Net ${profile.defaultPaymentTermsDays}`,
       referenceNumber: quo.referenceNumber || quo.quotationNumber,
       placeOfSupply: quo.placeOfSupply,
       isGst: quo.isGst,
@@ -4603,7 +4652,7 @@ export const rtdbService = {
       amountPaid: 0,
       balanceDue: quo.grandTotal,
       amountInWords: quo.amountInWords,
-      templateId: profile.defaultInvoiceTemplate,
+      templateId: normalizeTemplateId(profile.defaultInvoiceTemplate),
       notes: quo.notes,
       terms: quo.terms,
       sourceQuotationId: quo.id,
