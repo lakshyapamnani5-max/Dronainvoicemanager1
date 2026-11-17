@@ -8,10 +8,14 @@ import {
   CreditCard,
   Download,
   Edit2,
+  Eye,
+  EyeOff,
   FileText,
   ImagePlus,
   Maximize2,
   Package,
+  PanelRightClose,
+  PanelRightOpen,
   Pencil,
   Plus,
   Search,
@@ -20,6 +24,7 @@ import {
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import {
+  businessApi,
   cachedRead,
   customersApi,
   invoicesApi,
@@ -46,6 +51,10 @@ import type {
   TemplateId,
 } from '../shared/types';
 import { DocumentPreviewSheet } from './DocumentPreviewSheet';
+import { InvoiceThemeSelector } from './invoice/InvoiceThemeSelector';
+import { INVOICE_THEMES } from './invoice/invoiceThemeRegistry';
+import type { StandardTemplateId } from './invoice/invoiceThemeTypes';
+import { HsnSacSelector } from './HsnSacSelector';
 import { Button } from './ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
 import { Dialog } from './ui/dialog';
@@ -71,8 +80,11 @@ function ScaledA4Preview({
 }) {
   const containerRef = React.useRef<HTMLDivElement>(null);
   const sheetRef = React.useRef<HTMLDivElement>(null);
+  const isLandscape = templateId === 'landscape_theme_2';
+  const baseW = isLandscape ? 1123 : 794;
+  const baseH = isLandscape ? 794 : 1123;
   const [scale, setScale] = React.useState(0.55);
-  const [sheetHeight, setSheetHeight] = React.useState(1123);
+  const [sheetHeight, setSheetHeight] = React.useState(baseH);
 
   React.useLayoutEffect(() => {
     const container = containerRef.current;
@@ -82,10 +94,10 @@ function ScaledA4Preview({
     const updateMetrics = () => {
       const availW = container.clientWidth;
       if (availW > 0) {
-        setScale(Math.min(1, availW / 794));
+        setScale(Math.min(1, availW / baseW));
       }
       if (sheet.scrollHeight > 0) {
-        setSheetHeight(Math.max(1123, sheet.scrollHeight));
+        setSheetHeight(Math.max(baseH, sheet.scrollHeight));
       }
     };
 
@@ -94,21 +106,21 @@ function ScaledA4Preview({
     ro.observe(container);
     ro.observe(sheet);
     return () => ro.disconnect();
-  }, [record, templateId]);
+  }, [record, templateId, baseW, baseH]);
 
   return (
     <div ref={containerRef} className="w-full overflow-hidden">
       <div
         className="relative mx-auto"
         style={{
-          width: `${Math.round(794 * scale)}px`,
+          width: `${Math.round(baseW * scale)}px`,
           height: `${Math.ceil(sheetHeight * scale)}px`,
         }}
       >
         <div
           ref={sheetRef}
           style={{
-            width: '794px',
+            width: `${baseW}px`,
             transform: `scale(${scale})`,
             transformOrigin: 'top left',
           }}
@@ -243,9 +255,27 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     () =>
       hydratedDoc?.templateId ||
       (docType === 'invoice'
-        ? profile?.defaultInvoiceTemplate || 'classic_gst'
-        : profile?.defaultQuotationTemplate || 'classic_gst')
+        ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
+        : profile?.defaultQuotationTemplate || 'gst_theme_1')
   );
+  const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
+
+  const handleSetDefaultTheme = async (newThemeId: StandardTemplateId) => {
+    try {
+      setSettingDefaultTheme(true);
+      const res = await businessApi.updateProfile({
+        defaultInvoiceTemplate: newThemeId,
+        defaultQuotationTemplate: newThemeId,
+      });
+      updateLocalBusinessProfile(res.profile);
+      setTemplateId(newThemeId);
+      notify('success', `Theme set as default. All existing and new invoices will show on this theme.`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update default theme');
+    } finally {
+      setSettingDefaultTheme(false);
+    }
+  };
   const [notes, setNotes] = React.useState(() => hydratedDoc?.notes || '');
   const [terms, setTerms] = React.useState(
     () => hydratedDoc?.terms ?? profile?.termsAndConditions ?? ''
@@ -943,7 +973,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               }`}
             >
               <Pencil className="h-3.5 w-3.5" />
-              Editor
+              Full Editor
             </button>
             <button
               type="button"
@@ -958,6 +988,32 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               A4 Preview
             </button>
           </div>
+
+          {/* Quick Collapse / Expand Live Preview Button */}
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setViewMode((prev) => (prev === 'editor' ? 'split' : 'editor'))}
+            className="h-8 text-xs hidden sm:inline-flex items-center gap-1.5 cursor-pointer"
+            title={
+              viewMode === 'editor'
+                ? 'Show live A4 preview side-by-side'
+                : 'Collapse live A4 preview to expand editor to full width'
+            }
+          >
+            {viewMode === 'editor' ? (
+              <>
+                <PanelRightOpen className="h-3.5 w-3.5 text-[#F57C00]" />
+                <span>Show Preview</span>
+              </>
+            ) : (
+              <>
+                <PanelRightClose className="h-3.5 w-3.5 text-zinc-500" />
+                <span>Collapse Preview</span>
+              </>
+            )}
+          </Button>
         </div>
 
         <div className="hidden md:flex flex-wrap items-center gap-2">
@@ -1246,9 +1302,11 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                         setTemplateId(e.target.value as TemplateId);
                       }}
                     >
-                      <option value="classic_gst">Classic GST Ledger</option>
-                      <option value="executive_minimal">Executive Minimal</option>
-                      <option value="compact_commercial">Compact Commercial</option>
+                      {INVOICE_THEMES.map((t) => (
+                        <option key={t.id} value={t.id}>
+                          {t.name} ({t.orientation === 'landscape' ? 'A4 Landscape' : t.tagline})
+                        </option>
+                      ))}
                     </Select>
                   </div>
                   {docType === 'invoice' ? (
@@ -1416,11 +1474,16 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                           {isGst ? (
                             <div className="space-y-1">
                               <Label>HSN / SAC</Label>
-                              <Input
+                              <HsnSacSelector
                                 value={item.hsnSac}
-                                onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                                currentDescription={item.description}
+                                onChange={(val) => updateItem(idx, { hsnSac: val })}
+                                onSelectDescription={(desc) => {
+                                  if (!item.description || item.description.trim() === '') {
+                                    updateItem(idx, { description: desc });
+                                  }
+                                }}
                                 placeholder="998314"
-                                className="font-mono"
                               />
                             </div>
                           ) : null}
@@ -1548,86 +1611,107 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                 </div>
 
                 {/* Desktop Line Items Table */}
-                <div className="hidden md:block overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="border-y border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+                <div className="hidden md:block overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                  <table className="w-full min-w-[1050px] text-xs">
+                    <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
                       <tr>
-                        <th className="px-3 py-2.5 text-left font-medium min-w-[170px]">
+                        <th className="px-3.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 min-w-[300px]">
                           Item & Description
                         </th>
                         {isGst ? (
-                          <th className="px-2 py-2.5 text-left font-medium w-22">HSN/SAC</th>
+                          <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-44 min-w-[170px]">
+                            HSN/SAC
+                          </th>
                         ) : null}
-                        <th className="px-2 py-2.5 text-right font-medium w-18">Qty</th>
-                        <th className="px-2 py-2.5 text-left font-medium w-18">Unit</th>
-                        <th className="px-2 py-2.5 text-right font-medium w-24">Rate (INR)</th>
-                        <th className="px-2 py-2.5 text-right font-medium w-28">Discount</th>
+                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                          Qty
+                        </th>
+                        <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                          Unit
+                        </th>
+                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[125px]">
+                          Rate (INR)
+                        </th>
+                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-40 min-w-[155px]">
+                          Discount
+                        </th>
                         {isGst ? (
-                          <th className="px-2 py-2.5 text-right font-medium w-20">GST %</th>
+                          <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                            GST %
+                          </th>
                         ) : null}
-                        <th className="px-3 py-2.5 text-right font-medium w-24">Total</th>
-                        <th className="px-2 py-2.5 w-8"></th>
+                        <th className="px-3 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[120px]">
+                          Total
+                        </th>
+                        <th className="px-2 py-3 w-10"></th>
                       </tr>
                     </thead>
-                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800">
+                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
                       {items.map((item, idx) => {
                         const computed = calc.items[idx];
                         return (
-                          <tr key={idx} className="align-top">
-                            <td className="px-3 py-2.5 space-y-1.5">
+                          <tr key={idx} className="align-top hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                            <td className="px-3.5 py-3 space-y-1.5 min-w-[300px]">
                               <Input
                                 list="drona-rate-card-names"
                                 value={item.name}
                                 onChange={(e) => updateItem(idx, { name: e.target.value })}
                                 placeholder="Service or product name"
-                                className="h-8 text-xs"
+                                className="h-10 text-xs font-medium"
                               />
                               <Input
                                 value={item.description}
                                 onChange={(e) => updateItem(idx, { description: e.target.value })}
-                                placeholder="Optional description"
-                                className="h-7 text-[11px] text-zinc-500"
+                                placeholder="Optional description / details"
+                                className="h-9 text-xs text-zinc-600 dark:text-zinc-300"
                               />
                             </td>
                             {isGst ? (
-                              <td className="px-2 py-2.5">
-                                <Input
+                              <td className="px-2.5 py-3 min-w-[170px]">
+                                <HsnSacSelector
                                   value={item.hsnSac}
-                                  onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                                  currentDescription={item.description}
+                                  onChange={(val) => updateItem(idx, { hsnSac: val })}
+                                  onSelectDescription={(desc) => {
+                                    if (!item.description || item.description.trim() === '') {
+                                      updateItem(idx, { description: desc });
+                                    }
+                                  }}
                                   placeholder="998314"
-                                  className="h-8 text-xs font-mono"
+                                  className="h-10 text-xs font-mono"
                                 />
                               </td>
                             ) : null}
-                            <td className="px-2 py-2.5">
+                            <td className="px-2.5 py-3 min-w-[95px]">
                               <Input
                                 type="number"
                                 min="0.01"
                                 step="0.01"
                                 value={item.quantity}
                                 onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
-                                className="h-8 text-xs text-right font-mono"
+                                className="h-10 text-xs text-right font-mono"
                               />
                             </td>
-                            <td className="px-2 py-2.5">
+                            <td className="px-2.5 py-3 min-w-[95px]">
                               <Input
                                 value={item.unit}
                                 onChange={(e) => updateItem(idx, { unit: e.target.value })}
-                                className="h-8 text-xs"
+                                placeholder="Nos"
+                                className="h-10 text-xs text-center"
                               />
                             </td>
-                            <td className="px-2 py-2.5">
+                            <td className="px-2.5 py-3 min-w-[125px]">
                               <Input
                                 type="number"
                                 min="0"
                                 step="0.01"
                                 value={item.rate}
                                 onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
-                                className="h-8 text-xs text-right font-mono"
+                                className="h-10 text-xs text-right font-mono font-medium"
                               />
                             </td>
-                            <td className="px-2 py-2.5">
-                              <div className="flex gap-1">
+                            <td className="px-2.5 py-3 min-w-[155px]">
+                              <div className="flex gap-1.5">
                                 <Input
                                   type="number"
                                   min="0"
@@ -1636,7 +1720,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                   onChange={(e) =>
                                     updateItem(idx, { discountValue: Number(e.target.value) })
                                   }
-                                  className="h-8 text-xs text-right font-mono w-14"
+                                  className="h-10 text-xs text-right font-mono flex-1 min-w-[65px]"
                                 />
                                 <Select
                                   value={item.discountType}
@@ -1645,7 +1729,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                       discountType: e.target.value as 'percent' | 'fixed',
                                     })
                                   }
-                                  className="h-8 text-[11px] px-1 w-12"
+                                  className="h-10 text-xs px-2 w-14 font-semibold shrink-0"
                                 >
                                   <option value="percent">%</option>
                                   <option value="fixed">₹</option>
@@ -1653,11 +1737,11 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                               </div>
                             </td>
                             {isGst ? (
-                              <td className="px-2 py-2.5">
+                              <td className="px-2.5 py-3 min-w-[95px]">
                                 <Select
                                   value={item.taxRate}
                                   onChange={(e) => updateItem(idx, { taxRate: Number(e.target.value) })}
-                                  className="h-8 text-xs font-mono"
+                                  className="h-10 text-xs font-mono font-semibold"
                                 >
                                   {[0, 5, 12, 18, 28].map((r) => (
                                     <option key={r} value={r}>
@@ -1667,10 +1751,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                 </Select>
                               </td>
                             ) : null}
-                            <td className="px-3 py-3 text-right font-mono tabular-nums font-semibold">
+                            <td className="px-3 py-3 text-right font-mono tabular-nums text-sm font-bold text-zinc-900 dark:text-zinc-100 min-w-[120px]">
                               {formatINR(computed?.totalAmount || 0)}
                             </td>
-                            <td className="px-2 py-2.5 text-center">
+                            <td className="px-2 py-3 text-center">
                               <div className="inline-flex items-center gap-0.5">
                                 {item.name.trim() &&
                                 !rateCardItems.some(
@@ -1909,6 +1993,17 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     type="button"
                     size="sm"
                     variant="outline"
+                    onClick={() => setViewMode('editor')}
+                    title="Collapse preview to expand editor to full width"
+                    className="h-8 px-2.5 text-xs text-zinc-700 dark:text-zinc-300 hover:text-zinc-900 cursor-pointer"
+                  >
+                    <PanelRightClose className="h-3.5 w-3.5 mr-1 text-[#F57C00]" />
+                    <span>Collapse</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
                     onClick={() => setFullPreviewOpen(true)}
                     title="Expand full-size A4 preview"
                   >
@@ -1926,6 +2021,21 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                   </Button>
                 </div>
               </CardHeader>
+
+              {/* Theme Carousel Selector */}
+              <div className="px-3 pt-2.5 pb-1 border-b border-zinc-100 dark:border-zinc-800 bg-zinc-50/70 dark:bg-zinc-900/40">
+                <InvoiceThemeSelector
+                  currentThemeId={templateId}
+                  defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+                  onSelectTheme={(themeId) => {
+                    userTouchedTemplateRef.current = true;
+                    setTemplateId(themeId);
+                  }}
+                  onSetAsDefault={handleSetDefaultTheme}
+                  isSettingDefault={settingDefaultTheme}
+                />
+              </div>
+
               <CardContent className="p-3 sm:p-4 bg-zinc-100 dark:bg-zinc-900/70">
                 {viewMode === 'preview' ? (
                   <>
@@ -1963,10 +2073,26 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         open={fullPreviewOpen}
         onClose={() => setFullPreviewOpen(false)}
         title={`A4 ${docType === 'invoice' ? 'Invoice' : 'Quotation'} Preview`}
-        description="Full-scale A4 sheet (210 × 297 mm). Click Download PDF to save to Invoices and download."
-        maxWidthClass="max-w-4xl"
+        description={
+          templateId === 'landscape_theme_2'
+            ? 'Full-scale A4 Landscape sheet (297 × 210 mm). Switch themes below or download PDF.'
+            : 'Full-scale A4 sheet (210 × 297 mm). Switch themes below or download PDF.'
+        }
+        maxWidthClass={templateId === 'landscape_theme_2' ? 'max-w-6xl' : 'max-w-4xl'}
       >
         <div className="space-y-4">
+          <div className="p-2 border rounded-xl bg-zinc-50/50 dark:bg-zinc-900/50">
+            <InvoiceThemeSelector
+              currentThemeId={templateId}
+              defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+              onSelectTheme={(themeId) => {
+                userTouchedTemplateRef.current = true;
+                setTemplateId(themeId);
+              }}
+              onSetAsDefault={handleSetDefaultTheme}
+              isSettingDefault={settingDefaultTheme}
+            />
+          </div>
           <div className="flex justify-end gap-2">
             <Button variant="outline" size="sm" onClick={() => setFullPreviewOpen(false)}>
               Close
@@ -2405,6 +2531,22 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           </div>
         </div>
       </Dialog>
+
+      {/* Floating button to restore live preview when collapsed */}
+      {viewMode === 'editor' && (
+        <div className="fixed bottom-6 right-6 z-40 hidden xl:block">
+          <Button
+            type="button"
+            size="sm"
+            onClick={() => setViewMode('split')}
+            className="rounded-full bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900 px-4 py-2.5 text-xs font-semibold shadow-2xl hover:bg-zinc-800 dark:hover:bg-zinc-200 cursor-pointer flex items-center gap-2 border border-zinc-700/50"
+            title="Restore side-by-side A4 preview"
+          >
+            <PanelRightOpen className="h-4 w-4 text-[#F57C00]" />
+            <span>Show Live Preview</span>
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

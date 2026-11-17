@@ -3,13 +3,16 @@ import fs from 'node:fs';
 import express from 'express';
 import cookieParser from 'cookie-parser';
 
-const TEST_DB = '/tmp/drona_e2e_verify.db';
+import os from 'node:os';
+import path from 'node:path';
+
+const TEST_DB = path.join(os.tmpdir(), 'drona_e2e_verify.db');
 for (const suffix of ['', '-wal', '-shm']) {
   if (fs.existsSync(TEST_DB + suffix)) fs.unlinkSync(TEST_DB + suffix);
 }
 process.env.DRONA_DB_PATH = TEST_DB;
 
-const { initializeDatabase } = await import('../server/db.ts');
+const { initializeDatabase, db } = await import('../server/db.ts');
 const { apiRouter } = await import('../server/routes.ts');
 const { buildUpiPaymentUri } = await import('../src/shared/gstCalculator.ts');
 
@@ -459,7 +462,12 @@ try {
   console.log('ALL DRONA E2E VERIFICATION TESTS PASSED (11/11 SUITES)');
 } finally {
   server.close();
+  try {
+    db.close();
+  } catch {}
   for (const suffix of ['', '-wal', '-shm']) {
-    if (fs.existsSync(TEST_DB + suffix)) fs.unlinkSync(TEST_DB + suffix);
+    try {
+      if (fs.existsSync(TEST_DB + suffix)) fs.unlinkSync(TEST_DB + suffix);
+    } catch {}
   }
 }

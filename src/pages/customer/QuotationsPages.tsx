@@ -14,13 +14,15 @@ import {
   XCircle,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { cachedRead, customersApi, quotationsApi } from '../../lib/api';
+import { businessApi, cachedRead, customersApi, quotationsApi } from '../../lib/api';
 import { generateDocumentPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
-import type { Customer, Quotation } from '../../shared/types';
+import type { Customer, Quotation, TemplateId } from '../../shared/types';
 import { EmptyState } from '../../components/AppShell';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
+import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
+import type { StandardTemplateId } from '../../components/invoice/invoiceThemeTypes';
 import { QuotationStatusLabel } from '../../components/StatusText';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent } from '../../components/ui/card';
@@ -402,7 +404,8 @@ export function QuotationDetailsPage({
   quotationId: string;
   navigate: (path: string) => void;
 }) {
-  const { session } = useAuth();
+  const { session, updateLocalBusinessProfile } = useAuth();
+  const profile = session?.businessProfile;
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
   const initialDetail = React.useMemo(() => {
@@ -411,6 +414,33 @@ export function QuotationDetailsPage({
   }, [tenantUid, quotationId]);
 
   const [quotation, setQuotation] = React.useState<Quotation | null>(initialDetail);
+  const [selectedThemeId, setSelectedThemeId] = React.useState<TemplateId>(
+    () => initialDetail?.templateId || profile?.defaultQuotationTemplate || 'gst_theme_1'
+  );
+  const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
+
+  React.useEffect(() => {
+    if (quotation?.templateId) {
+      setSelectedThemeId(quotation.templateId);
+    } else if (profile?.defaultQuotationTemplate) {
+      setSelectedThemeId(profile.defaultQuotationTemplate);
+    }
+  }, [quotation?.templateId, profile?.defaultQuotationTemplate]);
+
+  const handleSetDefaultTheme = async (themeId: StandardTemplateId) => {
+    try {
+      setSettingDefaultTheme(true);
+      const res = await businessApi.updateProfile({ defaultQuotationTemplate: themeId });
+      updateLocalBusinessProfile(res.profile);
+      setSelectedThemeId(themeId);
+      notify('success', `Theme set as default. All existing and new quotations will show on this theme.`);
+    } catch (err) {
+      notify('error', 'Failed to update default theme');
+    } finally {
+      setSettingDefaultTheme(false);
+    }
+  };
+
   const [loading, setLoading] = React.useState(() => !initialDetail);
   const [converting, setConverting] = React.useState(false);
 
@@ -537,7 +567,7 @@ export function QuotationDetailsPage({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => generateDocumentPdf('quotation', quotation)}
+            onClick={() => generateDocumentPdf('quotation', quotation, selectedThemeId)}
           >
             <Download className="h-3.5 w-3.5" />
             Download PDF
@@ -550,19 +580,35 @@ export function QuotationDetailsPage({
             variant="outline"
             size="sm"
             onClick={async () => {
-              await navigator.clipboard.writeText(
-                `Quotation ${quotation.quotationNumber} | Total: ${formatINR(quotation.grandTotal)} | Valid Until: ${formatDate(quotation.validUntil)}`
-              );
-              notify('success', 'Quotation summary copied');
+              const summary = `*Quotation ${quotation.quotationNumber}*\nFrom: ${quotation.businessSnapshot.businessName}\nTotal: ${formatINR(quotation.grandTotal)}\nValid Until: ${formatDate(quotation.validUntil)}`;
+              await navigator.clipboard.writeText(summary);
+              notify('success', 'Quotation summary copied & opening WhatsApp...');
+              const rawPhone = (quotation.customerSnapshot.phone || '').replace(/[^0-9]/g, '');
+              const waUrl = rawPhone
+                ? `https://wa.me/${rawPhone.length === 10 ? '91' + rawPhone : rawPhone}?text=${encodeURIComponent(summary)}`
+                : `https://wa.me/?text=${encodeURIComponent(summary)}`;
+              window.open(waUrl, '_blank', 'noopener,noreferrer');
             }}
+            className="text-emerald-700 dark:text-emerald-400 hover:text-emerald-800 border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20"
           >
-            <Share2 className="h-3.5 w-3.5" />
-            Share
+            <Share2 className="h-3.5 w-3.5 mr-1" />
+            Share WhatsApp
           </Button>
         </div>
       </div>
 
-      <DocumentPreviewSheet docType="quotation" record={quotation} />
+      {/* Theme Selector for Quotation View */}
+      <div className="no-print max-w-[820px] mx-auto p-3 border border-zinc-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900 shadow-sm">
+        <InvoiceThemeSelector
+          currentThemeId={selectedThemeId}
+          defaultThemeId={profile?.defaultQuotationTemplate || 'gst_theme_1'}
+          onSelectTheme={(t) => setSelectedThemeId(t)}
+          onSetAsDefault={handleSetDefaultTheme}
+          isSettingDefault={settingDefaultTheme}
+        />
+      </div>
+
+      <DocumentPreviewSheet docType="quotation" record={quotation} templateOverride={selectedThemeId} />
     </div>
   );
 }

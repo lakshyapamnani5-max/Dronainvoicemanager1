@@ -63,6 +63,7 @@ const CUSTOMER_NAV: Array<{ group: string; items: NavItem[] }> = [
   {
     group: 'Reports',
     items: [
+      { label: 'GST Reports', path: '/reports/gst', icon: ShieldCheck },
       { label: 'Outstanding Reports', path: '/reports/outstanding', icon: FileSpreadsheet },
       { label: 'Sales Reports', path: '/reports/sales', icon: BarChart3 },
     ],
@@ -280,6 +281,7 @@ export function AppShell({
         { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
         { label: 'Rate Card', path: '/rate-card', icon: Package },
         { label: 'Payments', path: '/payments', icon: CreditCard },
+        { label: 'GST Reports', path: '/reports/gst', icon: ShieldCheck },
         { label: 'Outstanding Reports', path: '/reports/outstanding', icon: FileSpreadsheet },
         { label: 'Sales Reports', path: '/reports/sales', icon: BarChart3 },
         { label: 'Business Profile', path: '/business-profile', icon: Building2 },

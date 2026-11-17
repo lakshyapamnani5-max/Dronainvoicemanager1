@@ -28,8 +28,8 @@ async function startServer() {
     const vite = await createViteServer({
       server: {
         middlewareMode: true,
-        hmr: hmrDisabled ? false : { server: httpServer },
-        ws: { server: httpServer },
+        hmr: !hmrDisabled,
+        ws: hmrDisabled ? false : { server: httpServer },
       },
       appType: 'spa',
     });
@@ -43,7 +43,8 @@ async function startServer() {
 
   const port = Number(process.env.PORT) || 3000;
   httpServer.listen(port, '0.0.0.0', () => {
-    console.log(`DRONA Invoice Manager server listening on http://0.0.0.0:${port}`);
+    console.log(`\n  ➜  Local:   http://localhost:${port}/`);
+    console.log(`  ➜  Network: http://127.0.0.1:${port}/\n`);
   });
 }
 
