@@ -28,7 +28,19 @@ export type PaymentMethod =
 export type TaxPricingMode = 'exclusive' | 'inclusive';
 export type TaxSupplyMode = 'auto' | 'intra' | 'inter';
 export type DiscountType = 'percent' | 'fixed';
-export type TemplateId = 'classic_gst' | 'executive_minimal' | 'compact_commercial';
+export type TemplateId =
+  | 'gst_theme_1'
+  | 'gst_theme_2'
+  | 'gst_theme_3'
+  | 'gst_theme_4'
+  | 'gst_theme_5'
+  | 'gst_theme_6'
+  | 'double_divine'
+  | 'french_elite'
+  | 'landscape_theme_2'
+  | 'classic_gst'
+  | 'executive_minimal'
+  | 'compact_commercial';
 
 export interface UserRecord {
   uid: string;

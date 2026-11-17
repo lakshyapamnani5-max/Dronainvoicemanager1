@@ -52,6 +52,7 @@ import { Dialog } from '../../components/ui/dialog';
 import { Input, Label, Select, Textarea } from '../../components/ui/input';
 import { useToast } from '../../components/ui/toast';
 import { PurchasePreviewDialog } from './PurchasePreviewDialog';
+import { HsnSacSelector } from '../../components/HsnSacSelector';
 
 function emptyItem(defaultTaxRate = 18): PurchaseLineItemInput {
   return {
@@ -948,10 +949,16 @@ export function PurchaseEditorPage({
                           </div>
                         ) : null}
                       </td>
-                      <td className="px-2.5 py-2">
-                        <Input
+                      <td className="px-2.5 py-2 min-w-[130px]">
+                        <HsnSacSelector
                           value={item.hsnSac}
-                          onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                          currentDescription={item.description}
+                          onChange={(val) => updateItem(idx, { hsnSac: val })}
+                          onSelectDescription={(desc) => {
+                            if (!item.description || item.description.trim() === '') {
+                              updateItem(idx, { description: desc });
+                            }
+                          }}
                           placeholder="HSN"
                           className="h-8 text-xs font-mono"
                         />
@@ -1126,9 +1133,15 @@ export function PurchaseEditorPage({
                   <div className="grid grid-cols-2 gap-2.5">
                     <div className="space-y-1">
                       <Label>HSN/SAC</Label>
-                      <Input
+                      <HsnSacSelector
                         value={item.hsnSac}
-                        onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                        currentDescription={item.description}
+                        onChange={(val) => updateItem(idx, { hsnSac: val })}
+                        onSelectDescription={(desc) => {
+                          if (!item.description || item.description.trim() === '') {
+                            updateItem(idx, { description: desc });
+                          }
+                        }}
                         placeholder="HSN"
                       />
                     </div>

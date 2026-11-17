@@ -35,6 +35,9 @@
         },
         "purchaseAttachments": {
           ".indexOn": ["purchaseId", "createdAt"]
+        },
+        "gstExports": {
+          ".indexOn": ["period", "createdAt"]
         }
       }
     },

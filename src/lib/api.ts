@@ -372,6 +372,15 @@ export const purchaseOcrApi = {
   },
 };
 
+import type { GstExportRecord } from '../shared/gstnTypes';
+
+export const gstExportsApi = {
+  save: (payload: Omit<GstExportRecord, 'id' | 'userUid' | 'createdAt'>) =>
+    rtdbService.saveGstExportRecord(payload),
+  list: () => rtdbService.listGstExportRecords(),
+  delete: (id: string) => rtdbService.deleteGstExportRecord(id),
+};
+
 export const adminApi = {
   getDashboard: (params?: { range?: string; startDate?: string; endDate?: string }): Promise<AdminDashboardData> =>
     rtdbService.getAdminDashboard(params),

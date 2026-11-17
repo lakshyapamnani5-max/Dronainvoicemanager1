@@ -16,13 +16,15 @@ import {
   Trash2,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { cachedRead, customersApi, invoicesApi, paymentsApi } from '../../lib/api';
+import { businessApi, cachedRead, customersApi, invoicesApi, paymentsApi } from '../../lib/api';
 import { generateDocumentPdf, generatePaymentReceiptPdf } from '../../lib/pdfGenerator';
 import { exportToExcel, formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR } from '../../shared/gstCalculator';
-import type { Customer, Invoice, Payment, PaymentMethod } from '../../shared/types';
+import type { Customer, Invoice, Payment, PaymentMethod, TemplateId } from '../../shared/types';
 import { EmptyState } from '../../components/AppShell';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
+import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
+import type { StandardTemplateId } from '../../components/invoice/invoiceThemeTypes';
 import { InvoiceStatusLabel } from '../../components/StatusText';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
@@ -586,7 +588,8 @@ export function InvoiceDetailsPage({
   invoiceId: string;
   navigate: (path: string) => void;
 }) {
-  const { session } = useAuth();
+  const { session, updateLocalBusinessProfile } = useAuth();
+  const profile = session?.businessProfile;
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
   const initialDetail = React.useMemo(() => {
@@ -601,6 +604,33 @@ export function InvoiceDetailsPage({
   }, [tenantUid, invoiceId]);
 
   const [invoice, setInvoice] = React.useState<Invoice | null>(initialDetail);
+  const [selectedThemeId, setSelectedThemeId] = React.useState<TemplateId>(
+    () => initialDetail?.templateId || profile?.defaultInvoiceTemplate || 'gst_theme_1'
+  );
+  const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
+
+  React.useEffect(() => {
+    if (invoice?.templateId) {
+      setSelectedThemeId(invoice.templateId);
+    } else if (profile?.defaultInvoiceTemplate) {
+      setSelectedThemeId(profile.defaultInvoiceTemplate);
+    }
+  }, [invoice?.templateId, profile?.defaultInvoiceTemplate]);
+
+  const handleSetDefaultTheme = async (themeId: StandardTemplateId) => {
+    try {
+      setSettingDefaultTheme(true);
+      const res = await businessApi.updateProfile({ defaultInvoiceTemplate: themeId });
+      updateLocalBusinessProfile(res.profile);
+      setSelectedThemeId(themeId);
+      notify('success', `Theme set as default. All existing and new invoices will show on this theme.`);
+    } catch (err) {
+      notify('error', 'Failed to update default theme');
+    } finally {
+      setSettingDefaultTheme(false);
+    }
+  };
+
   const [auditLogs, setAuditLogs] = React.useState<
     Array<{ id: string; actorEmail: string; action: string; summary: string; createdAt: string }>
   >([]);
@@ -750,10 +780,15 @@ export function InvoiceDetailsPage({
   };
 
   const handleShare = async () => {
-    const summary = `Invoice ${invoice.invoiceNumber} from ${invoice.businessSnapshot.businessName} | Amount: ${formatINR(invoice.grandTotal)} | Balance Due: ${formatINR(invoice.balanceDue)} | Due: ${formatDate(invoice.dueDate)}`;
+    const summary = `*Tax Invoice ${invoice.invoiceNumber}*\nFrom: ${invoice.businessSnapshot.businessName}\nAmount: ${formatINR(invoice.grandTotal)}\nBalance Due: ${formatINR(invoice.balanceDue)}\nDue Date: ${formatDate(invoice.dueDate)}`;
     try {
       await navigator.clipboard.writeText(summary);
-      notify('success', 'Invoice summary copied to clipboard');
+      notify('success', 'Invoice details copied & opening WhatsApp...');
+      const rawPhone = (invoice.customerSnapshot.phone || '').replace(/[^0-9]/g, '');
+      const waUrl = rawPhone
+        ? `https://wa.me/${rawPhone.length === 10 ? '91' + rawPhone : rawPhone}?text=${encodeURIComponent(summary)}`
+        : `https://wa.me/?text=${encodeURIComponent(summary)}`;
+      window.open(waUrl, '_blank', 'noopener,noreferrer');
     } catch {
       notify('error', 'Unable to access clipboard');
     }
@@ -800,7 +835,7 @@ export function InvoiceDetailsPage({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => generateDocumentPdf('invoice', invoice)}
+            onClick={() => generateDocumentPdf('invoice', invoice, selectedThemeId)}
           >
             <Download className="h-3.5 w-3.5" />
             Download PDF
@@ -809,9 +844,14 @@ export function InvoiceDetailsPage({
             <Printer className="h-3.5 w-3.5" />
             Print
           </Button>
-          <Button variant="outline" size="sm" onClick={handleShare}>
-            <Share2 className="h-3.5 w-3.5" />
-            Share
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={handleShare}
+            className="text-emerald-700 dark:text-emerald-400 hover:text-emerald-800 border-emerald-200 dark:border-emerald-800 bg-emerald-50/50 dark:bg-emerald-950/20"
+          >
+            <Share2 className="h-3.5 w-3.5 mr-1" />
+            Share WhatsApp
           </Button>
 
           {invoice.status !== 'cancelled' && invoice.amountPaid === 0 ? (
@@ -851,7 +891,18 @@ export function InvoiceDetailsPage({
         </div>
       ) : null}
 
-      <DocumentPreviewSheet docType="invoice" record={invoice} />
+      {/* Theme Selector for Invoice View */}
+      <div className="no-print max-w-[820px] mx-auto p-3 border border-zinc-200 dark:border-zinc-800 rounded-xl bg-white dark:bg-zinc-900 shadow-sm">
+        <InvoiceThemeSelector
+          currentThemeId={selectedThemeId}
+          defaultThemeId={profile?.defaultInvoiceTemplate || 'gst_theme_1'}
+          onSelectTheme={(t) => setSelectedThemeId(t)}
+          onSetAsDefault={handleSetDefaultTheme}
+          isSettingDefault={settingDefaultTheme}
+        />
+      </div>
+
+      <DocumentPreviewSheet docType="invoice" record={invoice} templateOverride={selectedThemeId} />
 
       {/* Payments & Audit Trail */}
       <div className="no-print grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-[820px] mx-auto">

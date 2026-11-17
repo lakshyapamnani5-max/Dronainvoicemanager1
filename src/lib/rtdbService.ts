@@ -124,7 +124,23 @@ import type {
   UserRecord,
   UserRole,
 } from '../shared/types';
+
+export const VALID_TEMPLATE_IDS: readonly TemplateId[] = [
+  'gst_theme_1',
+  'gst_theme_2',
+  'gst_theme_3',
+  'gst_theme_4',
+  'gst_theme_5',
+  'gst_theme_6',
+  'double_divine',
+  'french_elite',
+  'landscape_theme_2',
+  'classic_gst',
+  'executive_minimal',
+  'compact_commercial',
+];
 import type { AdminUserRow, SaveDocumentPayload } from './api';
+import type { GstExportRecord } from '../shared/gstnTypes';
 
 const IMPERSONATION_STORAGE_KEY = 'drona_rtdb_impersonation_id';
 
@@ -3196,6 +3212,55 @@ export const rtdbService = {
     });
     await touchTenantMeta(tenantUid, ['profile']);
 
+    // When a template is selected as default, update all existing invoices/quotations to that theme
+    if (input.defaultInvoiceTemplate) {
+      try {
+        const invoicesSnap = await get(ref(rtdb, `tenants/${tenantUid}/invoices`));
+        if (invoicesSnap.exists()) {
+          const raw = invoicesSnap.val() as Record<string, Record<string, unknown>>;
+          const updates: Record<string, unknown> = {};
+          for (const invId of Object.keys(raw)) {
+            updates[`tenants/${tenantUid}/invoices/${invId}/templateId`] = input.defaultInvoiceTemplate;
+          }
+          if (Object.keys(updates).length > 0) {
+            await update(ref(rtdb), updates);
+          }
+        }
+        const e = getTenantEntry(tenantUid);
+        if (e.invoices && e.invoices.length > 0) {
+          e.invoices.forEach((inv) => {
+            inv.templateId = input.defaultInvoiceTemplate as TemplateId;
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to cascade default template to all invoices:', err);
+      }
+    }
+
+    if (input.defaultQuotationTemplate) {
+      try {
+        const quotationsSnap = await get(ref(rtdb, `tenants/${tenantUid}/quotations`));
+        if (quotationsSnap.exists()) {
+          const raw = quotationsSnap.val() as Record<string, Record<string, unknown>>;
+          const updates: Record<string, unknown> = {};
+          for (const quoId of Object.keys(raw)) {
+            updates[`tenants/${tenantUid}/quotations/${quoId}/templateId`] = input.defaultQuotationTemplate;
+          }
+          if (Object.keys(updates).length > 0) {
+            await update(ref(rtdb), updates);
+          }
+        }
+        const e = getTenantEntry(tenantUid);
+        if (e.quotations && e.quotations.length > 0) {
+          e.quotations.forEach((quo) => {
+            quo.templateId = input.defaultQuotationTemplate as TemplateId;
+          });
+        }
+      } catch (err) {
+        console.warn('Failed to cascade default template to all quotations:', err);
+      }
+    }
+
     await logActivity({
       actor: ctx.actorUser,
       targetTenantUid: tenantUid,
@@ -3535,7 +3600,7 @@ export const rtdbService = {
     const isDraft = Boolean(input.saveAsDraft);
     const templateId: TemplateId =
       input.templateId &&
-      ['classic_gst', 'executive_minimal', 'compact_commercial'].includes(input.templateId)
+      VALID_TEMPLATE_IDS.includes(input.templateId as TemplateId)
         ? input.templateId
         : profile.defaultInvoiceTemplate;
 
@@ -3934,7 +3999,7 @@ export const rtdbService = {
     const isDraft = Boolean(input.saveAsDraft);
     const templateId: TemplateId =
       input.templateId &&
-      ['classic_gst', 'executive_minimal', 'compact_commercial'].includes(input.templateId)
+      VALID_TEMPLATE_IDS.includes(input.templateId as TemplateId)
         ? input.templateId
         : profile.defaultQuotationTemplate;
 
@@ -5836,5 +5901,54 @@ export const rtdbService = {
       summary: 'Updated DRONA platform settings',
     });
     return { settings: updated };
+  },
+
+  // ==================== GST EXPORTS & AUDIT TRAIL ====================
+  saveGstExportRecord: async (payload: Omit<GstExportRecord, 'id' | 'userUid' | 'createdAt'>) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const exportId = `gste_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
+    const now = new Date().toISOString();
+    const record: GstExportRecord = {
+      ...payload,
+      id: exportId,
+      userUid: tenantUid,
+      createdAt: now,
+    };
+    await set(ref(rtdb, `tenants/${tenantUid}/gstExports/${exportId}`), stripUndefined(record));
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      action: 'GSTR1_JSON_EXPORTED',
+      entityType: 'gst_export',
+      entityId: exportId,
+      summary: `Generated GSTR-1 JSON for period ${payload.period} (${payload.invoiceCount} invoices, ₹${payload.totalTaxableValue} taxable)`,
+      metadata: {
+        period: payload.period,
+        gstin: payload.gstin,
+        filename: payload.filename,
+        invoiceCount: payload.invoiceCount,
+      },
+    });
+    return { record };
+  },
+
+  listGstExportRecords: async () => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const snap = await get(ref(rtdb, `tenants/${tenantUid}/gstExports`));
+    if (!snap.exists()) return { exports: [] };
+    const raw = snap.val() as Record<string, GstExportRecord>;
+    const list: GstExportRecord[] = Object.values(raw).sort((a, b) =>
+      (b.createdAt || '').localeCompare(a.createdAt || '')
+    );
+    return { exports: list };
+  },
+
+  deleteGstExportRecord: async (exportId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    await remove(ref(rtdb, `tenants/${tenantUid}/gstExports/${exportId}`));
+    return { success: true };
   },
 };

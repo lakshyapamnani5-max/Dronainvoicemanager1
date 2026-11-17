@@ -32,6 +32,7 @@ import { PurchasesDashboardPage } from './pages/customer/PurchasesDashboardPage'
 import { QuotationDetailsPage, QuotationsListPage } from './pages/customer/QuotationsPages';
 import { RateCardPage } from './pages/customer/RateCardPage';
 import { OutstandingReportPage, SalesReportsPage } from './pages/customer/ReportsPages';
+import { GstReportsPage } from './pages/customer/GstReportsPage';
 import {
   BusinessProfilePage,
   CustomerSettingsPage,
@@ -524,6 +525,19 @@ function AppRouter() {
         breadcrumbs={[bizName, 'Payments']}
       >
         <PaymentsPage navigate={navigate} />
+      </AppShell>
+    );
+  }
+
+  if (path === '/reports/gst') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="GST Reports & GSTR-1 Export"
+        breadcrumbs={[bizName, 'Reports', 'GST Reports']}
+      >
+        <GstReportsPage navigate={navigate} />
       </AppShell>
     );
   }

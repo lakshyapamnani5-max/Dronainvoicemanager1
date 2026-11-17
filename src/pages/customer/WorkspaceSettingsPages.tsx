@@ -5,6 +5,7 @@ import { authApi, businessApi, cachedRead } from '../../lib/api';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type { BusinessProfile, Invoice, TemplateId } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
+import { INVOICE_THEMES } from '../../components/invoice/invoiceThemeRegistry';
 import { PWAInstallButton } from '../../components/PWAComponents';
 import { SignatureControl } from '../../components/SignatureControl';
 import { Button } from '../../components/ui/button';
@@ -304,32 +305,14 @@ export function BusinessProfilePage() {
   );
 }
 
-const TEMPLATES: Array<{ id: TemplateId; name: string; description: string }> = [
-  {
-    id: 'classic_gst',
-    name: 'Classic GST Ledger',
-    description: 'Signature Drona Orange accent bar, structured HSN/GST matrix, and UPI QR block.',
-  },
-  {
-    id: 'executive_minimal',
-    name: 'Executive Minimal',
-    description: 'Monochrome charcoal headers with generous whitespace for consulting & B2B retainers.',
-  },
-  {
-    id: 'compact_commercial',
-    name: 'Compact Commercial',
-    description: 'High-density A4 grid engineered for multi-item wholesale & manufacturing invoices.',
-  },
-];
-
 export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotation' }) {
   const { session, updateLocalBusinessProfile } = useAuth();
   const { notify } = useToast();
   const profile = session?.businessProfile;
   const activeTemplate =
     docType === 'invoice'
-      ? profile?.defaultInvoiceTemplate || 'classic_gst'
-      : profile?.defaultQuotationTemplate || 'classic_gst';
+      ? profile?.defaultInvoiceTemplate || 'gst_theme_1'
+      : profile?.defaultQuotationTemplate || 'gst_theme_1';
 
   const [previewId, setPreviewId] = React.useState<TemplateId>(activeTemplate);
   const [saving, setSaving] = React.useState(false);
@@ -444,33 +427,43 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
 
   return (
     <div className="space-y-6">
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {TEMPLATES.map((tpl) => {
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        {INVOICE_THEMES.map((tpl) => {
           const isSelected = previewId === tpl.id;
           const isDefault = activeTemplate === tpl.id;
+          const Thumb = tpl.thumbnail;
           return (
             <button
               key={tpl.id}
               type="button"
               onClick={() => setPreviewId(tpl.id)}
-              className={`rounded-xl border p-5 text-left transition-colors cursor-pointer ${
+              className={`rounded-xl border p-4 text-left transition-all cursor-pointer flex flex-col justify-between ${
                 isSelected
-                  ? 'border-[#F57C00] bg-orange-50/40 dark:bg-orange-950/10'
+                  ? 'border-[#F57C00] bg-orange-50/40 dark:bg-orange-950/15 ring-2 ring-[#F57C00]/20 shadow-sm'
                   : 'border-zinc-200 bg-white hover:bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-900 dark:hover:bg-zinc-800/50'
               }`}
             >
-              <div className="flex items-center justify-between gap-2">
-                <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
-                  {tpl.name}
-                </span>
-                {isDefault ? (
-                  <span className="inline-flex items-center gap-1 text-xs font-medium text-emerald-600">
-                    <CheckCircle2 className="h-3.5 w-3.5" />
-                    Default
-                  </span>
-                ) : null}
+              <div className="w-full h-32 mb-3 rounded-lg overflow-hidden bg-zinc-50 dark:bg-zinc-800 p-2 flex items-center justify-center border border-zinc-100 dark:border-zinc-800">
+                <Thumb isSelected={isSelected} />
               </div>
-              <p className="mt-1.5 text-xs text-zinc-500 leading-relaxed">{tpl.description}</p>
+              <div className="w-full">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                    {tpl.name}
+                  </span>
+                  {isDefault ? (
+                    <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-emerald-600 bg-emerald-50 dark:bg-emerald-950/40 px-2 py-0.5 rounded-full border border-emerald-200 dark:border-emerald-800">
+                      <CheckCircle2 className="h-3 w-3" />
+                      Default
+                    </span>
+                  ) : tpl.orientation === 'landscape' ? (
+                    <span className="text-[10px] font-medium text-zinc-600 dark:text-zinc-400 bg-zinc-100 dark:bg-zinc-800 px-1.5 py-0.5 rounded">
+                      A4 Landscape
+                    </span>
+                  ) : null}
+                </div>
+                <p className="mt-1 text-xs text-zinc-500 leading-relaxed">{tpl.description}</p>
+              </div>
             </button>
           );
         })}
@@ -478,14 +471,14 @@ export function TemplatesGalleryPage({ docType }: { docType: 'invoice' | 'quotat
 
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div className="text-sm font-medium text-zinc-700 dark:text-zinc-300">
-          Live A4 Preview — {TEMPLATES.find((t) => t.id === previewId)?.name}
+          Live A4 Preview — {INVOICE_THEMES.find((t) => t.id === previewId)?.name}
         </div>
         <Button className="w-full sm:w-auto" disabled={saving || activeTemplate === previewId} onClick={handleSetDefault}>
           {activeTemplate === previewId
             ? 'Currently Default'
             : saving
               ? 'Updating...'
-              : `Set as Default ${docType === 'invoice' ? 'Invoice' : 'Quotation'} Template`}
+              : `Set as Default for All ${docType === 'invoice' ? 'Invoices' : 'Quotations'}`}
         </Button>
       </div>
 

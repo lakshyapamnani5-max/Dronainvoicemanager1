@@ -1,6 +1,9 @@
-import jsPDF from 'jspdf';
+import jsPDFModule from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import QRCode from 'qrcode';
+
+// Support both ESM browser bundle and Node.js testing environments
+const jsPDF = (jsPDFModule as unknown as { jsPDF?: typeof jsPDFModule }).jsPDF || jsPDFModule;
 import { buildUpiPaymentUri, formatINRForPdf } from '../shared/gstCalculator';
 import type {
   BusinessProfile,
@@ -12,6 +15,7 @@ import type {
   TemplateId,
 } from '../shared/types';
 import { formatDate } from './utils';
+import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
 
 async function generateUpiQrDataUrl(
   upiId: string,
@@ -70,10 +74,16 @@ export async function generateDocumentPdf(
   record: Invoice | Quotation,
   overrideTemplate?: TemplateId
 ): Promise<void> {
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: 'a4' });
+  const normId = normalizeTemplateId(overrideTemplate || record.templateId);
+  const isLandscape = normId === 'landscape_theme_2';
+  const pdf = new jsPDF({
+    orientation: isLandscape ? 'landscape' : 'portrait',
+    unit: 'mm',
+    format: 'a4',
+  });
   const pageWidth = pdf.internal.pageSize.getWidth();
+  const pageHeight = pdf.internal.pageSize.getHeight();
   const margin = 14;
-  const templateId = overrideTemplate || record.templateId || 'classic_gst';
 
   const biz = record.businessSnapshot;
   const cust = record.customerSnapshot;
@@ -83,199 +93,492 @@ export async function generateDocumentPdf(
   const docNumber = inv ? inv.invoiceNumber : quo!.quotationNumber;
   const docTitle = isInvoice ? (record.isGst ? 'TAX INVOICE' : 'BILL OF SUPPLY') : 'QUOTATION';
 
-  const accentRgb: [number, number, number] =
-    templateId === 'executive_minimal'
-      ? [24, 24, 27]
-      : templateId === 'compact_commercial'
-        ? [39, 39, 42]
-        : [245, 124, 0];
-
-  // Top Header Strip
-  if (templateId === 'classic_gst') {
-    pdf.setFillColor(...accentRgb);
-    pdf.rect(0, 0, pageWidth, 4, 'F');
+  let accentRgb: [number, number, number] = [124, 120, 212]; // royal violet default
+  if (normId === 'double_divine') {
+    accentRgb = [229, 57, 53]; // crimson red
+  } else if (normId === 'landscape_theme_2') {
+    accentRgb = [30, 36, 48]; // charcoal slate
+  } else if (normId === 'gst_theme_1') {
+    accentRgb = [63, 63, 70]; // dark slate
+  } else if (normId === 'gst_theme_6') {
+    accentRgb = [88, 80, 236]; // indigo
   }
 
+  // Load Business Logo if available
+  const logoInfo = biz.logoDataUrl ? await loadLogoForPdf(biz.logoDataUrl, 32, 20) : null;
   let y = 14;
 
-  // Business Logo if data URL provided (aspect-preserved)
-  const logoInfo = biz.logoDataUrl ? await loadLogoForPdf(biz.logoDataUrl) : null;
-  if (logoInfo) {
-    try {
-      const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
-      pdf.addImage(logoInfo.pngDataUrl, fmt, margin, y, logoInfo.drawW, logoInfo.drawH);
-    } catch {
-      // ignore invalid image
+  if (isLandscape) {
+    // Landscape 3-Column Header
+    const col1W = 88;
+    const col2X = margin + col1W + 6;
+    const col2W = 75;
+    const col3X = col2X + col2W + 6;
+    const col3W = pageWidth - margin - col3X;
+
+    // Col 1: Logo & Business Info
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, margin, y, logoInfo.drawW, logoInfo.drawH);
+      } catch {}
     }
-  }
+    const bTextX = logoInfo ? margin + logoInfo.drawW + 3.5 : margin;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', bTextX, y + 4.5);
 
-  const textLeft = logoInfo ? margin + logoInfo.drawW + 4 : margin;
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(14);
-  pdf.setTextColor(24, 24, 27);
-  pdf.text(biz.businessName || 'DRONA Business', textLeft, y + 5);
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let bY = y + 9;
+    if (biz.address) {
+      const aLines = pdf.splitTextToSize(biz.address, Math.max(50, col1W - (bTextX - margin)));
+      pdf.text(aLines, bTextX, bY);
+      bY += aLines.length * 3.8;
+    }
+    const bContact = [biz.phone, biz.email].filter(Boolean).join('  |  ');
+    if (bContact) {
+      pdf.text(bContact, bTextX, bY);
+      bY += 3.8;
+    }
+    if (biz.gstin) {
+      pdf.text(`GSTIN: ${biz.gstin}`, bTextX, bY);
+      bY += 3.8;
+    }
 
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(8.5);
-  pdf.setTextColor(82, 82, 91);
-  let bizMetaY = y + 10;
-  if (biz.address) {
-    const addrLines = pdf.splitTextToSize(biz.address, Math.max(60, 108 - (textLeft - margin)));
-    pdf.text(addrLines, textLeft, bizMetaY);
-    bizMetaY += addrLines.length * 4;
-  }
-  const contactLine = [biz.phone, biz.email].filter(Boolean).join('  |  ');
-  if (contactLine) {
-    pdf.text(contactLine, textLeft, bizMetaY);
-    bizMetaY += 4;
-  }
-  if (biz.gstin) {
-    pdf.text(`GSTIN: ${biz.gstin}   State: ${biz.state}`, textLeft, bizMetaY);
-    bizMetaY += 4;
-  } else if (biz.state) {
-    pdf.text(`State: ${biz.state}`, textLeft, bizMetaY);
-    bizMetaY += 4;
-  }
+    // Col 2: Document Title & Metadata
+    pdf.setFillColor(30, 36, 48);
+    pdf.roundedRect(col2X, y, 36, 6.5, 1, 1, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9);
+    pdf.text(docTitle, col2X + 3.5, y + 4.5);
 
-  // Right Side Document Title & Metadata
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(16);
-  pdf.setTextColor(...accentRgb);
-  pdf.text(docTitle, pageWidth - margin, y + 5, { align: 'right' });
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docNumber, col2X, y + 12);
 
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(10);
-  pdf.setTextColor(24, 24, 27);
-  pdf.text(docNumber, pageWidth - margin, y + 11, { align: 'right' });
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let mY = y + 16.5;
+    if (inv) {
+      pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, col2X, mY);
+      mY += 3.8;
+      pdf.text(`Due: ${formatDate(inv.dueDate)}`, col2X, mY);
+      mY += 3.8;
+    } else if (quo) {
+      pdf.text(`Date: ${formatDate(quo.quotationDate)}`, col2X, mY);
+      mY += 3.8;
+      pdf.text(`Valid: ${formatDate(quo.validUntil)}`, col2X, mY);
+      mY += 3.8;
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, col2X, mY);
 
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(8.5);
-  pdf.setTextColor(82, 82, 91);
-  if (inv) {
-    pdf.text(`Invoice Date: ${formatDate(inv.invoiceDate)}`, pageWidth - margin, y + 16, { align: 'right' });
-    pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, pageWidth - margin, y + 20.5, { align: 'right' });
-    pdf.text(`Status: ${inv.status.replace('_', ' ').toUpperCase()}`, pageWidth - margin, y + 25, { align: 'right' });
-  } else if (quo) {
-    pdf.text(`Quotation Date: ${formatDate(quo.quotationDate)}`, pageWidth - margin, y + 16, { align: 'right' });
-    pdf.text(`Valid Until: ${formatDate(quo.validUntil)}`, pageWidth - margin, y + 20.5, { align: 'right' });
-    pdf.text(`Status: ${quo.status.toUpperCase()}`, pageWidth - margin, y + 25, { align: 'right' });
-  }
+    // Col 3: Customer Details
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('BILL TO / CONSIGNEE', col3X, y + 4);
 
-  y = Math.max(bizMetaY + 4, y + (logoInfo ? logoInfo.drawH + 4 : 0), y + 32);
-  pdf.setDrawColor(228, 228, 231);
-  pdf.line(margin, y, pageWidth - margin, y);
-  y += 6;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, col3X, y + 9);
 
-  // Bill To & Supply Metadata
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(8.5);
-  pdf.setTextColor(113, 113, 122);
-  pdf.text('BILL TO', margin, y);
-  pdf.text('SUPPLY DETAILS', pageWidth / 2 + 6, y);
-  y += 4.5;
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 13.5;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, col3W);
+      pdf.text(cLines, col3X, cY);
+      cY += cLines.length * 3.8;
+    }
+    const cContact = [cust.phone, cust.email].filter(Boolean).join('  |  ');
+    if (cContact) {
+      pdf.text(cContact, col3X, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, col3X, cY);
+      cY += 3.8;
+    }
 
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(10);
-  pdf.setTextColor(24, 24, 27);
-  pdf.text(cust.companyName || cust.name, margin, y);
+    y = Math.max(bY, mY, cY, y + 26) + 3;
+    pdf.setDrawColor(30, 36, 48);
+    pdf.setLineWidth(0.4);
+    pdf.line(margin, y, pageWidth - margin, y);
+    y += 5;
+  } else if (normId === 'double_divine') {
+    // Double Divine Dual-Tone Header
+    // Crimson strip top right
+    pdf.setFillColor(229, 57, 53);
+    pdf.rect(pageWidth / 2 - 10, 0, pageWidth / 2 + 10, 7.5, 'F');
+    const cLine = [biz.phone, biz.email].filter(Boolean).join('   |   ');
+    if (cLine) {
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text(cLine, pageWidth - margin, 5, { align: 'right' });
+    }
 
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(8.5);
-  pdf.setTextColor(63, 63, 70);
-  let custY = y + 4.5;
-  if (cust.companyName && cust.name) {
-    pdf.text(`Attn: ${cust.name}`, margin, custY);
-    custY += 4;
-  }
-  if (cust.billingAddress) {
-    const cAddr = pdf.splitTextToSize(cust.billingAddress, 85);
-    pdf.text(cAddr, margin, custY);
-    custY += cAddr.length * 4;
-  }
-  const cContact = [cust.phone, cust.email].filter(Boolean).join('  |  ');
-  if (cContact) {
-    pdf.text(cContact, margin, custY);
-    custY += 4;
-  }
-  if (cust.gstin) {
-    pdf.text(`GSTIN: ${cust.gstin}`, margin, custY);
-    custY += 4;
-  }
+    // Charcoal curved block top left
+    pdf.setFillColor(30, 36, 48);
+    pdf.roundedRect(0, 0, 80, 20, 0, 5, 'F');
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, margin, 2.5, logoInfo.drawW * 0.75, logoInfo.drawH * 0.75);
+      } catch {}
+    }
+    const dLeft = logoInfo ? margin + logoInfo.drawW * 0.75 + 3 : margin;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(11);
+    pdf.setTextColor(255, 255, 255);
+    pdf.text(biz.businessName || 'DRONA Business', dLeft, 11);
+    if (biz.gstin) {
+      pdf.setFontSize(7);
+      pdf.setTextColor(212, 212, 216);
+      pdf.text(`GSTIN: ${biz.gstin}`, dLeft, 16);
+    }
 
-  let supY = y;
-  pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state}`, pageWidth / 2 + 6, supY);
-  supY += 4.5;
-  if (record.isGst) {
-    pdf.text(
-      `Tax Regime: ${record.isInterState ? 'Inter-State (IGST)' : 'Intra-State (CGST + SGST)'} (${record.taxMode})`,
-      pageWidth / 2 + 6,
-      supY
-    );
-    supY += 4.5;
-  }
-  if (record.referenceNumber) {
-    pdf.text(`Reference / PO: ${record.referenceNumber}`, pageWidth / 2 + 6, supY);
-    supY += 4.5;
-  }
-  if (inv?.paymentTerms) {
-    pdf.text(`Terms: ${inv.paymentTerms}`, pageWidth / 2 + 6, supY);
-    supY += 4.5;
-  }
+    // Right side Tax Invoice title
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(15);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docTitle, pageWidth - margin, 15, { align: 'right' });
 
-  y = Math.max(custY, supY) + 5;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.text(docNumber, pageWidth - margin, 20.5, { align: 'right' });
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    const dDateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    pdf.text(dDateStr, pageWidth - margin, 25, { align: 'right' });
+
+    y = 28;
+
+    // Bill To in Red Accent
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(229, 57, 53);
+    pdf.text('BILL TO', margin, y);
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, margin, y + 4.5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 8.5;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 90);
+      pdf.text(cLines, margin, cY);
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, margin, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, margin, cY);
+      cY += 3.8;
+    }
+
+    let rY = y + 4.5;
+    if (biz.address) {
+      const bLines = pdf.splitTextToSize(biz.address, 75);
+      pdf.text(bLines, pageWidth - margin, rY, { align: 'right' });
+      rY += bLines.length * 3.8;
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, pageWidth - margin, rY, { align: 'right' });
+
+    y = Math.max(cY, rY) + 5;
+  } else if (normId === 'french_elite') {
+    // French Elite
+    // Purple title badge at top left
+    pdf.setFillColor(124, 120, 212);
+    pdf.roundedRect(margin, y, 40, 7, 1, 1, 'F');
+    pdf.setTextColor(255, 255, 255);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.text(docTitle, margin + 4, y + 5);
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', margin, y + 14);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let bY = y + 18.5;
+    const contactLine = [biz.phone, biz.email].filter(Boolean).join('  |  ');
+    if (contactLine) {
+      pdf.text(contactLine, margin, bY);
+      bY += 3.8;
+    }
+    if (biz.gstin) {
+      pdf.text(`GSTIN: ${biz.gstin}`, margin, bY);
+      bY += 3.8;
+    }
+
+    // Top Right Logo
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, pageWidth - margin - logoInfo.drawW, y, logoInfo.drawW, logoInfo.drawH);
+      } catch {}
+    }
+
+    y = Math.max(bY, y + (logoInfo ? logoInfo.drawH : 0)) + 3;
+    pdf.setDrawColor(228, 228, 231);
+    pdf.line(margin, y, pageWidth - margin, y);
+    y += 5;
+
+    // Metadata Left, Bill To Right
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(`Invoice No.: ${docNumber}`, margin, y);
+    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    pdf.text(dateStr, margin, y + 4.5);
+    if (inv?.dueDate) {
+      pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, margin, y + 9);
+    }
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('BILL TO', pageWidth - margin, y, { align: 'right' });
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, pageWidth - margin, y + 4.5, { align: 'right' });
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 9;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 85);
+      pdf.text(cLines, pageWidth - margin, cY, { align: 'right' });
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, pageWidth - margin, cY, { align: 'right' });
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, pageWidth - margin, cY, { align: 'right' });
+      cY += 3.8;
+    }
+
+    y = Math.max(y + 14, cY) + 4;
+  } else {
+    // Standard / GST Themes 1-6
+    // Top Centered Title
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(14);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docTitle, pageWidth / 2, y, { align: 'center' });
+    y += 4;
+
+    // Left Logo / Right Business
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, margin, y, logoInfo.drawW, logoInfo.drawH);
+      } catch {}
+    }
+
+    const tLeft = logoInfo ? margin + logoInfo.drawW + 4 : margin;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(12);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', tLeft, y + 5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let bY = y + 9.5;
+    if (biz.address) {
+      const aLines = pdf.splitTextToSize(biz.address, 90);
+      pdf.text(aLines, tLeft, bY);
+      bY += aLines.length * 3.8;
+    }
+    const cLine = [biz.phone, biz.email].filter(Boolean).join('  |  ');
+    if (cLine) {
+      pdf.text(cLine, tLeft, bY);
+      bY += 3.8;
+    }
+    if (biz.gstin) {
+      pdf.text(`GSTIN: ${biz.gstin}`, tLeft, bY);
+      bY += 3.8;
+    }
+
+    // Right details
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docNumber, pageWidth - margin, y + 5, { align: 'right' });
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let rY = y + 9.5;
+    if (inv) {
+      pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 3.8;
+      pdf.text(`Due: ${formatDate(inv.dueDate)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 3.8;
+    } else if (quo) {
+      pdf.text(`Date: ${formatDate(quo.quotationDate)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 3.8;
+      pdf.text(`Valid: ${formatDate(quo.validUntil)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 3.8;
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, pageWidth - margin, rY, { align: 'right' });
+
+    y = Math.max(bY, rY, y + (logoInfo ? logoInfo.drawH : 0)) + 3;
+
+    // Accent Band for Bill To
+    pdf.setFillColor(...accentRgb);
+    pdf.rect(margin, y, pageWidth - 2 * margin, 5.5, 'F');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(255, 255, 255);
+    pdf.text('BILL TO', margin + 3, y + 4);
+    pdf.text('DETAILS', pageWidth - margin - 3, y + 4, { align: 'right' });
+    y += 8;
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, margin, y);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 4;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 95);
+      pdf.text(cLines, margin, cY);
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, margin, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, margin, cY);
+      cY += 3.8;
+    }
+
+    y = Math.max(cY, y + 12) + 3;
+  }
 
   // Itemized Table
-  const isCompact = templateId === 'compact_commercial';
-  const head = record.isGst
-    ? [['#', 'Item & Description', 'HSN/SAC', 'Qty', 'Rate', 'Disc.', 'Taxable', 'GST', 'Total']]
-    : [['#', 'Item & Description', 'Qty', 'Rate', 'Disc.', 'Total']];
+  let head: string[][];
+  let body: string[][];
+  let columnStyles: Record<number, Record<string, unknown>>;
 
-  const body = record.items.map((item, idx) => {
-    const desc = item.description ? `${item.name}\n${item.description}` : item.name;
-    const discLabel =
-      item.discountAmount > 0 ? formatINRForPdf(item.discountAmount).replace('INR ', '') : '-';
-    if (record.isGst) {
+  if (isLandscape) {
+    head = record.isGst
+      ? [['#', 'Item & Description', 'HSN/SAC', 'Qty', 'Unit', 'Rate', 'Disc.', 'Taxable', 'GST', 'Total']]
+      : [['#', 'Item & Description', 'Qty', 'Unit', 'Rate', 'Disc.', 'Total']];
+
+    body = record.items.map((item, idx) => {
+      const desc = item.description ? `${item.name}\n${item.description}` : item.name;
+      const disc = item.discountAmount > 0 ? formatINRForPdf(item.discountAmount).replace('INR ', '') : '-';
+      if (record.isGst) {
+        return [
+          String(idx + 1),
+          desc,
+          item.hsnSac || '-',
+          String(item.quantity),
+          item.unit,
+          formatINRForPdf(item.rate).replace('INR ', ''),
+          disc,
+          formatINRForPdf(item.taxableAmount).replace('INR ', ''),
+          `${item.taxRate}%\n${formatINRForPdf(item.taxAmount).replace('INR ', '')}`,
+          formatINRForPdf(item.totalAmount).replace('INR ', ''),
+        ];
+      }
       return [
         String(idx + 1),
         desc,
-        item.hsnSac || '-',
-        `${item.quantity} ${item.unit}`,
+        String(item.quantity),
+        item.unit,
         formatINRForPdf(item.rate).replace('INR ', ''),
-        discLabel,
-        formatINRForPdf(item.taxableAmount).replace('INR ', ''),
-        `${item.taxRate}%\n${formatINRForPdf(item.taxAmount).replace('INR ', '')}`,
+        disc,
         formatINRForPdf(item.totalAmount).replace('INR ', ''),
       ];
-    }
-    return [
-      String(idx + 1),
-      desc,
-      `${item.quantity} ${item.unit}`,
-      formatINRForPdf(item.rate).replace('INR ', ''),
-      discLabel,
-      formatINRForPdf(item.totalAmount).replace('INR ', ''),
-    ];
-  });
+    });
 
-  autoTable(pdf, {
-    startY: y,
-    head,
-    body,
-    margin: { left: margin, right: margin },
-    theme: 'grid',
-    styles: {
-      fontSize: isCompact ? 7.5 : 8.2,
-      cellPadding: isCompact ? 1.8 : 2.6,
-      textColor: [24, 24, 27],
-      lineColor: [228, 228, 231],
-      lineWidth: 0.2,
-    },
-    headStyles: {
-      fillColor: accentRgb,
-      textColor: [255, 255, 255],
-      fontStyle: 'bold',
-    },
-    columnStyles: record.isGst
+    columnStyles = record.isGst
+      ? {
+          0: { halign: 'center', cellWidth: 8 },
+          1: { cellWidth: 'auto' },
+          2: { halign: 'center', cellWidth: 18 },
+          3: { halign: 'right', cellWidth: 14 },
+          4: { halign: 'center', cellWidth: 14 },
+          5: { halign: 'right', cellWidth: 20 },
+          6: { halign: 'right', cellWidth: 18 },
+          7: { halign: 'right', cellWidth: 22 },
+          8: { halign: 'right', cellWidth: 26 },
+          9: { halign: 'right', cellWidth: 28, fontStyle: 'bold' },
+        }
+      : {
+          0: { halign: 'center', cellWidth: 8 },
+          1: { cellWidth: 'auto' },
+          2: { halign: 'right', cellWidth: 20 },
+          3: { halign: 'center', cellWidth: 18 },
+          4: { halign: 'right', cellWidth: 28 },
+          5: { halign: 'right', cellWidth: 22 },
+          6: { halign: 'right', cellWidth: 32, fontStyle: 'bold' },
+        };
+  } else {
+    // Portrait Table
+    head = record.isGst
+      ? [['#', 'Item & Description', 'HSN/SAC', 'Qty', 'Rate', 'Disc.', 'Taxable', 'GST', 'Total']]
+      : [['#', 'Item & Description', 'Qty', 'Rate', 'Disc.', 'Total']];
+
+    body = record.items.map((item, idx) => {
+      const desc = item.description ? `${item.name}\n${item.description}` : item.name;
+      const disc = item.discountAmount > 0 ? formatINRForPdf(item.discountAmount).replace('INR ', '') : '-';
+      if (record.isGst) {
+        return [
+          String(idx + 1),
+          desc,
+          item.hsnSac || '-',
+          `${item.quantity} ${item.unit}`,
+          formatINRForPdf(item.rate).replace('INR ', ''),
+          disc,
+          formatINRForPdf(item.taxableAmount).replace('INR ', ''),
+          `${item.taxRate}%\n${formatINRForPdf(item.taxAmount).replace('INR ', '')}`,
+          formatINRForPdf(item.totalAmount).replace('INR ', ''),
+        ];
+      }
+      return [
+        String(idx + 1),
+        desc,
+        `${item.quantity} ${item.unit}`,
+        formatINRForPdf(item.rate).replace('INR ', ''),
+        disc,
+        formatINRForPdf(item.totalAmount).replace('INR ', ''),
+      ];
+    });
+
+    columnStyles = record.isGst
       ? {
           0: { halign: 'center', cellWidth: 8 },
           2: { halign: 'center', cellWidth: 18 },
@@ -292,161 +595,286 @@ export async function generateDocumentPdf(
           3: { halign: 'right', cellWidth: 26 },
           4: { halign: 'right', cellWidth: 22 },
           5: { halign: 'right', cellWidth: 28, fontStyle: 'bold' },
-        },
+        };
+  }
+
+  autoTable(pdf, {
+    startY: y,
+    head,
+    body,
+    margin: { left: margin, right: margin },
+    theme: 'grid',
+    showHead: 'everyPage',
+    styles: {
+      fontSize: isLandscape ? 7.8 : normId === 'gst_theme_6' ? 7.5 : 8.2,
+      cellPadding: isLandscape ? 2 : normId === 'gst_theme_6' ? 1.8 : 2.5,
+      textColor: [24, 24, 27],
+      lineColor: normId === 'double_divine' ? [254, 205, 211] : [228, 228, 231],
+      lineWidth: 0.2,
+    },
+    headStyles: {
+      fillColor: accentRgb,
+      textColor: [255, 255, 255],
+      fontStyle: 'bold',
+    },
+    columnStyles,
   });
 
   const tableEndY = (pdf as unknown as { lastAutoTable?: { finalY: number } }).lastAutoTable?.finalY ?? y + 30;
-  let bottomY = tableEndY + 7;
+  let bottomY = tableEndY + 6;
 
-  if (bottomY > 235) {
+  const thresholdY = isLandscape ? 150 : 232;
+  if (bottomY > thresholdY) {
     pdf.addPage();
-    bottomY = 18;
+    bottomY = 16;
   }
 
-  // Left: Amount in words + Bank / UPI QR
-  const leftWidth = 102;
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(8);
-  pdf.setTextColor(113, 113, 122);
-  pdf.text('AMOUNT IN WORDS', margin, bottomY);
-
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(8.5);
-  pdf.setTextColor(24, 24, 27);
-  const wordsLines = pdf.splitTextToSize(record.amountInWords, leftWidth);
-  pdf.text(wordsLines, margin, bottomY + 4.5);
-
-  let bankY = bottomY + 4.5 + wordsLines.length * 4 + 4;
-  if (biz.bankName || biz.upiId) {
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(8);
-    pdf.setTextColor(113, 113, 122);
-    pdf.text('PAYMENT DETAILS', margin, bankY);
-    bankY += 4;
-    pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
-    pdf.setTextColor(63, 63, 70);
-    if (biz.bankName) {
-      pdf.text(`Bank: ${biz.bankName}`, margin, bankY);
-      bankY += 3.8;
-    }
-    if (biz.accountNumber) {
-      pdf.text(`A/C: ${biz.accountNumber}  |  IFSC: ${biz.ifsc}`, margin, bankY);
-      bankY += 3.8;
-    }
-    if (biz.upiId) {
-      pdf.text(`UPI ID: ${biz.upiId}`, margin, bankY);
-      bankY += 4;
-    }
-  }
-
-  const qrAmount = inv
-    ? inv.balanceDue > 0
-      ? inv.balanceDue
-      : inv.grandTotal
-    : record.grandTotal;
+  const qrAmount = inv ? (inv.balanceDue > 0 ? inv.balanceDue : inv.grandTotal) : record.grandTotal;
   const cleanUpiId = (biz.upiId || '').trim();
   const qrData = cleanUpiId
     ? await generateUpiQrDataUrl(cleanUpiId, biz.businessName, qrAmount, docNumber)
     : biz.upiQrDataUrl || null;
 
-  if (qrData && qrData.startsWith('data:image/')) {
-    try {
-      pdf.addImage(qrData, 'PNG', margin, bankY + 1, 22, 22);
-      pdf.setFontSize(7);
-      pdf.setTextColor(113, 113, 122);
-      const qrCaption =
-        qrAmount > 0 ? `Scan to Pay (${formatINRForPdf(qrAmount)})` : 'Scan to Pay (UPI)';
-      pdf.text(qrCaption, margin, bankY + 26);
-    } catch {
-      // ignore QR draw failure
-    }
-  }
+  if (isLandscape) {
+    // 3-Column Landscape Bottom Section
+    const col1W = 85;
+    const col2X = margin + col1W + 6;
+    const col2W = 85;
+    const col3X = col2X + col2W + 6;
 
-  // Right: Totals Summary
-  const sumX = pageWidth - margin - 72;
-  const valX = pageWidth - margin;
-  let sy = bottomY;
-  const drawSumRow = (label: string, val: string, bold = false) => {
-    pdf.setFont('helvetica', bold ? 'bold' : 'normal');
-    pdf.setFontSize(bold ? 9.5 : 8.5);
-    pdf.setTextColor(bold ? 24 : 82, bold ? 24 : 82, bold ? 27 : 91);
-    pdf.text(label, sumX, sy);
-    pdf.text(val, valX, sy, { align: 'right' });
-    sy += bold ? 5.5 : 4.5;
-  };
-
-  drawSumRow('Subtotal', formatINRForPdf(record.subtotal));
-  if (record.totalDiscount > 0) {
-    drawSumRow('Discount', `-${formatINRForPdf(record.totalDiscount)}`);
-  }
-  drawSumRow('Taxable Value', formatINRForPdf(record.taxableAmount));
-  if (record.isGst) {
-    if (record.isInterState) {
-      drawSumRow('IGST', formatINRForPdf(record.igstTotal));
-    } else {
-      drawSumRow('CGST', formatINRForPdf(record.cgstTotal));
-      drawSumRow('SGST', formatINRForPdf(record.sgstTotal));
-    }
-  }
-  if (record.roundOff !== 0) {
-    drawSumRow('Round Off', formatINRForPdf(record.roundOff));
-  }
-  pdf.setDrawColor(212, 212, 216);
-  pdf.line(sumX, sy - 2, valX, sy - 2);
-  sy += 2;
-  drawSumRow('Grand Total', formatINRForPdf(record.grandTotal), true);
-
-  if (inv && inv.amountPaid > 0) {
-    drawSumRow('Amount Paid', formatINRForPdf(inv.amountPaid));
-    if (inv.amountPaid > inv.grandTotal) {
-      drawSumRow('Excess / Advance', formatINRForPdf(inv.amountPaid - inv.grandTotal));
-    }
-    drawSumRow('Balance Due', formatINRForPdf(inv.balanceDue), true);
-  }
-
-  // Terms & Signatory at bottom
-  const footerY = Math.max(bankY + 30, sy + 10, 248);
-  if (record.terms) {
+    // Col 1: Payment Details & QR
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(8);
     pdf.setTextColor(113, 113, 122);
-    pdf.text('TERMS & CONDITIONS', margin, footerY);
+    pdf.text('PAYMENT DETAILS', margin, bottomY);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(63, 63, 70);
+    let pY = bottomY + 4;
+    if (biz.bankName) {
+      pdf.text(`Bank: ${biz.bankName}`, margin, pY);
+      pY += 3.8;
+    }
+    if (biz.accountNumber) {
+      pdf.text(`A/C: ${biz.accountNumber}  |  IFSC: ${biz.ifsc}`, margin, pY);
+      pY += 3.8;
+    }
+    if (biz.upiId) {
+      pdf.text(`UPI ID: ${biz.upiId}`, margin, pY);
+      pY += 4;
+    }
+
+    if (qrData && qrData.startsWith('data:image/')) {
+      try {
+        pdf.addImage(qrData, 'PNG', margin, pY + 1, 18, 18);
+        pdf.setFontSize(6.5);
+        pdf.setTextColor(113, 113, 122);
+        pdf.text('Scan to Pay (UPI)', margin, pY + 21);
+      } catch {}
+    }
+
+    // Col 2: Amount in Words & Terms
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('AMOUNT IN WORDS', col2X, bottomY);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(24, 24, 27);
+    const words = pdf.splitTextToSize(record.amountInWords, col2W);
+    pdf.text(words, col2X, bottomY + 4);
+
+    if (record.terms) {
+      let tY = bottomY + 4 + words.length * 3.8 + 4;
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      pdf.setTextColor(113, 113, 122);
+      pdf.text('TERMS & CONDITIONS', col2X, tY);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(82, 82, 91);
+      pdf.text(pdf.splitTextToSize(record.terms, col2W), col2X, tY + 4);
+    }
+
+    // Col 3: Totals & Signature
+    const valX = pageWidth - margin;
+    let sy = bottomY;
+    const drawSum = (label: string, val: string, bold = false) => {
+      pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+      pdf.setFontSize(bold ? 9 : 8);
+      pdf.setTextColor(bold ? 24 : 82, bold ? 24 : 82, bold ? 27 : 91);
+      pdf.text(label, col3X, sy);
+      pdf.text(val, valX, sy, { align: 'right' });
+      sy += bold ? 4.8 : 4;
+    };
+
+    drawSum('Taxable Value', formatINRForPdf(record.taxableAmount));
+    if (record.isGst) {
+      if (record.isInterState) {
+        drawSum('IGST', formatINRForPdf(record.igstTotal));
+      } else {
+        drawSum('CGST', formatINRForPdf(record.cgstTotal));
+        drawSum('SGST', formatINRForPdf(record.sgstTotal));
+      }
+    }
+    pdf.setDrawColor(212, 212, 216);
+    pdf.line(col3X, sy - 1.5, valX, sy - 1.5);
+    sy += 1.5;
+    drawSum('Grand Total', formatINRForPdf(record.grandTotal), true);
+
+    if (inv && inv.amountPaid > 0) {
+      drawSum('Received', formatINRForPdf(inv.amountPaid));
+      drawSum('Balance Due', formatINRForPdf(inv.balanceDue), true);
+    }
+
+    // Signature
+    const sigInfo = biz.signatureDataUrl ? await loadLogoForPdf(biz.signatureDataUrl, 35, 10) : null;
+    if (sigInfo) {
+      try {
+        const fmt = sigInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(sigInfo.pngDataUrl, fmt, valX - sigInfo.drawW, sy + 2, sigInfo.drawW, sigInfo.drawH);
+      } catch {}
+    }
+    pdf.setDrawColor(161, 161, 170);
+    pdf.line(valX - 45, sy + 14, valX, sy + 14);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.signatureLabel || 'Authorized Signatory', valX, sy + 17.5, { align: 'right' });
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7);
+    pdf.setTextColor(140, 140, 150);
+    pdf.text('Generated by DronaInvoice', pageWidth / 2, pageHeight - 6, { align: 'center' });
+  } else {
+    // Portrait Bottom Section
+    const leftWidth = 100;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('AMOUNT IN WORDS', margin, bottomY);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(24, 24, 27);
+    const wordsLines = pdf.splitTextToSize(record.amountInWords, leftWidth);
+    pdf.text(wordsLines, margin, bottomY + 4.5);
+
+    let bankY = bottomY + 4.5 + wordsLines.length * 4 + 4;
+    if (biz.bankName || biz.upiId) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      pdf.setTextColor(113, 113, 122);
+      pdf.text('PAYMENT DETAILS', margin, bankY);
+      bankY += 4;
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(8);
+      pdf.setTextColor(63, 63, 70);
+      if (biz.bankName) {
+        pdf.text(`Bank: ${biz.bankName}`, margin, bankY);
+        bankY += 3.8;
+      }
+      if (biz.accountNumber) {
+        pdf.text(`A/C: ${biz.accountNumber}  |  IFSC: ${biz.ifsc}`, margin, bankY);
+        bankY += 3.8;
+      }
+      if (biz.upiId) {
+        pdf.text(`UPI ID: ${biz.upiId}`, margin, bankY);
+        bankY += 4;
+      }
+    }
+
+    if (qrData && qrData.startsWith('data:image/')) {
+      try {
+        pdf.addImage(qrData, 'PNG', margin, bankY + 1, 20, 20);
+        pdf.setFontSize(7);
+        pdf.setTextColor(113, 113, 122);
+        pdf.text('Scan to Pay (UPI)', margin, bankY + 23.5);
+      } catch {}
+    }
+
+    // Right: Totals Summary
+    const sumX = pageWidth - margin - 72;
+    const valX = pageWidth - margin;
+    let sy = bottomY;
+    const drawSumRow = (label: string, val: string, bold = false) => {
+      pdf.setFont('helvetica', bold ? 'bold' : 'normal');
+      pdf.setFontSize(bold ? 9.5 : 8.5);
+      pdf.setTextColor(bold ? 24 : 82, bold ? 24 : 82, bold ? 27 : 91);
+      pdf.text(label, sumX, sy);
+      pdf.text(val, valX, sy, { align: 'right' });
+      sy += bold ? 5.5 : 4.5;
+    };
+
+    drawSumRow('Subtotal', formatINRForPdf(record.subtotal));
+    if (record.totalDiscount > 0) {
+      drawSumRow('Discount', `-${formatINRForPdf(record.totalDiscount)}`);
+    }
+    drawSumRow('Taxable Value', formatINRForPdf(record.taxableAmount));
+    if (record.isGst) {
+      if (record.isInterState) {
+        drawSumRow('IGST', formatINRForPdf(record.igstTotal));
+      } else {
+        drawSumRow('CGST', formatINRForPdf(record.cgstTotal));
+        drawSumRow('SGST', formatINRForPdf(record.sgstTotal));
+      }
+    }
+    if (record.roundOff !== 0) {
+      drawSumRow('Round Off', formatINRForPdf(record.roundOff));
+    }
+    pdf.setDrawColor(212, 212, 216);
+    pdf.line(sumX, sy - 2, valX, sy - 2);
+    sy += 2;
+    drawSumRow('Grand Total', formatINRForPdf(record.grandTotal), true);
+
+    if (inv && inv.amountPaid > 0) {
+      drawSumRow('Amount Paid', formatINRForPdf(inv.amountPaid));
+      drawSumRow('Balance Due', formatINRForPdf(inv.balanceDue), true);
+    }
+
+    // Terms & Signatory at bottom
+    const footerY = Math.max(bankY + 26, sy + 8, 250);
+    if (record.terms) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      pdf.setTextColor(113, 113, 122);
+      pdf.text('TERMS & CONDITIONS', margin, footerY);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(82, 82, 91);
+      pdf.text(pdf.splitTextToSize(record.terms, 110), margin, footerY + 4);
+    }
+
+    const sigInfo = biz.signatureDataUrl ? await loadLogoForPdf(biz.signatureDataUrl, 40, 12) : null;
+    if (sigInfo) {
+      try {
+        const fmt = sigInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        const sigX = pageWidth - margin - sigInfo.drawW;
+        const sigY = footerY + 12 - sigInfo.drawH;
+        pdf.addImage(sigInfo.pngDataUrl, fmt, sigX, sigY, sigInfo.drawW, sigInfo.drawH);
+      } catch {}
+    }
+
+    pdf.setDrawColor(161, 161, 170);
+    pdf.line(pageWidth - margin - 52, footerY + 13, pageWidth - margin, footerY + 13);
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.signatureLabel || 'Authorized Signatory', pageWidth - margin, footerY + 17.5, {
+      align: 'right',
+    });
+
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(7.5);
-    pdf.setTextColor(82, 82, 91);
-    pdf.text(pdf.splitTextToSize(record.terms, 110), margin, footerY + 4);
+    pdf.setTextColor(140, 140, 150);
+    pdf.text('Generated by DronaInvoice', pageWidth / 2, 289, { align: 'center' });
   }
 
-  const sigInfo = biz.signatureDataUrl
-    ? await loadLogoForPdf(biz.signatureDataUrl, 40, 12)
-    : null;
-  if (sigInfo) {
-    try {
-      const fmt = sigInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
-      const sigX = pageWidth - margin - sigInfo.drawW;
-      const sigY = footerY + 13 - sigInfo.drawH;
-      pdf.addImage(sigInfo.pngDataUrl, fmt, sigX, sigY, sigInfo.drawW, sigInfo.drawH);
-    } catch {
-      // ignore invalid signature image
-    }
+  if (typeof window !== 'undefined') {
+    pdf.save(`${docNumber}.pdf`);
   }
-
-  pdf.setDrawColor(161, 161, 170);
-  pdf.line(pageWidth - margin - 52, footerY + 14, pageWidth - margin, footerY + 14);
-  pdf.setFont('helvetica', 'bold');
-  pdf.setFontSize(8);
-  pdf.setTextColor(24, 24, 27);
-  pdf.text(biz.signatureLabel || 'Authorized Signatory', pageWidth - margin, footerY + 18.5, {
-    align: 'right',
-  });
-
-  pdf.setFont('helvetica', 'normal');
-  pdf.setFontSize(7.5);
-  pdf.setTextColor(140, 140, 150);
-  pdf.text('Generated by DronaInvoice', pageWidth / 2, 289, { align: 'center' });
-
-  pdf.save(`${docNumber}.pdf`);
 }
 
 export function generatePaymentReceiptPdf(
