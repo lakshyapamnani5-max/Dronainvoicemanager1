@@ -29,6 +29,7 @@ import { PurchaseDetailsPage } from './pages/customer/PurchaseDetailsPage';
 import { PurchaseEditorPage } from './pages/customer/PurchaseEditorPage';
 import { PurchaseScannerPage } from './pages/customer/PurchaseScannerPage';
 import { PurchasesDashboardPage } from './pages/customer/PurchasesDashboardPage';
+import { QuickSalePage } from './pages/customer/QuickSalePage';
 import { QuotationDetailsPage, QuotationsListPage } from './pages/customer/QuotationsPages';
 import { RateCardPage } from './pages/customer/RateCardPage';
 import { OutstandingReportPage, SalesReportsPage } from './pages/customer/ReportsPages';
@@ -268,6 +269,10 @@ function AppRouter() {
 
   // ==================== CUSTOMER WORKSPACE ROUTES ====================
   const bizName = session.effectiveUser.businessName || 'Workspace';
+
+  if (path === '/sale/new') {
+    return <QuickSalePage navigate={navigate} />;
+  }
 
   if (path === '/dashboard') {
     return (

@@ -235,28 +235,30 @@ export function AppShell({
       itemPath !== '/dashboard' &&
       currentPath.startsWith(itemPath + '/'));
 
-  const mobileBottomPrimary = isAdminView
+  const mobileBottomLeft = isAdminView
     ? [
         { label: 'Home', path: '/admin', icon: Home },
         { label: 'Businesses', path: '/admin/users', icon: Users },
-        { label: 'Invoices', path: '/admin/invoices', icon: Receipt },
-        { label: 'Activity', path: '/admin/activity', icon: Activity },
       ]
     : [
         { label: 'Home', path: '/dashboard', icon: Home },
         { label: 'Invoices', path: '/invoices', icon: Receipt },
-        { label: 'Quotes', path: '/quotations', icon: FileCheck2 },
-        { label: 'Customers', path: '/customers', icon: Users },
       ];
+
+  const mobileBottomRight = isAdminView
+    ? [{ label: 'Invoices', path: '/admin/invoices', icon: Receipt }]
+    : [{ label: 'Quotes', path: '/quotations', icon: FileCheck2 }];
 
   const isMoreActive = isAdminView
     ? [
         '/admin/analytics',
         '/admin/quotations',
+        '/admin/activity',
         '/admin/impersonation',
         '/admin/settings',
       ].some((p) => currentPath === p || currentPath.startsWith(p + '/'))
     : [
+        '/customers',
         '/purchases',
         '/gst-customer',
         '/rate-card',
@@ -273,10 +275,12 @@ export function AppShell({
     ? [
         { label: 'Platform Analytics', path: '/admin/analytics', icon: BarChart3 },
         { label: 'Platform Quotations', path: '/admin/quotations', icon: FileCheck2 },
+        { label: 'Activity Logs', path: '/admin/activity', icon: Activity },
         { label: 'Impersonation History', path: '/admin/impersonation', icon: History },
         { label: 'Platform Settings', path: '/admin/settings', icon: Settings },
       ]
     : [
+        { label: 'Customers', path: '/customers', icon: Users },
         { label: 'Purchases', path: '/purchases', icon: ShoppingCart },
         { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
         { label: 'Rate Card', path: '/rate-card', icon: Package },
@@ -561,14 +565,56 @@ export function AppShell({
         </main>
       </div>
 
-      {/* Instagram-Style Fixed Bottom Navigation Bar (Mobile & Tablet < lg only) */}
+      {/* Fixed Bottom Navigation Bar with Center Plus Button (Mobile & Tablet < lg only) */}
       {!inputFocused ? (
         <nav
           aria-label="Mobile navigation"
           className="no-print lg:hidden fixed bottom-0 left-0 right-0 z-40 border-t border-zinc-200/90 bg-white/95 backdrop-blur-md dark:border-zinc-800 dark:bg-zinc-950/95 pb-[env(safe-area-inset-bottom)]"
         >
           <div className="grid grid-cols-5 h-16 items-center max-w-lg mx-auto">
-            {mobileBottomPrimary.map((item) => {
+            {mobileBottomLeft.map((item) => {
+              const Icon = item.icon;
+              const active = isNavItemActive(item.path);
+              return (
+                <button
+                  key={item.path}
+                  type="button"
+                  onClick={() => {
+                    setMoreSheetOpen(false);
+                    navigate(item.path);
+                  }}
+                  className={`flex flex-col items-center justify-center h-full min-h-[44px] gap-0.5 transition-colors cursor-pointer ${
+                    active
+                      ? 'text-[#F57C00]'
+                      : 'text-zinc-500 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
+                  }`}
+                >
+                  <div className="relative flex items-center justify-center">
+                    <Icon className={`h-5 w-5 ${active ? 'stroke-[2.4]' : 'stroke-[1.9]'}`} />
+                  </div>
+                  <span className={`text-[10px] tracking-tight ${active ? 'font-semibold' : 'font-medium'}`}>
+                    {item.label}
+                  </span>
+                </button>
+              );
+            })}
+
+            {/* Center Plus Button */}
+            <div className="flex items-center justify-center h-full">
+              <button
+                type="button"
+                onClick={() => {
+                  setMoreSheetOpen(false);
+                  navigate(isAdminView ? '/admin/users/new' : '/sale/new');
+                }}
+                aria-label={isAdminView ? 'Create customer account' : 'New Sale'}
+                className="flex h-11 w-11 items-center justify-center rounded-full bg-[#F57C00] text-white shadow-md shadow-[#F57C00]/25 hover:bg-[#E65100] active:scale-95 transition-transform cursor-pointer"
+              >
+                <Plus className="h-6 w-6 stroke-[2.5]" />
+              </button>
+            </div>
+
+            {mobileBottomRight.map((item) => {
               const Icon = item.icon;
               const active = isNavItemActive(item.path);
               return (
