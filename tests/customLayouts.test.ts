@@ -184,6 +184,66 @@ console.log('\nTest 5: GST Engine Isolation with Custom Columns');
   console.log('  ✓ customFields preserved on computed line items');
 }
 
+// 6. Mixed Bill: Standard Item + Furniture Preset Item in Same Invoice
+console.log('\nTest 6: Mixed Bill (Standard Item + Furniture Preset Item)');
+{
+  const furnitureItem: LineItemInput = {
+    name: 'Commercial Plywood',
+    description: '12mm thickness',
+    hsnSac: '4412',
+    quantity: 24,
+    unit: 'Nos',
+    rate: 624, // 24 * 624 = 14,976 (from formula: 384 sq ft * 39 rate)
+    discountType: 'percent',
+    discountValue: 0,
+    taxRate: 18,
+    customFields: {
+      _itemType: 'furniture',
+      qty: 24,
+      particulars: 'Commercial Plywood',
+      hsn_acs: '4412',
+      total_sq_ft: 384,
+      thickness: '12mm',
+      rate_sq_ft: 39,
+      amount: 14976,
+    },
+  };
+
+  const standardItem: LineItemInput = {
+    name: 'Labor & Fitting Charges',
+    description: 'On-site installation and delivery',
+    hsnSac: '9954',
+    quantity: 1,
+    unit: 'Job',
+    rate: 1500,
+    discountType: 'percent',
+    discountValue: 0,
+    taxRate: 18,
+    customFields: {
+      _itemType: 'standard',
+    },
+  };
+
+  const mixedTotals = computeDocumentTotals({
+    items: [furnitureItem, standardItem],
+    businessState: 'Maharashtra',
+    placeOfSupply: 'Maharashtra',
+    isGst: true,
+    taxMode: 'exclusive',
+    taxSupplyMode: 'intra',
+    roundOffEnabled: true,
+  });
+
+  assert(mixedTotals.taxableAmount === 16476, `Expected taxable 16476, got ${mixedTotals.taxableAmount}`);
+  assert(mixedTotals.cgstTotal === 1482.84, `Expected CGST 1482.84, got ${mixedTotals.cgstTotal}`);
+  assert(mixedTotals.sgstTotal === 1482.84, `Expected SGST 1482.84, got ${mixedTotals.sgstTotal}`);
+  assert(mixedTotals.grandTotal === 19442, `Expected grand total 19442, got ${mixedTotals.grandTotal}`);
+  console.log('  ✓ Mixed bill (Furniture + Standard) calculated accurately:');
+  console.log('    Taxable: ₹16,476 (₹14,976 + ₹1,500)');
+  console.log('    CGST/SGST: ₹1,482.84 each');
+  console.log('    Grand Total: ₹19,442.00 (rounded)');
+}
+
 console.log('\n========================================');
 console.log('ALL CUSTOM LAYOUT & FORMULA TESTS PASSED!');
 console.log('========================================');
