@@ -138,7 +138,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
     return allInvoices.filter((inv) => {
       if (status && status !== 'all') {
         if (status === 'advance' || status === 'advances' || status === 'advance_paid') {
-          if (!(inv.amountPaid > 0)) return false;
+          if (!(inv.status === 'partially_paid' || (inv.amountPaid > 0 && inv.balanceDue > 0))) return false;
         } else if (inv.status !== status) {
           return false;
         }
@@ -239,7 +239,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
             className="w-full sm:w-44"
           >
             <option value="all">All Statuses</option>
-            <option value="advance">Advances (Advance Paid)</option>
+            <option value="advance">Advance Paid (Partially Paid)</option>
             <option value="draft">Draft</option>
             <option value="unpaid">Unpaid</option>
             <option value="partially_paid">Partially Paid</option>

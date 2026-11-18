@@ -283,7 +283,7 @@ export function PurchasesDashboardPage({
     return snapshot.purchases.filter((p) => {
       if (billStatus !== 'all') {
         if (billStatus === 'advance' || billStatus === 'advances' || billStatus === 'advance_paid') {
-          if (!(p.amountPaid > 0)) return false;
+          if (!(p.status === 'partially_paid' || (p.amountPaid > 0 && p.balanceDue > 0))) return false;
         } else if (p.status !== billStatus) {
           return false;
         }
@@ -982,7 +982,7 @@ export function PurchasesDashboardPage({
                 className="w-full sm:w-44"
               >
                 <option value="all">All Statuses</option>
-                <option value="advance">Advances Paid</option>
+                <option value="advance">Advance Paid (Partially Paid)</option>
                 <option value="draft">Draft</option>
                 <option value="unpaid">Unpaid</option>
                 <option value="partially_paid">Partially Paid</option>

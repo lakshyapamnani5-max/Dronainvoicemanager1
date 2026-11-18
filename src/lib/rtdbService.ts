@@ -3806,7 +3806,7 @@ export const rtdbService = {
 
     if (params?.status && params.status !== 'all') {
       if (params.status === 'advance' || params.status === 'advances' || params.status === 'advance_paid') {
-        list = list.filter((i) => i.amountPaid > 0);
+        list = list.filter((i) => i.status === 'partially_paid' || (i.amountPaid > 0 && i.balanceDue > 0));
       } else {
         list = list.filter((i) => i.status === params.status);
       }
