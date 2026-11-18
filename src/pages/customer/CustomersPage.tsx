@@ -70,7 +70,10 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
       setAllCustomers(initialCustomers);
       setLoading(false);
     }
-    void load(Boolean(initialCustomers));
+    // Load locally first; only query Firebase if local cache is missing
+    if (!initialCustomers) {
+      void load(false);
+    }
   }, [initialCustomers, load]);
 
   React.useEffect(() => {
@@ -625,7 +628,10 @@ export function CustomerDetailsPage({
       setData(initialDetail);
       setLoading(false);
     }
-    loadDetails(Boolean(initialDetail));
+    // Load locally first; only query Firebase if customer is not in local cache
+    if (!initialDetail) {
+      loadDetails(false);
+    }
   }, [initialDetail, loadDetails]);
 
   React.useEffect(() => {
@@ -637,10 +643,15 @@ export function CustomerDetailsPage({
         changed.has('quotations') ||
         changed.has('payments')
       ) {
-        loadDetails(true);
+        const next = cachedRead.enrichCustomerDetailFromCache(tenantUid, customerId);
+        if (next) {
+          setData(next);
+        } else {
+          loadDetails(true);
+        }
       }
     });
-  }, [tenantUid, loadDetails]);
+  }, [tenantUid, customerId, loadDetails]);
 
   if (loading) {
     return <div className="p-8 text-sm text-zinc-500">Loading customer ledger...</div>;

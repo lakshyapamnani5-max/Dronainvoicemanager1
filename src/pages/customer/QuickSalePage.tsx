@@ -142,10 +142,25 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
 
   React.useEffect(() => {
     let active = true;
+    if (!tenantUid) return;
+
+    const hasCust = cachedRead.hasTenantCollectionData(tenantUid, 'customers');
+    const hasRc = cachedRead.hasTenantCollectionData(tenantUid, 'rateCard');
+    const hasInv = cachedRead.hasTenantCollectionData(tenantUid, 'invoices');
+
+    // Load locally first; only query Firebase when collection is not in local cache
+    if (hasCust && hasRc && hasInv) {
+      const entry = cachedRead.getTenantEntry(tenantUid);
+      setCustomers(entry.customers.filter((c) => !c.archived));
+      setRateCard(entry.rateCard.filter((r) => r.isActive !== false));
+      setExistingInvoiceCount(entry.invoices.length);
+      return;
+    }
+
     Promise.allSettled([
-      customersApi.list(),
-      rateCardApi.list({ activeOnly: true }),
-      invoicesApi.list(),
+      hasCust ? Promise.resolve({ customers: cachedRead.getTenantEntry(tenantUid).customers }) : customersApi.list(),
+      hasRc ? Promise.resolve({ items: cachedRead.getTenantEntry(tenantUid).rateCard }) : rateCardApi.list({ activeOnly: true }),
+      hasInv ? Promise.resolve({ invoices: cachedRead.getTenantEntry(tenantUid).invoices }) : invoicesApi.list(),
     ]).then(([custRes, rcRes, invRes]) => {
       if (!active) return;
       if (custRes.status === 'fulfilled') {
@@ -161,7 +176,7 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
     return () => {
       active = false;
     };
-  }, []);
+  }, [tenantUid]);
 
   // Sale screen state
   const [saleMode, setSaleMode] = React.useState<'credit' | 'cash'>('credit');

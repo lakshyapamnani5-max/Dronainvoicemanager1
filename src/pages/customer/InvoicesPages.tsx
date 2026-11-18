@@ -116,7 +116,10 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
       setCustomers(initialHydrated.customers);
       setLoading(!initialHydrated.complete);
     }
-    void load(Boolean(initialHydrated?.complete));
+    // Load locally first; only query Firebase if local cache is incomplete or missing
+    if (!initialHydrated?.complete) {
+      void load(false);
+    }
   }, [initialHydrated, load]);
 
   React.useEffect(() => {
@@ -295,9 +298,9 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
             </div>
           ) : (
             <>
-              {/* Mobile Invoice Cards */}
+              {/* Mobile Invoice Cards - continuous scroll, no pagination breaks */}
               <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
-                {paginated.map((inv) => (
+                {invoices.map((inv) => (
                   <div key={inv.id} className="p-4 space-y-2.5">
                     <div className="flex items-start justify-between gap-2">
                       <div className="min-w-0">
@@ -498,7 +501,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               </div>
 
               {totalPages > 1 ? (
-                <div className="flex items-center justify-between border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800">
+                <div className="hidden md:flex items-center justify-between border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800">
                   <span>
                     Page {page} of {totalPages} ({invoices.length} invoices)
                   </span>
@@ -752,17 +755,29 @@ export function InvoiceDetailsPage({
       setInvoice(initialDetail);
       setLoading(false);
     }
-    void load(Boolean(initialDetail));
+    // Load locally first; only query Firebase if invoice is not in local cache
+    if (!initialDetail) {
+      void load(false);
+    }
   }, [initialDetail, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
     return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
       if (changed.has('invoices') || changed.has('payments') || changed.has('activityLogs')) {
-        void load(true);
+        const entry = cachedRead.getTenantEntry(tenantUid);
+        const found = entry.invoices.find((i) => i.id === invoiceId);
+        if (found) {
+          const pays = entry.payments
+            .filter((p) => p.invoiceId === invoiceId)
+            .sort((a, b) => b.paymentDate.localeCompare(a.paymentDate));
+          setInvoice({ ...found, payments: pays });
+        } else {
+          void load(true);
+        }
       }
     });
-  }, [tenantUid, load]);
+  }, [tenantUid, invoiceId, load]);
 
   if (loading) return <div className="p-8 text-sm text-zinc-500">Loading invoice...</div>;
   if (!invoice) {

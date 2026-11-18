@@ -206,7 +206,10 @@ export function PurchasesDashboardPage({
       });
       setLoading(!initialSnap.complete);
     }
-    void loadAll(Boolean(initialSnap?.complete));
+    // Load locally first; only query Firebase if local cache is incomplete or missing
+    if (!initialSnap?.complete) {
+      void loadAll(false);
+    }
   }, [initialSnap, loadAll]);
 
   React.useEffect(() => {
@@ -1044,9 +1047,9 @@ export function PurchasesDashboardPage({
                 </div>
               ) : (
                 <>
-                  {/* Mobile Card List */}
+                  {/* Mobile Card List - continuous scroll, no pagination breaks */}
                   <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
-                    {paginatedBills.map((p) => (
+                    {filteredBills.map((p) => (
                       <div key={p.id} className="p-4 space-y-2.5">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0">
@@ -1221,9 +1224,9 @@ export function PurchasesDashboardPage({
                     </Table>
                   </div>
 
-                  {/* Pagination */}
+                  {/* Pagination - visible on desktop, mobile has continuous scroll */}
                   {totalBillPages > 1 ? (
-                    <div className="flex items-center justify-between px-4 py-3 border-t border-zinc-100 dark:border-zinc-800 text-xs text-zinc-500">
+                    <div className="hidden md:flex items-center justify-between px-4 py-3 border-t border-zinc-100 dark:border-zinc-800 text-xs text-zinc-500">
                       <span>
                         Page {billPage} of {totalBillPages} ({filteredBills.length} bills)
                       </span>

@@ -81,7 +81,10 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
       setCustomers(initialHydrated.customers);
       setLoading(!initialHydrated.complete);
     }
-    void load(Boolean(initialHydrated?.complete));
+    // Load locally first; only query Firebase if local cache is incomplete or missing
+    if (!initialHydrated?.complete) {
+      void load(false);
+    }
   }, [initialHydrated, load]);
 
   React.useEffect(() => {
@@ -465,17 +468,25 @@ export function QuotationDetailsPage({
       setQuotation(initialDetail);
       setLoading(false);
     }
-    void load(Boolean(initialDetail));
+    // Load locally first; only query Firebase if quotation is not in local cache
+    if (!initialDetail) {
+      void load(false);
+    }
   }, [initialDetail, load]);
 
   React.useEffect(() => {
     if (!tenantUid) return;
     return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
       if (changed.has('quotations')) {
-        void load(true);
+        const found = cachedRead.getTenantEntry(tenantUid).quotations.find((q) => q.id === quotationId);
+        if (found) {
+          setQuotation(found);
+        } else {
+          void load(true);
+        }
       }
     });
-  }, [tenantUid, load]);
+  }, [tenantUid, quotationId, load]);
 
   if (loading) return <div className="p-8 text-sm text-zinc-500">Loading quotation...</div>;
   if (!quotation) {

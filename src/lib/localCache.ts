@@ -404,16 +404,23 @@ export function isTenantCollectionFresh(
 ): boolean {
   const entry = getTenantEntry(tenantUid);
   const ts = entry.syncedAt[col];
-  if (!ts) return false;
   if (sessionSynced.has(`${tenantUid}:${col}`)) {
     return true;
+  }
+  if (!ts) {
+    if (col === 'profile') return Boolean(entry.profile);
+    const val = entry[col];
+    return Array.isArray(val) && val.length > 0;
   }
   return Date.now() - ts < ttlMs;
 }
 
 export function hasTenantCollectionData(tenantUid: string, col: TenantCollection): boolean {
   const entry = getTenantEntry(tenantUid);
-  return Boolean(entry.syncedAt[col]);
+  if (Boolean(entry.syncedAt[col])) return true;
+  if (col === 'profile') return Boolean(entry.profile);
+  const val = entry[col];
+  return Array.isArray(val) && val.length > 0;
 }
 
 export function markTenantSyncedNow(tenantUid: string, col: TenantCollection, ts = Date.now()): void {
