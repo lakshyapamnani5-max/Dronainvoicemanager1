@@ -1,3 +1,17 @@
+import type {
+  CustomColumnAlign,
+  CustomColumnDataType,
+  CustomColumnDef,
+  CustomInvoiceLayout,
+} from './customLayoutTypes';
+
+export type {
+  CustomColumnAlign,
+  CustomColumnDataType,
+  CustomColumnDef,
+  CustomInvoiceLayout,
+};
+
 export type UserRole = 'super_admin' | 'business';
 export type AccountStatus = 'active' | 'inactive';
 
@@ -130,6 +144,7 @@ export interface LineItemInput {
   discountType: DiscountType;
   discountValue: number;
   taxRate: number;
+  customFields?: Record<string, any>;
 }
 
 export interface RateCardItem {
@@ -223,6 +238,8 @@ export interface Invoice {
   balanceDue: number;
   amountInWords: string;
   templateId: TemplateId;
+  layoutId?: string | null;
+  layoutSnapshot?: CustomInvoiceLayout | null;
   notes: string;
   terms: string;
   sourceQuotationId: string | null;
@@ -263,6 +280,8 @@ export interface Quotation {
   grandTotal: number;
   amountInWords: string;
   templateId: TemplateId;
+  layoutId?: string | null;
+  layoutSnapshot?: CustomInvoiceLayout | null;
   quotationTitle?: string;
   projectDescription?: string;
   deliveryTimeline?: string;

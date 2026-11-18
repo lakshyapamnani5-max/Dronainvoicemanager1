@@ -18,6 +18,7 @@ import {
   QUOTATION_THEMES,
   normalizeQuotationTemplateId,
 } from '../../components/quotation/quotationThemeRegistry';
+import { CustomLayoutsManager } from '../../components/invoice/customBuilder/CustomLayoutsManager';
 import { PWAInstallButton } from '../../components/PWAComponents';
 import { SignatureControl } from '../../components/SignatureControl';
 import { Button } from '../../components/ui/button';
@@ -740,6 +741,7 @@ export function CustomerSettingsPage() {
   const [savingSig, setSavingSig] = React.useState(false);
   const [savingInvoiceTheme, setSavingInvoiceTheme] = React.useState(false);
   const [savingQuotationTheme, setSavingQuotationTheme] = React.useState(false);
+  const [themesTab, setThemesTab] = React.useState<'invoice' | 'quotation' | 'custom_layouts'>('custom_layouts');
   const [selectedInvoiceTheme, setSelectedInvoiceTheme] = React.useState<StandardTemplateId>(() =>
     normalizeTemplateId(session?.businessProfile?.defaultInvoiceTemplate)
   );
@@ -977,37 +979,88 @@ export function CustomerSettingsPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Invoice / Quotation Themes</CardTitle>
-          <CardDescription>
-            Choose independent default PDF &amp; A4 themes for Invoices (Section A) and Quotations (Section B).
-          </CardDescription>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <CardTitle>Invoice / Quotation Themes &amp; Custom Layouts</CardTitle>
+              <CardDescription>
+                Customize visual themes and design industry-specific column layouts with custom calculations.
+              </CardDescription>
+            </div>
+            {/* Dedicated Tabs Bar */}
+            <div className="flex items-center gap-1 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 self-start sm:self-auto border border-zinc-200 dark:border-zinc-700">
+              <button
+                type="button"
+                onClick={() => setThemesTab('custom_layouts')}
+                className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                  themesTab === 'custom_layouts'
+                    ? 'bg-indigo-600 text-white shadow-xs'
+                    : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                <span>Custom Invoice Layouts</span>
+                <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black uppercase bg-amber-400 text-amber-950">
+                  New
+                </span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setThemesTab('invoice')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  themesTab === 'invoice'
+                    ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                    : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                Invoice Themes
+              </button>
+              <button
+                type="button"
+                onClick={() => setThemesTab('quotation')}
+                className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                  themesTab === 'quotation'
+                    ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                    : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 dark:hover:text-zinc-200'
+                }`}
+              >
+                Quotation Themes
+              </button>
+            </div>
+          </div>
         </CardHeader>
         <CardContent className="space-y-6">
-          <div className="space-y-2 pb-5 border-b border-zinc-200 dark:border-zinc-800">
-            <div className="text-xs font-bold uppercase tracking-wider text-zinc-500">
-              Section A · Default Invoice Theme
-            </div>
-            <InvoiceThemeSelector
-              currentThemeId={selectedInvoiceTheme}
-              defaultThemeId={form.defaultInvoiceTemplate}
-              onSelectTheme={(t) => setSelectedInvoiceTheme(t)}
-              onSetAsDefault={handleSetDefaultInvoiceTheme}
-              isSettingDefault={savingInvoiceTheme}
-            />
-          </div>
+          {themesTab === 'custom_layouts' && (
+            <CustomLayoutsManager />
+          )}
 
-          <div className="space-y-2">
-            <div className="text-xs font-bold uppercase tracking-wider text-[#F57C00]">
-              Section B · Default Quotation Theme
+          {themesTab === 'invoice' && (
+            <div className="space-y-2">
+              <div className="text-xs font-bold uppercase tracking-wider text-zinc-500">
+                Default Invoice Theme (Applied to all invoices unless overridden)
+              </div>
+              <InvoiceThemeSelector
+                currentThemeId={selectedInvoiceTheme}
+                defaultThemeId={form.defaultInvoiceTemplate}
+                onSelectTheme={(t) => setSelectedInvoiceTheme(t)}
+                onSetAsDefault={handleSetDefaultInvoiceTheme}
+                isSettingDefault={savingInvoiceTheme}
+              />
             </div>
-            <QuotationThemeSelector
-              currentThemeId={selectedQuotationTheme}
-              defaultThemeId={form.defaultQuotationTemplate}
-              onSelectTheme={(t) => setSelectedQuotationTheme(t)}
-              onSetAsDefault={handleSetDefaultQuotationTheme}
-              isSettingDefault={savingQuotationTheme}
-            />
-          </div>
+          )}
+
+          {themesTab === 'quotation' && (
+            <div className="space-y-2">
+              <div className="text-xs font-bold uppercase tracking-wider text-[#F57C00]">
+                Default Quotation Theme (Applied to all quotations unless overridden)
+              </div>
+              <QuotationThemeSelector
+                currentThemeId={selectedQuotationTheme}
+                defaultThemeId={form.defaultQuotationTemplate}
+                onSelectTheme={(t) => setSelectedQuotationTheme(t)}
+                onSetAsDefault={handleSetDefaultQuotationTheme}
+                isSettingDefault={savingQuotationTheme}
+              />
+            </div>
+          )}
         </CardContent>
       </Card>
 

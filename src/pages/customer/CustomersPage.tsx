@@ -641,12 +641,7 @@ export function CustomerDetailsPage({
         changed.has('quotations') ||
         changed.has('payments')
       ) {
-        const next = cachedRead.enrichCustomerDetailFromCache(tenantUid, customerId);
-        if (next) {
-          setData(next);
-        } else {
-          loadDetails(true);
-        }
+        loadDetails(true);
       }
     });
   }, [tenantUid, customerId, loadDetails]);
