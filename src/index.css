@@ -1,6 +1,45 @@
 @import "tailwindcss";
 @custom-variant dark (&:where(.dark, .dark *));
 
+@theme {
+  --color-zinc-50: #fafafa;
+  --color-zinc-100: #f4f4f5;
+  --color-zinc-200: #e4e4e7;
+  --color-zinc-300: #d4d4d8;
+  --color-zinc-400: #a1a1aa;
+  --color-zinc-500: #71717a;
+  --color-zinc-600: #52525b;
+  --color-zinc-700: #3f3f46;
+  --color-zinc-800: #27272a;
+  --color-zinc-900: #18181b;
+  --color-zinc-950: #09090b;
+
+  --color-blue-50: #eff6ff;
+  --color-blue-100: #dbeafe;
+  --color-blue-200: #bfdbfe;
+  --color-blue-300: #93c5fd;
+  --color-blue-400: #60a5fa;
+  --color-blue-500: #3b82f6;
+  --color-blue-600: #2563eb;
+  --color-blue-700: #1d4ed8;
+
+  --color-red-50: #fef2f2;
+  --color-red-100: #fee2e2;
+  --color-red-200: #fecaca;
+  --color-red-500: #ef4444;
+  --color-red-600: #dc2626;
+
+  --color-emerald-50: #ecfdf5;
+  --color-emerald-100: #d1fae5;
+  --color-emerald-500: #10b981;
+  --color-emerald-600: #059669;
+
+  --color-indigo-50: #eef2ff;
+  --color-indigo-100: #e0e7ff;
+  --color-indigo-500: #6366f1;
+  --color-indigo-600: #4f46e5;
+}
+
 @layer base {
   :root {
     --font-display: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
@@ -58,28 +97,106 @@
   background: rgba(113, 113, 122, 0.45);
 }
 
-/* Print mode for A4 documents */
+/* Print mode for A4 documents - exact theme rendering and zero unwanted margins */
 @media print {
   @page {
-    size: A4 portrait;
-    margin: 10mm;
+    margin: 6mm !important;
   }
 
-  body {
+  *, *:before, *:after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #09090b !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
   }
 
-  .no-print {
+  /* Hide app navigation, headers, footers, toast, action buttons, theme selectors */
+  .no-print,
+  aside,
+  header,
+  footer,
+  nav,
+  .toast-container {
     display: none !important;
   }
 
-  .print-only-sheet {
-    box-shadow: none !important;
-    border: none !important;
-    margin: 0 !important;
+  /* Reset AppShell flex containers & overflow scroll traps */
+  main,
+  div[class*="overflow-"],
+  div[class*="space-y-"] {
     padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-width: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Force print sheet to full width and transparent/white background */
+  .invoice-preview-root {
     width: 100% !important;
     max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+  }
+
+  .print-sheet {
+    width: 100% !important;
+    max-width: none !important;
+    margin: 0 auto !important;
+    background: #ffffff !important;
+    box-shadow: none !important;
+    page-break-inside: auto;
+  }
+
+  /* When printing from mobile view, force desktop column & flex layouts */
+  .print-sheet .sm\:flex-row {
+    flex-direction: row !important;
+  }
+  .print-sheet .sm\:grid-cols-2 {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+  .print-sheet .sm\:text-right {
+    text-align: right !important;
+  }
+  .print-sheet .sm\:self-start {
+    align-self: flex-start !important;
+  }
+  .print-sheet .sm\:self-center {
+    align-self: center !important;
+  }
+  .print-sheet .sm\:w-auto {
+    width: auto !important;
+  }
+  .print-sheet .sm\:absolute {
+    position: absolute !important;
+  }
+
+  table {
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
   }
 }

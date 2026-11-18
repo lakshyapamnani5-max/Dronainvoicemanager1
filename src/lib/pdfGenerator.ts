@@ -16,8 +16,10 @@ import type {
 } from '../shared/types';
 import { formatDate } from './utils';
 import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import type { StandardTemplateId } from '../components/invoice/invoiceThemeTypes';
 import { generateQuotationPdf } from '../components/quotation/quotationPdfGenerator';
 import { resolveLatestDocumentForDownload } from './liveSnapshots';
+import { getCachedSession } from './localCache';
 
 async function generateUpiQrDataUrl(
   upiId: string,
@@ -71,6 +73,155 @@ async function loadLogoForPdf(
   });
 }
 
+async function generateThemePdfFromDom(
+  record: Invoice,
+  normId: StandardTemplateId
+): Promise<boolean> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return false;
+  }
+  const isLandscape = normId === 'landscape_theme_2';
+  const targetWidthPx = isLandscape ? 1123 : 794; // Exact A4 width at 96 DPI
+  const targetMinHeightPx = isLandscape ? 794 : 1123;
+
+  const container = document.createElement('div');
+  container.setAttribute('aria-hidden', 'true');
+  container.style.position = 'fixed';
+  container.style.left = '0';
+  container.style.top = '0';
+  container.style.width = `${targetWidthPx}px`;
+  container.style.minHeight = `${targetMinHeightPx}px`;
+  container.style.background = '#ffffff';
+  container.style.zIndex = '-9999';
+  container.style.opacity = '1';
+  container.style.pointerEvents = 'none';
+  container.style.overflow = 'visible';
+  document.body.appendChild(container);
+
+  let root: any = null;
+  try {
+    const React = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
+    const { toCanvas } = await import('html-to-image');
+
+    root = createRoot(container);
+    root.render(
+      React.createElement(InvoicePreview, {
+        docType: 'invoice',
+        record,
+        templateOverride: normId,
+        a4Ratio: true,
+      })
+    );
+
+    // Wait for fonts, images, SVGs and components to finish rendering
+    if (document.fonts?.ready) {
+      try {
+        await document.fonts.ready;
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Wait for all images inside container to finish loading / decoding
+    const imgs = Array.from(container.querySelectorAll('img'));
+    if (imgs.length > 0) {
+      await Promise.all(
+        imgs.map((img) => {
+          if (img.complete) return Promise.resolve(null);
+          return new Promise((resolve) => {
+            img.onload = () => resolve(null);
+            img.onerror = () => resolve(null);
+            setTimeout(resolve, 500);
+          });
+        })
+      );
+    }
+
+    const targetElement = (container.firstElementChild as HTMLElement) || container;
+    const computedHeight = Math.max(
+      targetMinHeightPx,
+      targetElement.scrollHeight || targetElement.offsetHeight || targetMinHeightPx
+    );
+
+    // Use native browser rendering via SVG foreignObject (100% identical to preview, supports oklch/flex/grid)
+    const canvas = await toCanvas(targetElement, {
+      pixelRatio: 2, // 192 DPI - crisp, sharp vector-like typography and lines
+      backgroundColor: '#ffffff',
+      skipFonts: true, // Use browser's already active fonts without external CORS fetch
+      width: targetWidthPx,
+      height: computedHeight,
+      canvasWidth: targetWidthPx * 2,
+      canvasHeight: computedHeight * 2,
+    });
+
+    const pdf = new jsPDF({
+      orientation: isLandscape ? 'landscape' : 'portrait',
+      unit: 'mm',
+      format: 'a4',
+      compress: true,
+    });
+
+    const pdfW = pdf.internal.pageSize.getWidth();
+    const pdfH = pdf.internal.pageSize.getHeight();
+    const imgTotalHeightMm = (canvas.height * pdfW) / canvas.width;
+
+    if (imgTotalHeightMm <= pdfH + 2) {
+      const imgData = canvas.toDataURL('image/jpeg', 0.98);
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, imgTotalHeightMm, undefined, 'FAST');
+    } else {
+      const pageCanvasHeightPx = Math.floor((canvas.width * pdfH) / pdfW);
+      let renderedHeightPx = 0;
+      let pageNumber = 0;
+
+      while (renderedHeightPx < canvas.height) {
+        if (pageNumber > 0) {
+          pdf.addPage('a4', isLandscape ? 'landscape' : 'portrait');
+        }
+        const currentSliceHeightPx = Math.min(pageCanvasHeightPx, canvas.height - renderedHeightPx);
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = currentSliceHeightPx;
+        const sliceCtx = sliceCanvas.getContext('2d');
+        if (sliceCtx) {
+          sliceCtx.fillStyle = '#ffffff';
+          sliceCtx.fillRect(0, 0, canvas.width, currentSliceHeightPx);
+          sliceCtx.drawImage(
+            canvas,
+            0,
+            renderedHeightPx,
+            canvas.width,
+            currentSliceHeightPx,
+            0,
+            0,
+            canvas.width,
+            currentSliceHeightPx
+          );
+          const sliceHeightMm = (currentSliceHeightPx * pdfW) / canvas.width;
+          const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.98);
+          pdf.addImage(sliceData, 'JPEG', 0, 0, pdfW, sliceHeightMm, undefined, 'FAST');
+        }
+        renderedHeightPx += currentSliceHeightPx;
+        pageNumber++;
+      }
+    }
+
+    const safeNumber = (record.invoiceNumber || 'Invoice').replace(/[^a-zA-Z0-9_-]/g, '_');
+    pdf.save(`${safeNumber}.pdf`);
+    return true;
+  } catch (err) {
+    console.warn('DOM theme PDF rendering failed, using vector PDF fallback:', err);
+    return false;
+  } finally {
+    if (root) {
+      try {
+        root.unmount();
+      } catch {}
+    }
+    container.remove();
+  }
+}
+
 export async function generateDocumentPdf(
   docType: 'invoice' | 'quotation',
   inputRecord: Invoice | Quotation,
@@ -80,8 +231,30 @@ export async function generateDocumentPdf(
     await generateQuotationPdf(inputRecord as Quotation, overrideTemplate);
     return;
   }
-  const record = await resolveLatestDocumentForDownload(inputRecord);
-  const normId = normalizeTemplateId(overrideTemplate || record.templateId);
+  const record = (await resolveLatestDocumentForDownload(inputRecord)) as Invoice;
+  const profile = getCachedSession()?.businessProfile;
+  const resolvedTemplate =
+    overrideTemplate || record.templateId || profile?.defaultInvoiceTemplate || 'gst_theme_1';
+  const normId = normalizeTemplateId(resolvedTemplate);
+
+  // In browser: render the exact high-fidelity React theme and convert to A4 PDF
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    try {
+      const ok = await generateThemePdfFromDom(record, normId);
+      if (ok) return;
+    } catch (err) {
+      console.warn('DOM theme PDF rendering failed, falling back to vector PDF:', err);
+    }
+  }
+
+  // Fallback / Node.js test environment: Vector jsPDF generator with theme colors
+  await generateVectorInvoicePdf(record, normId);
+}
+
+async function generateVectorInvoicePdf(
+  record: Invoice,
+  normId: StandardTemplateId
+): Promise<void> {
   const isLandscape = normId === 'landscape_theme_2';
   const pdf = new jsPDF({
     orientation: isLandscape ? 'landscape' : 'portrait',
@@ -94,11 +267,9 @@ export async function generateDocumentPdf(
 
   const biz = record.businessSnapshot;
   const cust = record.customerSnapshot;
-  const isInvoice = docType === 'invoice';
-  const inv = isInvoice ? (record as Invoice) : null;
-  const quo = !isInvoice ? (record as Quotation) : null;
-  const docNumber = inv ? inv.invoiceNumber : quo!.quotationNumber;
-  const docTitle = isInvoice ? (record.isGst ? 'TAX INVOICE' : 'BILL OF SUPPLY') : 'QUOTATION';
+  const inv = record;
+  const docNumber = inv.invoiceNumber;
+  const docTitle = record.isGst ? 'TAX INVOICE' : 'BILL OF SUPPLY';
 
   let accentRgb: [number, number, number] = [124, 120, 212]; // royal violet default
   if (normId === 'double_divine') {
@@ -107,8 +278,18 @@ export async function generateDocumentPdf(
     accentRgb = [30, 36, 48]; // charcoal slate
   } else if (normId === 'gst_theme_1') {
     accentRgb = [63, 63, 70]; // dark slate
+  } else if (normId === 'gst_theme_2') {
+    accentRgb = [37, 99, 235]; // royal blue
+  } else if (normId === 'gst_theme_3') {
+    accentRgb = [13, 148, 136]; // teal emerald
+  } else if (normId === 'gst_theme_4') {
+    accentRgb = [217, 119, 6]; // amber
+  } else if (normId === 'gst_theme_5') {
+    accentRgb = [14, 116, 144]; // cyan slate
   } else if (normId === 'gst_theme_6') {
-    accentRgb = [88, 80, 236]; // indigo
+    accentRgb = [79, 70, 229]; // indigo
+  } else if (normId === 'french_elite') {
+    accentRgb = [124, 120, 212]; // royal violet
   }
 
   // Load Business Logo if available
@@ -310,50 +491,63 @@ export async function generateDocumentPdf(
 
     y = Math.max(cY, rY) + 5;
   } else if (normId === 'french_elite') {
-    // French Elite
+    // French Elite - Matches Screenshot 1
     // Purple title badge at top left
     pdf.setFillColor(124, 120, 212);
-    pdf.roundedRect(margin, y, 40, 7, 1, 1, 'F');
+    pdf.roundedRect(margin, y, 38, 6.5, 1, 1, 'F');
     pdf.setTextColor(255, 255, 255);
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(9.5);
-    pdf.text(docTitle, margin + 4, y + 5);
+    pdf.setFontSize(9);
+    pdf.text(docTitle, margin + 4, y + 4.8);
 
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(13);
+    pdf.setFontSize(12);
     pdf.setTextColor(24, 24, 27);
-    pdf.text(biz.businessName || 'DRONA Business', margin, y + 14);
+    pdf.text(biz.businessName || 'DRONA Business', margin, y + 13.5);
 
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
+    pdf.setFontSize(7.8);
     pdf.setTextColor(82, 82, 91);
-    let bY = y + 18.5;
-    const contactLine = [biz.phone, biz.email].filter(Boolean).join('  |  ');
-    if (contactLine) {
-      pdf.text(contactLine, margin, bY);
-      bY += 3.8;
+    let bY = y + 17.5;
+    if (biz.phone) {
+      pdf.text(`Phone: ${biz.phone}`, margin, bY);
+      bY += 3.5;
+    }
+    if (biz.email) {
+      pdf.text(`Email: ${biz.email}`, margin, bY);
+      bY += 3.5;
     }
     if (biz.gstin) {
       pdf.text(`GSTIN: ${biz.gstin}`, margin, bY);
-      bY += 3.8;
+      bY += 3.5;
     }
 
-    // Top Right Logo
+    // Top Right Logo Box
+    const logoW = 28;
+    const logoH = 16;
     if (logoInfo) {
       try {
         const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
         pdf.addImage(logoInfo.pngDataUrl, fmt, pageWidth - margin - logoInfo.drawW, y, logoInfo.drawW, logoInfo.drawH);
       } catch {}
+    } else {
+      pdf.setDrawColor(228, 228, 231);
+      pdf.setFillColor(250, 250, 250);
+      pdf.roundedRect(pageWidth - margin - logoW, y, logoW, logoH, 1, 1, 'FD');
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(161, 161, 170);
+      pdf.text('[+ Logo]', pageWidth - margin - logoW / 2, y + logoH / 2 + 1, { align: 'center' });
     }
 
-    y = Math.max(bY, y + (logoInfo ? logoInfo.drawH : 0)) + 3;
+    y = Math.max(bY, y + logoH) + 3;
     pdf.setDrawColor(228, 228, 231);
     pdf.line(margin, y, pageWidth - margin, y);
     y += 5;
 
     // Metadata Left, Bill To Right
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8.5);
+    pdf.setFontSize(8);
     pdf.setTextColor(24, 24, 27);
     pdf.text(`Invoice No.: ${docNumber}`, margin, y);
     const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
@@ -365,7 +559,7 @@ export async function generateDocumentPdf(
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(8.5);
     pdf.setTextColor(113, 113, 122);
-    pdf.text('BILL TO', pageWidth - margin, y, { align: 'right' });
+    pdf.text('Bill To', pageWidth - margin, y, { align: 'right' });
 
     pdf.setFont('helvetica', 'bold');
     pdf.setFontSize(10);
@@ -391,14 +585,309 @@ export async function generateDocumentPdf(
     }
 
     y = Math.max(y + 14, cY) + 4;
-  } else {
-    // Standard / GST Themes 1-6
-    // Top Centered Title
+  } else if (normId === 'gst_theme_5' || normId === 'gst_theme_4') {
+    // GST Theme 4 & 5 - Matches Screenshot 4 & 5
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(14);
+    pdf.setFontSize(13);
     pdf.setTextColor(24, 24, 27);
     pdf.text(docTitle, pageWidth / 2, y, { align: 'center' });
-    y += 4;
+    y += 5;
+
+    // Left: Logo Box
+    const logoW = 26;
+    const logoH = 15;
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, margin, y, logoInfo.drawW, logoInfo.drawH);
+      } catch {}
+    } else {
+      pdf.setDrawColor(228, 228, 231);
+      pdf.setFillColor(250, 250, 250);
+      pdf.roundedRect(margin, y, logoW, logoH, 1, 1, 'FD');
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(161, 161, 170);
+      pdf.text('[+ Logo]', margin + logoW / 2, y + logoH / 2 + 1, { align: 'center' });
+    }
+
+    // Right: Light Blue Business Box
+    const bBoxW = 85;
+    const bBoxX = pageWidth - margin - bBoxW;
+    pdf.setFillColor(239, 246, 255);
+    pdf.setDrawColor(191, 219, 254);
+    pdf.roundedRect(bBoxX, y, bBoxW, 19, 1, 1, 'FD');
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', bBoxX + bBoxW - 3, y + 4.5, { align: 'right' });
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(82, 82, 91);
+    let by = y + 8.5;
+    if (biz.phone) {
+      pdf.text(`Phone no.: ${biz.phone}`, bBoxX + bBoxW - 3, by, { align: 'right' });
+      by += 3.5;
+    }
+    if (biz.email) {
+      pdf.text(`Email: ${biz.email}`, bBoxX + bBoxW - 3, by, { align: 'right' });
+      by += 3.5;
+    }
+    if (biz.gstin) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setTextColor(24, 24, 27);
+      pdf.text(`GSTIN: ${biz.gstin}`, bBoxX + bBoxW - 3, by, { align: 'right' });
+    }
+
+    y += 22;
+
+    // Full Width Purple Sub-Header Bar
+    pdf.setFillColor(124, 120, 212);
+    pdf.rect(margin, y, pageWidth - 2 * margin, 5.5, 'F');
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(255, 255, 255);
+    pdf.text('Bill To', margin + 3, y + 4);
+    pdf.text('Invoice Details', pageWidth - margin - 3, y + 4, { align: 'right' });
+    y += 8;
+
+    // Details below sub-header bar
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, margin, y);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 4;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 95);
+      pdf.text(cLines, margin, cY);
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, margin, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, margin, cY);
+      cY += 3.8;
+    }
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let rY = y;
+    pdf.text(`Invoice No.: ${docNumber}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    pdf.text(dateStr, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+    if (inv?.dueDate) {
+      pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 4;
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+
+    y = Math.max(cY, rY) + 3;
+  } else if (normId === 'gst_theme_3') {
+    // GST Theme 3 - Matches Screenshot 6
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docTitle, pageWidth / 2, y, { align: 'center' });
+    y += 5;
+
+    const boxW = (pageWidth - 2 * margin - 5) / 2;
+    // Left Box: Logo & Business
+    pdf.setFillColor(239, 246, 255);
+    pdf.setDrawColor(191, 219, 254);
+    pdf.roundedRect(margin, y, boxW, 20, 1, 1, 'FD');
+
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, margin + 2, y + 2, logoInfo.drawW * 0.7, logoInfo.drawH * 0.7);
+      } catch {}
+    }
+    const bLeft = logoInfo ? margin + logoInfo.drawW * 0.7 + 4 : margin + 3;
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', bLeft, y + 5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(82, 82, 91);
+    let by = y + 9;
+    if (biz.phone) {
+      pdf.text(`Phone: ${biz.phone}`, bLeft, by);
+      by += 3.5;
+    }
+    if (biz.email) {
+      pdf.text(`Email: ${biz.email}`, bLeft, by);
+      by += 3.5;
+    }
+
+    // Right Box: Invoice Details
+    const rBoxX = margin + boxW + 5;
+    pdf.setFillColor(255, 255, 255);
+    pdf.setDrawColor(212, 212, 216);
+    pdf.roundedRect(rBoxX, y, boxW, 20, 1, 1, 'FD');
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    pdf.text(`Invoice No.: ${docNumber}`, rBoxX + 4, y + 5);
+    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    pdf.text(dateStr, rBoxX + 4, y + 9.5);
+    if (inv?.dueDate) {
+      pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, rBoxX + 4, y + 14);
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, rBoxX + 4, y + 18);
+
+    y += 24;
+
+    // Bill To
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('Bill To', margin, y);
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(10);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, margin, y + 4.5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 8.5;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 110);
+      pdf.text(cLines, margin, cY);
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, margin, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, margin, cY);
+      cY += 3.8;
+    }
+
+    y = cY + 3;
+  } else if (normId === 'gst_theme_1') {
+    // GST Theme 1 - Matches Screenshot 3
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docTitle, pageWidth / 2, y, { align: 'center' });
+    y += 5;
+
+    // Left Bordered Box for Business Details
+    const bBoxW = 85;
+    pdf.setFillColor(255, 255, 255);
+    pdf.setDrawColor(212, 212, 216);
+    pdf.roundedRect(margin, y, bBoxW, 20, 1, 1, 'FD');
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.businessName || 'DRONA Business', margin + 3.5, y + 5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7.5);
+    pdf.setTextColor(82, 82, 91);
+    let by = y + 9;
+    if (biz.phone) {
+      pdf.text(`Phone no.: ${biz.phone}`, margin + 3.5, by);
+      by += 3.5;
+    }
+    if (biz.email) {
+      pdf.text(`Email: ${biz.email}`, margin + 3.5, by);
+      by += 3.5;
+    }
+    if (biz.gstin) {
+      pdf.text(`GSTIN: ${biz.gstin}`, margin + 3.5, by);
+    }
+
+    // Right Logo Box
+    const logoW = 28;
+    const logoH = 16;
+    if (logoInfo) {
+      try {
+        const fmt = logoInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        pdf.addImage(logoInfo.pngDataUrl, fmt, pageWidth - margin - logoInfo.drawW, y, logoInfo.drawW, logoInfo.drawH);
+      } catch {}
+    } else {
+      pdf.setDrawColor(228, 228, 231);
+      pdf.setFillColor(250, 250, 250);
+      pdf.roundedRect(pageWidth - margin - logoW, y, logoW, logoH, 1, 1, 'FD');
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(161, 161, 170);
+      pdf.text('[+ Logo]', pageWidth - margin - logoW / 2, y + logoH / 2 + 1, { align: 'center' });
+    }
+
+    y += 24;
+
+    // Bill To Left & Invoice Details Right
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8.5);
+    pdf.setTextColor(113, 113, 122);
+    pdf.text('Bill To', margin, y);
+    pdf.text('Invoice Details', pageWidth - margin, y, { align: 'right' });
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(9.5);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(cust.companyName || cust.name, margin, y + 4.5);
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(8);
+    pdf.setTextColor(82, 82, 91);
+    let cY = y + 8.5;
+    if (cust.billingAddress) {
+      const cLines = pdf.splitTextToSize(cust.billingAddress, 95);
+      pdf.text(cLines, margin, cY);
+      cY += cLines.length * 3.8;
+    }
+    if (cust.phone) {
+      pdf.text(`Phone: ${cust.phone}`, margin, cY);
+      cY += 3.8;
+    }
+    if (cust.gstin) {
+      pdf.text(`GSTIN: ${cust.gstin}`, margin, cY);
+      cY += 3.8;
+    }
+
+    let rY = y + 4.5;
+    pdf.text(`Invoice No.: ${docNumber}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    pdf.text(dateStr, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+    if (inv?.dueDate) {
+      pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, pageWidth - margin, rY, { align: 'right' });
+      rY += 4;
+    }
+    pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 4;
+
+    y = Math.max(cY, rY) + 3;
+  } else {
+    // GST Theme 2 / 6 / Standard
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(13);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(docTitle, pageWidth / 2, y, { align: 'center' });
+    y += 5;
 
     // Left Logo / Right Business
     if (logoInfo) {
@@ -410,14 +899,14 @@ export async function generateDocumentPdf(
 
     const tLeft = logoInfo ? margin + logoInfo.drawW + 4 : margin;
     pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(12);
+    pdf.setFontSize(11);
     pdf.setTextColor(24, 24, 27);
     pdf.text(biz.businessName || 'DRONA Business', tLeft, y + 5);
 
     pdf.setFont('helvetica', 'normal');
-    pdf.setFontSize(8);
+    pdf.setFontSize(7.8);
     pdf.setTextColor(82, 82, 91);
-    let bY = y + 9.5;
+    let bY = y + 9;
     if (biz.address) {
       const aLines = pdf.splitTextToSize(biz.address, 90);
       pdf.text(aLines, tLeft, bY);
@@ -441,7 +930,7 @@ export async function generateDocumentPdf(
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(82, 82, 91);
-    let rY = y + 9.5;
+    let rY = y + 9;
     if (inv) {
       pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, pageWidth - margin, rY, { align: 'right' });
       rY += 3.8;
@@ -757,19 +1246,33 @@ export async function generateDocumentPdf(
     pdf.text('Generated by DronaInvoice', pageWidth / 2, pageHeight - 6, { align: 'center' });
   } else {
     // Portrait Bottom Section
+    const isPurpleTheme = normId === 'gst_theme_5' || normId === 'gst_theme_4' || normId === 'french_elite';
+    const isRedTheme = normId === 'double_divine';
+    const isBlueTheme = normId === 'gst_theme_2';
     const leftWidth = 100;
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(8);
-    pdf.setTextColor(113, 113, 122);
-    pdf.text('AMOUNT IN WORDS', margin, bottomY);
+
+    // Amount in Words Bar / Header
+    if (isPurpleTheme || isRedTheme || isBlueTheme) {
+      pdf.setFillColor(...accentRgb);
+      pdf.rect(margin, bottomY - 1, leftWidth, 5, 'F');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('INVOICE AMOUNT IN WORDS', margin + 2.5, bottomY + 2.6);
+    } else {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(8);
+      pdf.setTextColor(113, 113, 122);
+      pdf.text('AMOUNT IN WORDS', margin, bottomY);
+    }
 
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8.5);
     pdf.setTextColor(24, 24, 27);
     const wordsLines = pdf.splitTextToSize(record.amountInWords, leftWidth);
-    pdf.text(wordsLines, margin, bottomY + 4.5);
+    pdf.text(wordsLines, margin, bottomY + 7.5);
 
-    let bankY = bottomY + 4.5 + wordsLines.length * 4 + 4;
+    let bankY = bottomY + 7.5 + wordsLines.length * 4 + 4;
     if (biz.bankName || biz.upiId) {
       pdf.setFont('helvetica', 'bold');
       pdf.setFontSize(8);
@@ -795,24 +1298,36 @@ export async function generateDocumentPdf(
 
     if (qrData && qrData.startsWith('data:image/')) {
       try {
-        pdf.addImage(qrData, 'PNG', margin, bankY + 1, 20, 20);
-        pdf.setFontSize(7);
+        pdf.addImage(qrData, 'PNG', margin, bankY + 1, 18, 18);
+        pdf.setFontSize(6.5);
         pdf.setTextColor(113, 113, 122);
-        pdf.text('Scan to Pay (UPI)', margin, bankY + 23.5);
+        pdf.text('Scan to Pay (UPI)', margin, bankY + 21);
       } catch {}
     }
 
     // Right: Totals Summary
-    const sumX = pageWidth - margin - 72;
+    const sumW = 75;
+    const sumX = pageWidth - margin - sumW;
     const valX = pageWidth - margin;
     let sy = bottomY;
+
+    if (isPurpleTheme || isRedTheme || isBlueTheme) {
+      pdf.setFillColor(...accentRgb);
+      pdf.rect(sumX, sy - 1, sumW, 5, 'F');
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(255, 255, 255);
+      pdf.text('Amounts', sumX + 3, sy + 2.6);
+      sy += 6.5;
+    }
+
     const drawSumRow = (label: string, val: string, bold = false) => {
       pdf.setFont('helvetica', bold ? 'bold' : 'normal');
-      pdf.setFontSize(bold ? 9.5 : 8.5);
+      pdf.setFontSize(bold ? 9 : 8);
       pdf.setTextColor(bold ? 24 : 82, bold ? 24 : 82, bold ? 27 : 91);
-      pdf.text(label, sumX, sy);
-      pdf.text(val, valX, sy, { align: 'right' });
-      sy += bold ? 5.5 : 4.5;
+      pdf.text(label, sumX + 2, sy);
+      pdf.text(val, valX - 2, sy, { align: 'right' });
+      sy += bold ? 5 : 4.2;
     };
 
     drawSumRow('Subtotal', formatINRForPdf(record.subtotal));
@@ -832,49 +1347,78 @@ export async function generateDocumentPdf(
       drawSumRow('Round Off', formatINRForPdf(record.roundOff));
     }
     pdf.setDrawColor(212, 212, 216);
-    pdf.line(sumX, sy - 2, valX, sy - 2);
+    pdf.line(sumX, sy - 1.5, valX, sy - 1.5);
     sy += 2;
-    drawSumRow('Grand Total', formatINRForPdf(record.grandTotal), true);
+    drawSumRow('Total', formatINRForPdf(record.grandTotal), true);
 
-    if (inv && inv.amountPaid > 0) {
-      drawSumRow('Amount Paid', formatINRForPdf(inv.amountPaid));
-      drawSumRow('Balance Due', formatINRForPdf(inv.balanceDue), true);
+    if (inv) {
+      drawSumRow('Received', formatINRForPdf(inv.amountPaid || 0));
+      drawSumRow('Balance', formatINRForPdf(inv.balanceDue), true);
     }
 
-    // Terms & Signatory at bottom
-    const footerY = Math.max(bankY + 26, sy + 8, 250);
-    if (record.terms) {
-      pdf.setFont('helvetica', 'bold');
-      pdf.setFontSize(8);
-      pdf.setTextColor(113, 113, 122);
-      pdf.text('TERMS & CONDITIONS', margin, footerY);
-      pdf.setFont('helvetica', 'normal');
-      pdf.setFontSize(7.5);
-      pdf.setTextColor(82, 82, 91);
-      pdf.text(pdf.splitTextToSize(record.terms, 110), margin, footerY + 4);
+    // Border around summary box if themed
+    if (isPurpleTheme || isRedTheme || isBlueTheme) {
+      pdf.setDrawColor(...accentRgb);
+      pdf.rect(sumX, bottomY - 1, sumW, sy - bottomY + 3);
     }
 
-    const sigInfo = biz.signatureDataUrl ? await loadLogoForPdf(biz.signatureDataUrl, 40, 12) : null;
-    if (sigInfo) {
-      try {
-        const fmt = sigInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
-        const sigX = pageWidth - margin - sigInfo.drawW;
-        const sigY = footerY + 12 - sigInfo.drawH;
-        pdf.addImage(sigInfo.pngDataUrl, fmt, sigX, sigY, sigInfo.drawW, sigInfo.drawH);
-      } catch {}
-    }
+    // Signatory Box on bottom right
+    const sigBoxW = 75;
+    const sigBoxH = 24;
+    const sigBoxX = pageWidth - margin - sigBoxW;
+    const footerY = Math.max(bankY + 24, sy + 6, 245);
 
-    pdf.setDrawColor(161, 161, 170);
-    pdf.line(pageWidth - margin - 52, footerY + 13, pageWidth - margin, footerY + 13);
-    pdf.setFont('helvetica', 'bold');
-    pdf.setFontSize(8);
-    pdf.setTextColor(24, 24, 27);
-    pdf.text(biz.signatureLabel || 'Authorized Signatory', pageWidth - margin, footerY + 17.5, {
-      align: 'right',
-    });
+    if (isPurpleTheme || normId === 'gst_theme_3' || normId === 'gst_theme_1') {
+      pdf.setFillColor(239, 246, 255);
+      pdf.setDrawColor(191, 219, 254);
+      pdf.roundedRect(sigBoxX, footerY, sigBoxW, sigBoxH, 1, 1, 'FD');
+    } else if (isRedTheme) {
+      pdf.setFillColor(254, 242, 242);
+      pdf.setDrawColor(254, 205, 211);
+      pdf.roundedRect(sigBoxX, footerY, sigBoxW, sigBoxH, 1, 1, 'FD');
+    } else {
+      pdf.setFillColor(255, 255, 255);
+      pdf.setDrawColor(212, 212, 216);
+      pdf.roundedRect(sigBoxX, footerY, sigBoxW, sigBoxH, 1, 1, 'FD');
+    }
 
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(7.5);
+    pdf.setTextColor(82, 82, 91);
+    pdf.text(`For: ${biz.businessName || 'DRONA Business'}`, sigBoxX + sigBoxW / 2, footerY + 5, { align: 'center' });
+
+    const sigInfo = biz.signatureDataUrl ? await loadLogoForPdf(biz.signatureDataUrl, 38, 10) : null;
+    if (sigInfo) {
+      try {
+        const fmt = sigInfo.pngDataUrl.includes('image/png') ? 'PNG' : 'JPEG';
+        const sigX = sigBoxX + (sigBoxW - sigInfo.drawW) / 2;
+        pdf.addImage(sigInfo.pngDataUrl, fmt, sigX, footerY + 7, sigInfo.drawW, sigInfo.drawH);
+      } catch {}
+    } else {
+      pdf.setFontSize(7);
+      pdf.setTextColor(161, 161, 170);
+      pdf.text('[+ Authorized Signatory]', sigBoxX + sigBoxW / 2, footerY + 13, { align: 'center' });
+    }
+
+    pdf.setFont('helvetica', 'bold');
+    pdf.setFontSize(8);
+    pdf.setTextColor(24, 24, 27);
+    pdf.text(biz.signatureLabel || 'Authorized Signatory', sigBoxX + sigBoxW / 2, footerY + 20, { align: 'center' });
+
+    // Terms
+    if (record.terms) {
+      pdf.setFont('helvetica', 'bold');
+      pdf.setFontSize(7.5);
+      pdf.setTextColor(113, 113, 122);
+      pdf.text('TERMS & CONDITIONS', margin, footerY);
+      pdf.setFont('helvetica', 'normal');
+      pdf.setFontSize(7);
+      pdf.setTextColor(82, 82, 91);
+      pdf.text(pdf.splitTextToSize(record.terms, leftWidth), margin, footerY + 3.8);
+    }
+
+    pdf.setFont('helvetica', 'normal');
+    pdf.setFontSize(7);
     pdf.setTextColor(140, 140, 150);
     pdf.text('Generated by DronaInvoice', pageWidth / 2, 289, { align: 'center' });
   }

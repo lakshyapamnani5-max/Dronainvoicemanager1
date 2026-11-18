@@ -95,13 +95,16 @@ export function InvoicePreview({
         theme.orientation === 'landscape' ? 'landscape-print-target' : 'portrait-print-target'
       } ${className}`}
     >
-      {theme.orientation === 'landscape' && (
-        <style
-          dangerouslySetInnerHTML={{
-            __html: '@media print { @page { size: A4 landscape !important; margin: 8mm !important; } }',
-          }}
-        />
-      )}
+      <style
+        dangerouslySetInnerHTML={{
+          __html: `@media print {
+            @page {
+              size: A4 ${theme.orientation === 'landscape' ? 'landscape' : 'portrait'} !important;
+              margin: 6mm !important;
+            }
+          }`,
+        }}
+      />
       <Component
         docType={docType}
         record={record}

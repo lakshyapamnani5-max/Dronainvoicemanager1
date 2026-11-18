@@ -938,7 +938,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           : await invoicesApi.create(payload);
 
         if (mode === 'download') {
-          await generateDocumentPdf('invoice', res.invoice);
+          await generateDocumentPdf('invoice', res.invoice, res.invoice.templateId || templateId);
           notify('success', `Invoice ${res.invoice.invoiceNumber} saved to Invoices & PDF downloaded`);
         } else {
           notify(
@@ -957,7 +957,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           : await quotationsApi.create(payload);
 
         if (mode === 'download') {
-          await generateDocumentPdf('quotation', res.quotation);
+          await generateDocumentPdf('quotation', res.quotation, res.quotation.templateId || templateId);
           notify('success', `Quotation ${res.quotation.quotationNumber} saved & PDF downloaded`);
         } else {
           notify(
