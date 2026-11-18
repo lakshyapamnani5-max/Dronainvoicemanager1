@@ -136,7 +136,13 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
   const invoices = React.useMemo(() => {
     const q = search.trim().toLowerCase();
     return allInvoices.filter((inv) => {
-      if (status && status !== 'all' && inv.status !== status) return false;
+      if (status && status !== 'all') {
+        if (status === 'advance' || status === 'advances' || status === 'advance_paid') {
+          if (!(inv.amountPaid > 0)) return false;
+        } else if (inv.status !== status) {
+          return false;
+        }
+      }
       if (customerId && customerId !== 'all' && inv.customerId !== customerId) return false;
       if (startDate && inv.invoiceDate < startDate) return false;
       if (endDate && inv.invoiceDate > endDate) return false;
@@ -230,9 +236,10 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               setStatus(e.target.value);
               setPage(1);
             }}
-            className="w-full sm:w-40"
+            className="w-full sm:w-44"
           >
             <option value="all">All Statuses</option>
+            <option value="advance">Advances (Advance Paid)</option>
             <option value="draft">Draft</option>
             <option value="unpaid">Unpaid</option>
             <option value="partially_paid">Partially Paid</option>
@@ -326,9 +333,16 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                           {formatINR(inv.grandTotal)}
                         </div>
                         {inv.balanceDue > 0 ? (
-                          <div className="font-mono text-xs font-semibold text-[#F57C00] tabular-nums">
-                            Due {formatINR(inv.balanceDue)}
-                          </div>
+                          <>
+                            <div className="font-mono text-xs font-semibold text-[#F57C00] tabular-nums">
+                              Due {formatINR(inv.balanceDue)}
+                            </div>
+                            {inv.amountPaid > 0 ? (
+                              <div className="font-mono text-[11px] text-emerald-600 font-medium tabular-nums">
+                                Adv. Paid {formatINR(inv.amountPaid)}
+                              </div>
+                            ) : null}
+                          </>
                         ) : inv.amountPaid > inv.grandTotal ? (
                           <div className="font-mono text-[11px] text-amber-600 tabular-nums">
                             Overpaid +{formatINR(inv.amountPaid - inv.grandTotal)}
