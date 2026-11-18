@@ -82,13 +82,15 @@ async function generateThemePdfFromDom(
   }
   const isLandscape = normId === 'landscape_theme_2';
   const targetWidthPx = isLandscape ? 1123 : 794; // Exact A4 width at 96 DPI
+  const targetMinHeightPx = isLandscape ? 794 : 1123;
+
   const container = document.createElement('div');
   container.setAttribute('aria-hidden', 'true');
   container.style.position = 'fixed';
   container.style.left = '0';
   container.style.top = '0';
   container.style.width = `${targetWidthPx}px`;
-  container.style.minHeight = isLandscape ? '794px' : '1123px';
+  container.style.minHeight = `${targetMinHeightPx}px`;
   container.style.background = '#ffffff';
   container.style.zIndex = '-9999';
   container.style.opacity = '1';
@@ -101,8 +103,7 @@ async function generateThemePdfFromDom(
     const React = await import('react');
     const { createRoot } = await import('react-dom/client');
     const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
-    const html2canvasModule = await import('html2canvas');
-    const html2canvas = (html2canvasModule as any).default || html2canvasModule;
+    const { toCanvas } = await import('html-to-image');
 
     root = createRoot(container);
     root.render(
@@ -116,70 +117,49 @@ async function generateThemePdfFromDom(
 
     // Wait for fonts, images, SVGs and components to finish rendering
     if (document.fonts?.ready) {
-      await document.fonts.ready;
+      try {
+        await document.fonts.ready;
+      } catch {}
     }
-    await new Promise((r) => setTimeout(r, 450));
+    await new Promise((r) => setTimeout(r, 400));
+
+    // Wait for all images inside container to finish loading / decoding
+    const imgs = Array.from(container.querySelectorAll('img'));
+    if (imgs.length > 0) {
+      await Promise.all(
+        imgs.map((img) => {
+          if (img.complete) return Promise.resolve(null);
+          return new Promise((resolve) => {
+            img.onload = () => resolve(null);
+            img.onerror = () => resolve(null);
+            setTimeout(resolve, 500);
+          });
+        })
+      );
+    }
 
     const targetElement = (container.firstElementChild as HTMLElement) || container;
+    const computedHeight = Math.max(
+      targetMinHeightPx,
+      targetElement.scrollHeight || targetElement.offsetHeight || targetMinHeightPx
+    );
 
-    const canvas = await html2canvas(targetElement, {
-      scale: 2, // 192 DPI - crisp typography and vector-like lines
-      useCORS: true,
-      allowTaint: true,
+    // Use native browser rendering via SVG foreignObject (100% identical to preview, supports oklch/flex/grid)
+    const canvas = await toCanvas(targetElement, {
+      pixelRatio: 2, // 192 DPI - crisp, sharp vector-like typography and lines
       backgroundColor: '#ffffff',
-      logging: false,
+      skipFonts: true, // Use browser's already active fonts without external CORS fetch
       width: targetWidthPx,
-      windowWidth: targetWidthPx,
-      scrollX: 0,
-      scrollY: 0,
-      x: 0,
-      y: 0,
-      onclone: (clonedDoc: Document) => {
-        // Sanitize any OKLCH/color-mix CSS functions so html2canvas color parser never throws
-        const tmpCanvas = document.createElement('canvas');
-        const tmpCtx = tmpCanvas.getContext('2d');
-        if (tmpCtx) {
-          const colorConverter = (match: string) => {
-            try {
-              tmpCtx.fillStyle = '#000000';
-              tmpCtx.fillStyle = match;
-              return tmpCtx.fillStyle || '#000000';
-            } catch {
-              return '#000000';
-            }
-          };
-
-          clonedDoc.querySelectorAll('style').forEach((st) => {
-            if (st.textContent && (st.textContent.includes('oklch') || st.textContent.includes('color-mix') || st.textContent.includes('color('))) {
-              st.textContent = st.textContent.replace(/(?:oklch|color-mix|lab|color)\([^)]+\)/g, colorConverter);
-            }
-          });
-
-          clonedDoc.querySelectorAll('*').forEach((el) => {
-            const htmlEl = el as HTMLElement;
-            if (htmlEl.style) {
-              const bg = htmlEl.style.backgroundColor;
-              if (bg && (bg.includes('oklch') || bg.includes('color('))) {
-                htmlEl.style.backgroundColor = colorConverter(bg);
-              }
-              const col = htmlEl.style.color;
-              if (col && (col.includes('oklch') || col.includes('color('))) {
-                htmlEl.style.color = colorConverter(col);
-              }
-              const bc = htmlEl.style.borderColor;
-              if (bc && (bc.includes('oklch') || bc.includes('color('))) {
-                htmlEl.style.borderColor = colorConverter(bc);
-              }
-            }
-          });
-        }
-      },
+      height: computedHeight,
+      canvasWidth: targetWidthPx * 2,
+      canvasHeight: computedHeight * 2,
     });
 
     const pdf = new jsPDF({
       orientation: isLandscape ? 'landscape' : 'portrait',
       unit: 'mm',
       format: 'a4',
+      compress: true,
     });
 
     const pdfW = pdf.internal.pageSize.getWidth();
@@ -187,8 +167,8 @@ async function generateThemePdfFromDom(
     const imgTotalHeightMm = (canvas.height * pdfW) / canvas.width;
 
     if (imgTotalHeightMm <= pdfH + 2) {
-      const imgData = canvas.toDataURL('image/jpeg', 0.95);
-      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, imgTotalHeightMm);
+      const imgData = canvas.toDataURL('image/jpeg', 0.98);
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, imgTotalHeightMm, undefined, 'FAST');
     } else {
       const pageCanvasHeightPx = Math.floor((canvas.width * pdfH) / pdfW);
       let renderedHeightPx = 0;
@@ -218,8 +198,8 @@ async function generateThemePdfFromDom(
             currentSliceHeightPx
           );
           const sliceHeightMm = (currentSliceHeightPx * pdfW) / canvas.width;
-          const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.95);
-          pdf.addImage(sliceData, 'JPEG', 0, 0, pdfW, sliceHeightMm);
+          const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.98);
+          pdf.addImage(sliceData, 'JPEG', 0, 0, pdfW, sliceHeightMm, undefined, 'FAST');
         }
         renderedHeightPx += currentSliceHeightPx;
         pageNumber++;
