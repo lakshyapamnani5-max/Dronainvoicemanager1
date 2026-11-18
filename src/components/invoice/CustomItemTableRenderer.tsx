@@ -1,6 +1,7 @@
 import * as React from 'react';
 import type { ComputedLineItem, CustomColumnDef, CustomInvoiceLayout } from '../../shared/types';
 import { formatINR } from '../../shared/gstCalculator';
+import { PRESET_DOOR_FURNITURE_SUPPLIER } from '../../lib/customLayoutPresets';
 
 export interface CustomItemTableRendererProps {
   layoutSnapshot?: CustomInvoiceLayout | null;
@@ -123,7 +124,12 @@ export function CustomItemTableRenderer({
   grandTotal,
   formatCurrency = formatINR,
 }: CustomItemTableRendererProps) {
-  const visibleColumns = (layoutSnapshot?.columns || []).filter((c) => c.visible !== false);
+  const effectiveLayout =
+    layoutSnapshot ||
+    (items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft)
+      ? PRESET_DOOR_FURNITURE_SUPPLIER
+      : null);
+  const visibleColumns = (effectiveLayout?.columns || []).filter((c) => c.visible !== false);
 
   if (visibleColumns.length === 0) return null;
 

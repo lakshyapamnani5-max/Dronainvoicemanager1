@@ -31,6 +31,7 @@ import {
 } from 'lucide-react';
 import type { CustomInvoiceLayout, CustomColumnDef } from '../shared/customLayoutTypes';
 import { listCustomLayouts, saveCustomLayout } from '../lib/customLayoutService';
+import { PRESET_DOOR_FURNITURE_SUPPLIER } from '../lib/customLayoutPresets';
 import { evaluateFormula } from '../lib/formulaEngine';
 import { CustomLayoutEditorModal } from './invoice/customBuilder/CustomLayoutEditorModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -681,8 +682,18 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       grandTotal: calc.grandTotal,
       amountInWords: calc.amountInWords,
       templateId,
-      layoutId: layoutMode === 'custom' ? selectedLayoutId : null,
-      layoutSnapshot: layoutMode === 'custom' ? selectedLayoutSnapshot : null,
+      layoutId:
+        layoutMode === 'custom'
+          ? selectedLayoutId || PRESET_DOOR_FURNITURE_SUPPLIER.id
+          : items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft)
+          ? PRESET_DOOR_FURNITURE_SUPPLIER.id
+          : null,
+      layoutSnapshot:
+        layoutMode === 'custom'
+          ? selectedLayoutSnapshot || PRESET_DOOR_FURNITURE_SUPPLIER
+          : items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft)
+          ? PRESET_DOOR_FURNITURE_SUPPLIER
+          : null,
       notes,
       terms,
       createdAt: nowIso,
@@ -833,20 +844,31 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     );
   };
 
-  const addItem = () => {
-    const initialCustomFields: Record<string, any> = {};
-    if (layoutMode === 'custom' && selectedLayoutSnapshot?.columns) {
-      for (const col of selectedLayoutSnapshot.columns) {
-        if (col.defaultValue !== undefined) {
-          initialCustomFields[col.key] = col.defaultValue;
-        } else if (col.dataType === 'quantity') {
-          initialCustomFields[col.key] = 1;
-        } else if (['number', 'decimal', 'currency', 'percentage', 'measurement'].includes(col.dataType)) {
-          initialCustomFields[col.key] = 0;
-        } else {
-          initialCustomFields[col.key] = '';
-        }
-      }
+  const addStandardItem = () => {
+    setItems((prev) => [
+      ...prev,
+      {
+        name: '',
+        description: '',
+        hsnSac: '',
+        quantity: 1,
+        unit: 'Nos',
+        rate: 0,
+        discountType: 'percent',
+        discountValue: 0,
+        taxRate: isGst ? (profile?.defaultTaxRate ?? 18) : 0,
+        customFields: {
+          _itemType: 'standard',
+        },
+      },
+    ]);
+  };
+
+  const addFurnitureItem = () => {
+    if (layoutMode !== 'custom' || !selectedLayoutSnapshot) {
+      setLayoutMode('custom');
+      setSelectedLayoutId(PRESET_DOOR_FURNITURE_SUPPLIER.id);
+      setSelectedLayoutSnapshot(PRESET_DOOR_FURNITURE_SUPPLIER);
     }
     setItems((prev) => [
       ...prev,
@@ -860,9 +882,105 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         discountType: 'percent',
         discountValue: 0,
         taxRate: isGst ? (profile?.defaultTaxRate ?? 18) : 0,
-        customFields: initialCustomFields,
+        customFields: {
+          _itemType: 'furniture',
+          qty: 1,
+          particulars: '',
+          hsn_acs: '',
+          total_sq_ft: 0,
+          thickness: '',
+          rate_sq_ft: 0,
+          amount: 0,
+        },
       },
     ]);
+  };
+
+  const toggleItemType = (idx: number, type: 'standard' | 'furniture') => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+        const cf = { ...(it.customFields || {}) };
+        if (type === 'furniture') {
+          const sqFt = Number(cf.total_sq_ft) || it.quantity || 1;
+          const rateSqFt = Number(cf.rate_sq_ft) || it.rate || 0;
+          const amt = Number((sqFt * rateSqFt).toFixed(2));
+          const q = it.quantity || 1;
+          return {
+            ...it,
+            name: it.name || String(cf.particulars || ''),
+            hsnSac: it.hsnSac || String(cf.hsn_acs || ''),
+            rate: q > 0 ? Number((amt / q).toFixed(4)) : amt,
+            customFields: {
+              ...cf,
+              _itemType: 'furniture',
+              qty: it.quantity || 1,
+              particulars: it.name || String(cf.particulars || ''),
+              hsn_acs: it.hsnSac || String(cf.hsn_acs || ''),
+              total_sq_ft: sqFt,
+              thickness: cf.thickness || '',
+              rate_sq_ft: rateSqFt,
+              amount: amt,
+            },
+          };
+        } else {
+          return {
+            ...it,
+            name: String(cf.particulars || it.name || ''),
+            hsnSac: String(cf.hsn_acs || it.hsnSac || ''),
+            quantity: Number(cf.qty) || it.quantity || 1,
+            rate: Number(cf.rate_sq_ft) || it.rate || 0,
+            customFields: {
+              ...cf,
+              _itemType: 'standard',
+            },
+          };
+        }
+      })
+    );
+
+    if (type === 'furniture' && (layoutMode !== 'custom' || !selectedLayoutSnapshot)) {
+      setLayoutMode('custom');
+      setSelectedLayoutId(PRESET_DOOR_FURNITURE_SUPPLIER.id);
+      setSelectedLayoutSnapshot(PRESET_DOOR_FURNITURE_SUPPLIER);
+    }
+  };
+
+  const updateFurnitureField = (idx: number, field: string, val: any) => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== idx) return it;
+        const cf = { ...(it.customFields || {}), [field]: val, _itemType: 'furniture' };
+        let updated: LineItemInput = { ...it, customFields: cf };
+
+        if (field === 'particulars') {
+          updated.name = String(val);
+        } else if (field === 'hsn_acs') {
+          updated.hsnSac = String(val);
+        } else if (field === 'qty') {
+          updated.quantity = Math.max(0.001, Number(val) || 1);
+        }
+
+        const sqFt = Number(cf.total_sq_ft) || 0;
+        const rateSqFt = Number(cf.rate_sq_ft) || 0;
+        const amount = Number((sqFt * rateSqFt).toFixed(2));
+        cf.amount = amount;
+
+        const q = updated.quantity || 1;
+        updated.rate = q > 0 ? Number((amount / q).toFixed(4)) : amount;
+
+        return updated;
+      })
+    );
+  };
+
+  const addItem = () => {
+    const hasFurniture = items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft);
+    if (layoutMode === 'custom' || hasFurniture) {
+      addFurnitureItem();
+    } else {
+      addStandardItem();
+    }
   };
 
   const updateCustomField = (rowIdx: number, columnKey: string, val: any) => {
@@ -1065,8 +1183,18 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           docType === 'invoice'
             ? normalizeTemplateId(templateId)
             : normalizeQuotationTemplateId(templateId),
-        layoutId: layoutMode === 'custom' ? selectedLayoutId : null,
-        layoutSnapshot: layoutMode === 'custom' ? selectedLayoutSnapshot : null,
+        layoutId:
+          layoutMode === 'custom'
+            ? selectedLayoutId || PRESET_DOOR_FURNITURE_SUPPLIER.id
+            : items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft)
+            ? PRESET_DOOR_FURNITURE_SUPPLIER.id
+            : null,
+        layoutSnapshot:
+          layoutMode === 'custom'
+            ? selectedLayoutSnapshot || PRESET_DOOR_FURNITURE_SUPPLIER
+            : items.some((it) => it.customFields?._itemType === 'furniture' || it.customFields?.total_sq_ft)
+            ? PRESET_DOOR_FURNITURE_SUPPLIER
+            : null,
         quotationTitle: docType === 'quotation' ? quotationTitle : undefined,
         projectDescription: docType === 'quotation' ? projectDescription : undefined,
         deliveryTimeline: docType === 'quotation' ? deliveryTimeline : undefined,
@@ -1861,7 +1989,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
             <Card>
               <CardHeader className="flex flex-wrap flex-row items-center justify-between gap-2 pb-3">
                 <CardTitle>Line Items ({items.length})</CardTitle>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <Button
                     type="button"
                     size="sm"
@@ -1874,12 +2002,27 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                     }}
                   >
                     <Package className="h-3.5 w-3.5 text-[#F57C00]" />
-                    <span className="hidden sm:inline">Add from Rate Card</span>
+                    <span className="hidden sm:inline">From Rate Card</span>
                     <span className="sm:hidden">Rate Card</span>
                   </Button>
-                  <Button type="button" size="sm" variant="outline" onClick={addItem}>
-                    <Plus className="h-3.5 w-3.5" />
-                    Add Item
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={addStandardItem}
+                    className="font-semibold text-zinc-700 dark:text-zinc-200 border-zinc-300 dark:border-zinc-700 hover:border-zinc-400"
+                  >
+                    <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                    <span>+ Standard Item</span>
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={addFurnitureItem}
+                    className="bg-amber-600 hover:bg-amber-700 text-white font-semibold shadow-xs"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span>+ Furniture Preset</span>
                   </Button>
                 </div>
               </CardHeader>
@@ -1913,6 +2056,31 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                 <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
                                   #{idx + 1}
                                 </span>
+                                <div className="inline-flex items-center p-0.5 rounded-md bg-zinc-200/70 dark:bg-zinc-800 text-[10px] font-semibold">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemType(idx, 'standard')}
+                                    className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                                      item.customFields?._itemType !== 'furniture'
+                                        ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-2xs font-bold'
+                                        : 'text-zinc-500 hover:text-zinc-900'
+                                    }`}
+                                  >
+                                    Standard
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemType(idx, 'furniture')}
+                                    className={`px-1.5 py-0.5 rounded transition-all cursor-pointer flex items-center gap-0.5 ${
+                                      item.customFields?._itemType === 'furniture'
+                                        ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                                        : 'text-zinc-500 hover:text-zinc-900'
+                                    }`}
+                                  >
+                                    <Sparkles className="h-2 w-2" />
+                                    <span>Furniture</span>
+                                  </button>
+                                </div>
                                 <span className="font-mono text-sm font-bold tabular-nums text-indigo-600 dark:text-indigo-400">
                                   {formatINR(computed?.totalAmount || 0)}
                                 </span>
@@ -2123,7 +2291,24 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                         );
                       })}
 
-                      <div className="grid grid-cols-2 gap-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={addStandardItem}
+                          className="font-semibold text-xs border-zinc-300 dark:border-zinc-700 hover:border-zinc-400"
+                        >
+                          <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                          + Standard Item
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={addFurnitureItem}
+                          className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shadow-xs"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" />
+                          + Furniture Preset
+                        </Button>
                         <Button
                           type="button"
                           variant="outline"
@@ -2133,13 +2318,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                             setSelectedRateIds([]);
                             setRatePickerOpen(true);
                           }}
+                          className="text-xs"
                         >
-                          <Package className="h-4 w-4 text-[#F57C00]" />
+                          <Package className="h-3.5 w-3.5 text-[#F57C00]" />
                           From Rate Card
-                        </Button>
-                        <Button type="button" variant="outline" onClick={addItem}>
-                          <Plus className="h-4 w-4" />
-                          Add Blank Item
                         </Button>
                       </div>
                     </div>
@@ -2150,6 +2332,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                         <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
                           <tr>
                             <th className="px-2.5 py-3 text-center font-bold text-zinc-500 w-10">#</th>
+                            <th className="px-2 py-3 text-center w-24 font-semibold text-zinc-500">Format</th>
                             {selectedLayoutSnapshot.columns
                               .filter((c) => c.visible !== false)
                               .map((col) => {
@@ -2205,6 +2388,35 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                             return (
                               <tr key={idx} className="align-middle hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
                                 <td className="px-2.5 py-2.5 text-center font-mono font-bold text-zinc-500">{idx + 1}</td>
+                                <td className="px-1.5 py-2.5 text-center">
+                                  <div className="inline-flex items-center p-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-[10px] font-semibold">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleItemType(idx, 'standard')}
+                                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                                        item.customFields?._itemType !== 'furniture'
+                                          ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-2xs font-bold'
+                                          : 'text-zinc-400 hover:text-zinc-700'
+                                      }`}
+                                      title="Switch to Standard Item format"
+                                    >
+                                      Std
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleItemType(idx, 'furniture')}
+                                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer flex items-center gap-0.5 ${
+                                        item.customFields?._itemType === 'furniture'
+                                          ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                                          : 'text-zinc-400 hover:text-zinc-700'
+                                      }`}
+                                      title="Switch to Furniture Preset format"
+                                    >
+                                      <Sparkles className="h-2 w-2" />
+                                      <span>Furn</span>
+                                    </button>
+                                  </div>
+                                </td>
                                 {activeCols.map((col) => {
                                   const val =
                                     item.customFields?.[col.key] !== undefined
@@ -2382,6 +2594,44 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                           })}
                         </tbody>
                       </table>
+                      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-zinc-50/80 dark:bg-zinc-900/60 border-t border-zinc-200 dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={addStandardItem}
+                            className="font-semibold text-xs border-zinc-300 dark:border-zinc-700 hover:border-zinc-400"
+                          >
+                            <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                            + Add Standard Item
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={addFurnitureItem}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shadow-xs"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            + Add Furniture Preset Item
+                          </Button>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setRateSearch('');
+                            setRateCategory('all');
+                            setSelectedRateIds([]);
+                            setRatePickerOpen(true);
+                          }}
+                          className="text-xs"
+                        >
+                          <Package className="h-3.5 w-3.5 text-[#F57C00]" />
+                          From Rate Card
+                        </Button>
+                      </div>
                     </div>
                   </>
                 ) : (
@@ -2396,9 +2646,36 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                             className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-950/50"
                           >
                             <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200/80 dark:border-zinc-800">
-                              <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                                Item #{idx + 1}
-                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                                  Item #{idx + 1}
+                                </span>
+                                <div className="inline-flex items-center p-0.5 rounded-md bg-zinc-200/70 dark:bg-zinc-800 text-[10px] font-semibold">
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemType(idx, 'standard')}
+                                    className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                                      item.customFields?._itemType !== 'furniture'
+                                        ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-2xs font-bold'
+                                        : 'text-zinc-500 hover:text-zinc-900'
+                                    }`}
+                                  >
+                                    Standard
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => toggleItemType(idx, 'furniture')}
+                                    className={`px-1.5 py-0.5 rounded transition-all cursor-pointer flex items-center gap-0.5 ${
+                                      item.customFields?._itemType === 'furniture'
+                                        ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                                        : 'text-zinc-500 hover:text-zinc-900'
+                                    }`}
+                                  >
+                                    <Sparkles className="h-2 w-2" />
+                                    <span>Furniture</span>
+                                  </button>
+                                </div>
+                              </div>
                               <div className="flex items-center gap-2">
                                 <span className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
                                   {formatINR(computed?.totalAmount || 0)}
@@ -2578,7 +2855,24 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                         );
                       })}
 
-                      <div className="grid grid-cols-2 gap-2.5">
+                      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={addStandardItem}
+                          className="font-semibold text-xs border-zinc-300 dark:border-zinc-700 hover:border-zinc-400"
+                        >
+                          <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                          + Standard Item
+                        </Button>
+                        <Button
+                          type="button"
+                          onClick={addFurnitureItem}
+                          className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shadow-xs"
+                        >
+                          <Sparkles className="h-3.5 w-3.5" />
+                          + Furniture Preset
+                        </Button>
                         <Button
                           type="button"
                           variant="outline"
@@ -2588,13 +2882,10 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                             setSelectedRateIds([]);
                             setRatePickerOpen(true);
                           }}
+                          className="text-xs"
                         >
-                          <Package className="h-4 w-4 text-[#F57C00]" />
+                          <Package className="h-3.5 w-3.5 text-[#F57C00]" />
                           From Rate Card
-                        </Button>
-                        <Button type="button" variant="outline" onClick={addItem}>
-                          <Plus className="h-4 w-4" />
-                          Add Blank Item
                         </Button>
                       </div>
                     </div>
@@ -2604,6 +2895,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                       <table className="w-full min-w-[1050px] text-xs">
                         <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
                           <tr>
+                            <th className="px-2 py-3 text-center w-24 font-semibold text-zinc-500">Format</th>
                             <th className="px-3.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 min-w-[300px]">
                               Item & Description
                             </th>
@@ -2640,6 +2932,35 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                             const computed = calc.items[idx];
                             return (
                               <tr key={idx} className="align-top hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                                <td className="px-1.5 py-3 text-center">
+                                  <div className="inline-flex items-center p-0.5 rounded-md bg-zinc-100 dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700 text-[10px] font-semibold">
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleItemType(idx, 'standard')}
+                                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer ${
+                                        item.customFields?._itemType !== 'furniture'
+                                          ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-2xs font-bold'
+                                          : 'text-zinc-400 hover:text-zinc-700'
+                                      }`}
+                                      title="Switch to Standard Item format"
+                                    >
+                                      Std
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => toggleItemType(idx, 'furniture')}
+                                      className={`px-1.5 py-0.5 rounded transition-all cursor-pointer flex items-center gap-0.5 ${
+                                        item.customFields?._itemType === 'furniture'
+                                          ? 'bg-amber-600 text-white shadow-2xs font-bold'
+                                          : 'text-zinc-400 hover:text-zinc-700'
+                                      }`}
+                                      title="Switch to Furniture Preset format"
+                                    >
+                                      <Sparkles className="h-2 w-2" />
+                                      <span>Furn</span>
+                                    </button>
+                                  </div>
+                                </td>
                                 <td className="px-3.5 py-3 space-y-1.5 min-w-[300px]">
                                   <Input
                                     list="drona-rate-card-names"
@@ -2785,6 +3106,44 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                           })}
                         </tbody>
                       </table>
+                      <div className="flex flex-wrap items-center justify-between gap-3 p-3 bg-zinc-50/80 dark:bg-zinc-900/60 border-t border-zinc-200 dark:border-zinc-800">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            onClick={addStandardItem}
+                            className="font-semibold text-xs border-zinc-300 dark:border-zinc-700 hover:border-zinc-400"
+                          >
+                            <Plus className="h-3.5 w-3.5 text-zinc-500" />
+                            + Add Standard Item
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            onClick={addFurnitureItem}
+                            className="bg-amber-600 hover:bg-amber-700 text-white font-semibold text-xs shadow-xs"
+                          >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            + Add Furniture Preset Item
+                          </Button>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => {
+                            setRateSearch('');
+                            setRateCategory('all');
+                            setSelectedRateIds([]);
+                            setRatePickerOpen(true);
+                          }}
+                          className="text-xs"
+                        >
+                          <Package className="h-3.5 w-3.5 text-[#F57C00]" />
+                          From Rate Card
+                        </Button>
+                      </div>
                     </div>
                   </>
                 )}

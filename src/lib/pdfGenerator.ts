@@ -84,73 +84,86 @@ async function generateThemePdfFromDom(
   const targetWidthPx = isLandscape ? 1123 : 794; // Exact A4 width at 96 DPI
   const targetMinHeightPx = isLandscape ? 794 : 1123;
 
-  // 1. Check if the preview is ALREADY mounted and visible on the page
-  const existingSheet = document.querySelector('.invoice-preview-root .print-sheet') as HTMLElement;
-  const existingRoot = document.querySelector('.invoice-preview-root') as HTMLElement;
-  const liveTarget = existingSheet || existingRoot;
-
   let container: HTMLDivElement | null = null;
   let root: any = null;
 
   try {
-    let targetElement: HTMLElement;
+    // ALWAYS render into a pristine, isolated, offscreen A4 container at (0, 0)
+    // Never capture from the live page where ScaledA4Preview is transformed and offset in the right editor column
+    container = document.createElement('div');
+    container.setAttribute('aria-hidden', 'true');
+    container.style.position = 'fixed';
+    container.style.left = '0px';
+    container.style.top = '0px';
+    container.style.width = `${targetWidthPx}px`;
+    container.style.minHeight = `${targetMinHeightPx}px`;
+    container.style.margin = '0px';
+    container.style.padding = '0px';
+    container.style.border = 'none';
+    container.style.transform = 'none';
+    container.style.background = '#ffffff';
+    container.style.zIndex = '-99999';
+    container.style.opacity = '1';
+    container.style.pointerEvents = 'none';
+    container.style.overflow = 'visible';
+    container.style.boxSizing = 'border-box';
+    document.body.appendChild(container);
 
-    if (liveTarget && liveTarget.offsetWidth > 100 && liveTarget.offsetHeight > 100) {
-      targetElement = liveTarget;
-    } else {
-      // Offscreen mounting when downloading from table list view
-      container = document.createElement('div');
-      container.setAttribute('aria-hidden', 'true');
-      container.style.position = 'fixed';
-      container.style.left = '0';
-      container.style.top = '0';
-      container.style.width = `${targetWidthPx}px`;
-      container.style.minHeight = `${targetMinHeightPx}px`;
-      container.style.background = '#ffffff';
-      container.style.zIndex = '-9999';
-      container.style.opacity = '1';
-      container.style.pointerEvents = 'none';
-      container.style.overflow = 'visible';
-      document.body.appendChild(container);
+    const React = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
 
-      const React = await import('react');
-      const { createRoot } = await import('react-dom/client');
-      const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
+    root = createRoot(container);
+    root.render(
+      React.createElement(InvoicePreview, {
+        docType: 'invoice',
+        record,
+        templateOverride: normId,
+        a4Ratio: true,
+      })
+    );
 
-      root = createRoot(container);
-      root.render(
-        React.createElement(InvoicePreview, {
-          docType: 'invoice',
-          record,
-          templateOverride: normId,
-          a4Ratio: true,
+    // Wait for fonts, images, and React to finish rendering
+    if (document.fonts?.ready) {
+      try {
+        await document.fonts.ready;
+      } catch {}
+    }
+    await new Promise((r) => setTimeout(r, 450));
+
+    const imgs = Array.from(container.querySelectorAll('img'));
+    if (imgs.length > 0) {
+      await Promise.all(
+        imgs.map((img) => {
+          if (img.complete) return Promise.resolve(null);
+          return new Promise((resolve) => {
+            img.onload = () => resolve(null);
+            img.onerror = () => resolve(null);
+            setTimeout(resolve, 500);
+          });
         })
       );
-
-      // Wait for fonts, images, and React to finish rendering
-      if (document.fonts?.ready) {
-        try {
-          await document.fonts.ready;
-        } catch {}
-      }
-      await new Promise((r) => setTimeout(r, 450));
-
-      const imgs = Array.from(container.querySelectorAll('img'));
-      if (imgs.length > 0) {
-        await Promise.all(
-          imgs.map((img) => {
-            if (img.complete) return Promise.resolve(null);
-            return new Promise((resolve) => {
-              img.onload = () => resolve(null);
-              img.onerror = () => resolve(null);
-              setTimeout(resolve, 500);
-            });
-          })
-        );
-      }
-
-      targetElement = (container.firstElementChild as HTMLElement) || container;
     }
+
+    const sheetEl = container.querySelector('.print-sheet') as HTMLElement | null;
+    const rootEl = container.querySelector('.invoice-preview-root') as HTMLElement | null;
+    if (rootEl) {
+      rootEl.style.margin = '0';
+      rootEl.style.padding = '0';
+      rootEl.style.transform = 'none';
+      rootEl.style.width = `${targetWidthPx}px`;
+      rootEl.style.maxWidth = `${targetWidthPx}px`;
+      rootEl.style.minWidth = `${targetWidthPx}px`;
+    }
+    if (sheetEl) {
+      sheetEl.style.margin = '0';
+      sheetEl.style.transform = 'none';
+      sheetEl.style.width = `${targetWidthPx}px`;
+      sheetEl.style.maxWidth = `${targetWidthPx}px`;
+      sheetEl.style.minWidth = `${targetWidthPx}px`;
+    }
+
+    const targetElement = sheetEl || rootEl || (container.firstElementChild as HTMLElement) || container;
 
     const computedHeight = Math.max(
       targetMinHeightPx,
@@ -195,6 +208,24 @@ async function generateThemePdfFromDom(
         x: 0,
         y: 0,
         onclone: (clonedDoc: Document) => {
+          const clonedSheet = clonedDoc.querySelector('.print-sheet') as HTMLElement;
+          if (clonedSheet) {
+            clonedSheet.style.margin = '0';
+            clonedSheet.style.transform = 'none';
+            clonedSheet.style.width = `${targetWidthPx}px`;
+            clonedSheet.style.maxWidth = `${targetWidthPx}px`;
+            clonedSheet.style.minWidth = `${targetWidthPx}px`;
+          }
+          const clonedContainer = clonedDoc.querySelector('[aria-hidden="true"]') as HTMLElement;
+          if (clonedContainer) {
+            clonedContainer.style.position = 'fixed';
+            clonedContainer.style.left = '0';
+            clonedContainer.style.top = '0';
+            clonedContainer.style.margin = '0';
+            clonedContainer.style.padding = '0';
+            clonedContainer.style.transform = 'none';
+          }
+
           const tmpCanvas = document.createElement('canvas');
           const tmpCtx = tmpCanvas.getContext('2d');
           if (tmpCtx) {
