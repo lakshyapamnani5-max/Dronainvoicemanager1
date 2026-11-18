@@ -70,7 +70,10 @@ export function RateCardPage() {
       setItems(initialItems);
       setLoading(false);
     }
-    void load(Boolean(initialItems));
+    // Load locally first; only query Firebase if rate card items are missing
+    if (!initialItems) {
+      void load(false);
+    }
   }, [initialItems, load]);
 
   React.useEffect(() => {

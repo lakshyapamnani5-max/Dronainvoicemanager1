@@ -99,7 +99,10 @@ export function PaymentsPage({ navigate }: { navigate: (path: string) => void })
       setAllInvoices(initialHydrated.invoices);
       setLoading(!initialHydrated.complete);
     }
-    void load(Boolean(initialHydrated?.complete));
+    // Load locally first; only query Firebase if local cache is incomplete or missing
+    if (!initialHydrated?.complete) {
+      void load(false);
+    }
   }, [initialHydrated, load]);
 
   React.useEffect(() => {

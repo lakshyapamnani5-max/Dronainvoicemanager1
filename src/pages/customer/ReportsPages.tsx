@@ -392,7 +392,10 @@ export function SalesReportsPage() {
       setSnapshot(initialSnap);
       setLoading(false);
     }
-    loadSales(Boolean(initialSnap));
+    // Load locally first; only query Firebase if snapshot is missing
+    if (!initialSnap) {
+      loadSales(false);
+    }
   }, [initialSnap, loadSales]);
 
   React.useEffect(() => {

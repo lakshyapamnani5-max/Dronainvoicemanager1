@@ -115,7 +115,10 @@ export function CustomerDashboard({ navigate }: { navigate: (path: string) => vo
       setSnapshot(initialSnap);
       setLoading(false);
     }
-    void load(Boolean(initialSnap));
+    // Load locally first; only query Firebase if local cache is not yet loaded
+    if (!initialSnap) {
+      void load(false);
+    }
   }, [initialSnap, load]);
 
   React.useEffect(() => {

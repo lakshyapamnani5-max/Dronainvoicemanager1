@@ -125,9 +125,14 @@ export function GstReportsPage({ navigate }: GstReportsPageProps) {
   const [viewJsonModalOpen, setViewJsonModalOpen] = React.useState(false);
   const [selectedJsonView, setSelectedJsonView] = React.useState<string>('');
 
-  // Load Invoices
-  const loadInvoices = React.useCallback(async () => {
+  // Load Invoices - local first
+  const loadInvoices = React.useCallback(async (force = false) => {
     if (!tenantUid) return;
+    const hasData = cachedRead.hasTenantCollectionData(tenantUid, 'invoices');
+    if (!force && hasData) {
+      setAllInvoices(cachedRead.getTenantEntry(tenantUid).invoices);
+      return;
+    }
     setLoadingInvoices(true);
     try {
       await invoicesApi.list();

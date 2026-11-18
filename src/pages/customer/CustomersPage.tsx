@@ -70,7 +70,10 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
       setAllCustomers(initialCustomers);
       setLoading(false);
     }
-    void load(Boolean(initialCustomers));
+    // Load locally first; only query Firebase if local cache is missing
+    if (!initialCustomers) {
+      void load(false);
+    }
   }, [initialCustomers, load]);
 
   React.useEffect(() => {
@@ -183,11 +186,10 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
         <button
           type="button"
           onClick={() => setActiveTab('list')}
-          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-            activeTab === 'list'
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${activeTab === 'list'
               ? 'bg-[#F57C00] text-white'
               : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-          }`}
+            }`}
         >
           <Users className="h-3.5 w-3.5" />
           All Customers ({allCustomers.filter((c) => !c.archived).length})
@@ -195,11 +197,10 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
         <button
           type="button"
           onClick={() => setActiveTab('gst')}
-          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-            activeTab === 'gst'
+          className={`inline-flex items-center gap-2 rounded-lg px-3.5 py-1.5 text-xs font-medium transition-colors cursor-pointer ${activeTab === 'gst'
               ? 'bg-[#F57C00] text-white'
               : 'text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100'
-          }`}
+            }`}
         >
           <ShieldCheck className="h-3.5 w-3.5" />
           GST Customer
@@ -255,192 +256,192 @@ export function CustomersPage({ navigate }: { navigate: (path: string) => void }
           </div>
 
           <Card>
-        <CardContent className="p-0">
-          {loading ? (
-            <div className="p-8 text-center text-xs text-zinc-500">Loading customers...</div>
-          ) : customers.length === 0 ? (
-            <div className="p-6">
-              <EmptyState
-                icon={Users}
-                title="No customers found"
-                description="Add your clients and B2B accounts to generate GST invoices and track ledgers."
-                actionLabel="Add Customer"
-                onAction={openCreate}
-              />
-            </div>
-          ) : (
-            <>
-              {/* Mobile Customer Cards */}
-              <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
-                {customers.map((c) => (
-                  <div key={c.id} className={`p-4 space-y-2.5 ${c.archived ? 'opacity-60' : ''}`}>
-                    <div className="flex items-start justify-between gap-2">
-                      <button
-                        type="button"
-                        onClick={() => navigate(`/customers/${c.id}`)}
-                        className="text-left min-w-0 cursor-pointer"
-                      >
-                        <div className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate">
-                          {c.companyName || c.name}
-                          {c.archived ? ' (Archived)' : ''}
-                        </div>
-                        {c.companyName ? (
-                          <div className="text-xs text-zinc-500 truncate">{c.name}</div>
-                        ) : null}
-                        <div className="text-[11px] font-mono text-zinc-500 mt-1">
-                          {c.gstin || 'Unregistered'} · {c.state}
-                        </div>
-                      </button>
-                      <div className="text-right shrink-0">
-                        <div className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
-                          {formatINR(c.outstandingBalance || 0)}
-                        </div>
-                        <div className="text-[11px] text-zinc-500 font-mono">
-                          Sales {formatINR(c.totalSales || 0)}
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="flex items-center gap-2 pt-1">
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        className="flex-1"
-                        onClick={() => navigate(`/customers/${c.id}`)}
-                      >
-                        <Eye className="h-3.5 w-3.5" />
-                        Ledger
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        onClick={() => openEdit(c)}
-                      >
-                        <Edit2 className="h-3.5 w-3.5" />
-                        Edit
-                      </Button>
-                      {!c.archived ? (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleArchive(c)}
-                          aria-label="Archive customer"
-                          title="Archive / Delete"
-                        >
-                          <Archive className="h-3.5 w-3.5" />
-                        </Button>
-                      ) : (
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => handleUnarchive(c)}
-                          aria-label="Unarchive customer"
-                          title="Unarchive Customer"
-                          className="text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
-                        >
-                          <ArchiveRestore className="h-3.5 w-3.5" />
-                          Unarchive
-                        </Button>
-                      )}
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <div className="hidden md:block">
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Customer / Company</TableHead>
-                      <TableHead>Contact</TableHead>
-                      <TableHead>GSTIN & State</TableHead>
-                      <TableHead className="text-right">Total Sales</TableHead>
-                      <TableHead className="text-right">Outstanding</TableHead>
-                      <TableHead className="text-right">Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
+            <CardContent className="p-0">
+              {loading ? (
+                <div className="p-8 text-center text-xs text-zinc-500">Loading customers...</div>
+              ) : customers.length === 0 ? (
+                <div className="p-6">
+                  <EmptyState
+                    icon={Users}
+                    title="No customers found"
+                    description="Add your clients and B2B accounts to generate GST invoices and track ledgers."
+                    actionLabel="Add Customer"
+                    onAction={openCreate}
+                  />
+                </div>
+              ) : (
+                <>
+                  {/* Mobile Customer Cards */}
+                  <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
                     {customers.map((c) => (
-                      <TableRow key={c.id} className={c.archived ? 'opacity-60' : ''}>
-                        <TableCell>
+                      <div key={c.id} className={`p-4 space-y-2.5 ${c.archived ? 'opacity-60' : ''}`}>
+                        <div className="flex items-start justify-between gap-2">
                           <button
                             type="button"
                             onClick={() => navigate(`/customers/${c.id}`)}
-                            className="text-left hover:text-[#F57C00] cursor-pointer"
+                            className="text-left min-w-0 cursor-pointer"
                           >
-                            <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                            <div className="font-semibold text-sm text-zinc-900 dark:text-zinc-100 truncate">
                               {c.companyName || c.name}
                               {c.archived ? ' (Archived)' : ''}
                             </div>
                             {c.companyName ? (
-                              <div className="text-xs text-zinc-500">{c.name}</div>
+                              <div className="text-xs text-zinc-500 truncate">{c.name}</div>
                             ) : null}
+                            <div className="text-[11px] font-mono text-zinc-500 mt-1">
+                              {c.gstin || 'Unregistered'} · {c.state}
+                            </div>
                           </button>
-                        </TableCell>
-                        <TableCell className="text-xs text-zinc-600 dark:text-zinc-400">
-                          <div>{c.email || '—'}</div>
-                          <div className="font-mono">{c.phone || '—'}</div>
-                        </TableCell>
-                        <TableCell className="text-xs">
-                          <div className="font-mono">{c.gstin || 'Unregistered'}</div>
-                          <div className="text-zinc-500">{c.state}</div>
-                        </TableCell>
-                        <TableCell className="text-right font-mono tabular-nums">
-                          {formatINR(c.totalSales || 0)}
-                        </TableCell>
-                        <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
-                          {formatINR(c.outstandingBalance || 0)}
-                        </TableCell>
-                        <TableCell className="text-right">
-                          <div className="inline-flex items-center gap-1">
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => navigate(`/customers/${c.id}`)}
-                              title="View Ledger"
-                            >
-                              <Eye className="h-3.5 w-3.5" />
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={() => openEdit(c)}
-                              title="Edit Customer"
-                            >
-                              <Edit2 className="h-3.5 w-3.5" />
-                            </Button>
-                            {!c.archived ? (
-                              <Button
-                                size="sm"
-                                variant="ghost"
-                                onClick={() => handleArchive(c)}
-                                title="Archive / Delete"
-                              >
-                                <Archive className="h-3.5 w-3.5" />
-                              </Button>
-                            ) : (
-                              <Button
-                                size="sm"
-                                variant="outline"
-                                onClick={() => handleUnarchive(c)}
-                                title="Unarchive Customer"
-                                className="h-8 text-xs px-2.5 text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
-                              >
-                                <ArchiveRestore className="h-3.5 w-3.5" />
-                                Unarchive
-                              </Button>
-                            )}
+                          <div className="text-right shrink-0">
+                            <div className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
+                              {formatINR(c.outstandingBalance || 0)}
+                            </div>
+                            <div className="text-[11px] text-zinc-500 font-mono">
+                              Sales {formatINR(c.totalSales || 0)}
+                            </div>
                           </div>
-                        </TableCell>
-                      </TableRow>
+                        </div>
+
+                        <div className="flex items-center gap-2 pt-1">
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            className="flex-1"
+                            onClick={() => navigate(`/customers/${c.id}`)}
+                          >
+                            <Eye className="h-3.5 w-3.5" />
+                            Ledger
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => openEdit(c)}
+                          >
+                            <Edit2 className="h-3.5 w-3.5" />
+                            Edit
+                          </Button>
+                          {!c.archived ? (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleArchive(c)}
+                              aria-label="Archive customer"
+                              title="Archive / Delete"
+                            >
+                              <Archive className="h-3.5 w-3.5" />
+                            </Button>
+                          ) : (
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleUnarchive(c)}
+                              aria-label="Unarchive customer"
+                              title="Unarchive Customer"
+                              className="text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
+                            >
+                              <ArchiveRestore className="h-3.5 w-3.5" />
+                              Unarchive
+                            </Button>
+                          )}
+                        </div>
+                      </div>
                     ))}
-                  </TableBody>
-                </Table>
-              </div>
-            </>
-          )}
-        </CardContent>
-      </Card>
+                  </div>
+
+                  <div className="hidden md:block">
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Customer / Company</TableHead>
+                          <TableHead>Contact</TableHead>
+                          <TableHead>GSTIN & State</TableHead>
+                          <TableHead className="text-right">Total Sales</TableHead>
+                          <TableHead className="text-right">Outstanding</TableHead>
+                          <TableHead className="text-right">Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {customers.map((c) => (
+                          <TableRow key={c.id} className={c.archived ? 'opacity-60' : ''}>
+                            <TableCell>
+                              <button
+                                type="button"
+                                onClick={() => navigate(`/customers/${c.id}`)}
+                                className="text-left hover:text-[#F57C00] cursor-pointer"
+                              >
+                                <div className="font-medium text-zinc-900 dark:text-zinc-100">
+                                  {c.companyName || c.name}
+                                  {c.archived ? ' (Archived)' : ''}
+                                </div>
+                                {c.companyName ? (
+                                  <div className="text-xs text-zinc-500">{c.name}</div>
+                                ) : null}
+                              </button>
+                            </TableCell>
+                            <TableCell className="text-xs text-zinc-600 dark:text-zinc-400">
+                              <div>{c.email || '—'}</div>
+                              <div className="font-mono">{c.phone || '—'}</div>
+                            </TableCell>
+                            <TableCell className="text-xs">
+                              <div className="font-mono">{c.gstin || 'Unregistered'}</div>
+                              <div className="text-zinc-500">{c.state}</div>
+                            </TableCell>
+                            <TableCell className="text-right font-mono tabular-nums">
+                              {formatINR(c.totalSales || 0)}
+                            </TableCell>
+                            <TableCell className="text-right font-mono tabular-nums font-semibold text-[#F57C00]">
+                              {formatINR(c.outstandingBalance || 0)}
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <div className="inline-flex items-center gap-1">
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => navigate(`/customers/${c.id}`)}
+                                  title="View Ledger"
+                                >
+                                  <Eye className="h-3.5 w-3.5" />
+                                </Button>
+                                <Button
+                                  size="sm"
+                                  variant="ghost"
+                                  onClick={() => openEdit(c)}
+                                  title="Edit Customer"
+                                >
+                                  <Edit2 className="h-3.5 w-3.5" />
+                                </Button>
+                                {!c.archived ? (
+                                  <Button
+                                    size="sm"
+                                    variant="ghost"
+                                    onClick={() => handleArchive(c)}
+                                    title="Archive / Delete"
+                                  >
+                                    <Archive className="h-3.5 w-3.5" />
+                                  </Button>
+                                ) : (
+                                  <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleUnarchive(c)}
+                                    title="Unarchive Customer"
+                                    className="h-8 text-xs px-2.5 text-emerald-700 border-emerald-200 hover:bg-emerald-50 dark:text-emerald-400 dark:border-emerald-900/60 dark:hover:bg-emerald-950/30"
+                                  >
+                                    <ArchiveRestore className="h-3.5 w-3.5" />
+                                    Unarchive
+                                  </Button>
+                                )}
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                  </div>
+                </>
+              )}
+            </CardContent>
+          </Card>
         </>
       )}
 
@@ -625,7 +626,10 @@ export function CustomerDetailsPage({
       setData(initialDetail);
       setLoading(false);
     }
-    loadDetails(Boolean(initialDetail));
+    // Load locally first; only query Firebase if customer is not in local cache
+    if (!initialDetail) {
+      loadDetails(false);
+    }
   }, [initialDetail, loadDetails]);
 
   React.useEffect(() => {
@@ -637,10 +641,15 @@ export function CustomerDetailsPage({
         changed.has('quotations') ||
         changed.has('payments')
       ) {
-        loadDetails(true);
+        const next = cachedRead.enrichCustomerDetailFromCache(tenantUid, customerId);
+        if (next) {
+          setData(next);
+        } else {
+          loadDetails(true);
+        }
       }
     });
-  }, [tenantUid, loadDetails]);
+  }, [tenantUid, customerId, loadDetails]);
 
   if (loading) {
     return <div className="p-8 text-sm text-zinc-500">Loading customer ledger...</div>;
