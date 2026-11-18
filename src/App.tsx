@@ -75,7 +75,7 @@ function useRouter() {
   }, []);
 
   const goBack = React.useCallback(
-    (fallback = '/dashboard') => {
+    (fallback = '/invoices') => {
       const prev = historyStackRef.current.pop();
       if (prev) {
         const qIdx = prev.indexOf('?');
@@ -110,7 +110,7 @@ function AppRouter() {
       const target =
         session.effectiveUser.role === 'super_admin' && !session.isImpersonating
           ? '/admin'
-          : '/dashboard';
+          : '/invoices';
       navigate(target);
     }
   }, [loading, session, path, isPublicPath, navigate]);
@@ -142,7 +142,7 @@ function AppRouter() {
 
   // Enforce strict client-side route boundary matching backend RBAC
   if (path.startsWith('/admin') && !isAdminSession) {
-    navigate('/dashboard');
+    navigate('/invoices');
     return null;
   }
   if (!path.startsWith('/admin') && isAdminSession) {
@@ -307,7 +307,7 @@ function AppRouter() {
         hideFooter
         fullBleed
       >
-        <QuickSalePage navigate={navigate} onBack={() => goBack('/dashboard')} />
+        <QuickSalePage navigate={navigate} onBack={() => goBack('/invoices')} />
       </AppShell>
     );
   }

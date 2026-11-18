@@ -203,6 +203,7 @@ export function AppShell({
     currentPath === itemPath ||
     (itemPath !== '/admin' &&
       itemPath !== '/dashboard' &&
+      itemPath !== '/invoices' &&
       currentPath.startsWith(itemPath + '/'));
 
   const mobileBottomLeft = isAdminView
@@ -211,8 +212,8 @@ export function AppShell({
         { label: 'Businesses', path: '/admin/users', icon: Users },
       ]
     : [
-        { label: 'Home', path: '/dashboard', icon: Home },
         { label: 'Invoices', path: '/invoices', icon: Receipt },
+        { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
       ];
 
   const mobileBottomRight = isAdminView
@@ -250,6 +251,7 @@ export function AppShell({
         { label: 'Platform Settings', path: '/admin/settings', icon: Settings },
       ]
     : [
+        { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
         { label: 'Customers', path: '/customers', icon: Users },
         { label: 'Purchases', path: '/purchases', icon: ShoppingCart },
         { label: 'GST Customer', path: '/gst-customer', icon: ShieldCheck },
@@ -268,7 +270,7 @@ export function AppShell({
       <div className="flex h-16 items-center justify-between px-5 border-b border-zinc-800/80">
         <button
           type="button"
-          onClick={() => navigate(isAdminView ? '/admin' : '/dashboard')}
+          onClick={() => navigate(isAdminView ? '/admin' : '/invoices')}
           className="flex items-center gap-2.5 text-left cursor-pointer focus-visible:outline-none"
         >
           <img

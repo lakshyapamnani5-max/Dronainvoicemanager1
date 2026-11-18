@@ -49,7 +49,7 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
     try {
       const session = await login(email, password, mode === 'admin-login' ? 'admin' : 'customer');
       notify('success', `Welcome back, ${session.actorUser.ownerName}`);
-      navigate(session.actorUser.role === 'super_admin' ? '/admin' : '/dashboard');
+      navigate(session.actorUser.role === 'super_admin' ? '/admin' : '/invoices');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Sign in failed');
     } finally {
@@ -73,7 +73,7 @@ export function AuthPages({ mode, navigate }: AuthPageProps) {
         defaultIsGst,
       });
       notify('success', 'Business workspace provisioned');
-      navigate('/dashboard');
+      navigate('/invoices');
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Registration failed');
     } finally {

@@ -233,6 +233,8 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
   const [itemDraft, setItemDraft] = React.useState<QuickItemDraft>(() => emptyItemDraft(0));
   const [itemNameFocused, setItemNameFocused] = React.useState(true);
   const [itemAdvancedOpen, setItemAdvancedOpen] = React.useState(false);
+  const [manualTotalInput, setManualTotalInput] = React.useState('');
+  const [manualTotalFocused, setManualTotalFocused] = React.useState(false);
 
   const [invoiceNoModalOpen, setInvoiceNoModalOpen] = React.useState(false);
   const [saleSettingsOpen, setSaleSettingsOpen] = React.useState(false);
@@ -253,7 +255,7 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
     if (onBack) {
       onBack();
     } else {
-      navigate('/dashboard');
+      navigate('/invoices');
     }
   };
 
@@ -768,10 +770,36 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
         ? Math.min(draftLineRaw, Number(itemDraft.discountValue) || 0)
         : (draftLineRaw * (Number(itemDraft.discountValue) || 0)) / 100;
     const draftAfterDisc = Math.max(0, draftLineRaw - draftDisc);
-    const draftPreviewTotal =
+    const draftTaxAmt =
       itemDraft.taxSelection === 'exclusive' && itemDraft.taxRate > 0
-        ? draftAfterDisc * (1 + itemDraft.taxRate / 100)
-        : draftAfterDisc;
+        ? draftAfterDisc * (itemDraft.taxRate / 100)
+        : 0;
+    const draftPreviewTotal = draftAfterDisc + draftTaxAmt;
+
+    const handleTotalAmountInput = (val: string) => {
+      setManualTotalInput(val);
+      const target = Number(val);
+      if (!Number.isFinite(target) || target < 0) return;
+      const q = Number(itemDraft.quantity) || 1;
+      if (q <= 0) return;
+      const tRate = itemDraft.taxRate || 0;
+      const dVal = Number(itemDraft.discountValue) || 0;
+
+      let afterDisc = target;
+      if (itemDraft.taxSelection === 'exclusive' && tRate > 0) {
+        afterDisc = target / (1 + tRate / 100);
+      }
+      let subS = afterDisc;
+      if (itemDraft.discountType === 'percent') {
+        const denom = 1 - dVal / 100;
+        subS = denom > 0 ? afterDisc / denom : afterDisc;
+      } else {
+        subS = afterDisc + dVal;
+      }
+      const newRate = Math.max(0, subS / q);
+      const rounded = Math.round(newRate * 100) / 100;
+      setItemDraft((d) => ({ ...d, rate: rounded > 0 ? String(rounded) : '' }));
+    };
 
     return (
       <div className="flex-1 bg-zinc-50 dark:bg-zinc-950 text-zinc-900 dark:text-zinc-100 flex justify-center">
@@ -1085,15 +1113,112 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
               </div>
             ) : null}
 
-            {/* Live Subtotal Preview */}
-            {draftRate > 0 ? (
-              <div className="flex items-center justify-between rounded-lg bg-zinc-50 dark:bg-zinc-950/60 border border-zinc-200 dark:border-zinc-800 px-3.5 py-2.5 text-sm">
-                <span className="text-zinc-500 dark:text-zinc-400">Item Total</span>
-                <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100 tabular-nums">
-                  {formatINR(draftPreviewTotal)}
-                </span>
+            {/* Totals & Taxes Card matching screenshot */}
+            <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 bg-white dark:bg-zinc-900 p-4 space-y-3.5 shadow-xs">
+              <div className="text-xs font-semibold text-zinc-800 dark:text-zinc-200 border-b border-zinc-100 dark:border-zinc-800 pb-2">
+                Totals &amp; Taxes
               </div>
-            ) : null}
+
+              {/* Subtotal */}
+              <div className="flex items-center justify-between text-sm">
+                <span className="text-zinc-500 dark:text-zinc-400">
+                  Subtotal <span className="text-[11px]">(Rate x Qty)</span>
+                </span>
+                <div className="flex items-center gap-1 font-mono text-zinc-900 dark:text-zinc-100 font-medium">
+                  <span className="text-xs text-zinc-400">₹</span>
+                  <span>{draftLineRaw.toFixed(2)}</span>
+                </div>
+              </div>
+
+              {/* Discount Row */}
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-zinc-500 dark:text-zinc-400 shrink-0">Discount</span>
+                <div className="flex items-center gap-1.5 flex-1 max-w-[220px]">
+                  <div className="flex rounded-md border border-zinc-300 dark:border-zinc-700 overflow-hidden shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setItemDraft((d) => ({ ...d, discountType: 'percent' }))}
+                      className={`px-2 py-1 text-xs font-bold cursor-pointer transition-colors ${
+                        itemDraft.discountType === 'percent'
+                          ? 'bg-[#F57C00] text-white'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'
+                      }`}
+                    >
+                      %
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setItemDraft((d) => ({ ...d, discountType: 'fixed' }))}
+                      className={`px-2 py-1 text-xs font-bold cursor-pointer transition-colors ${
+                        itemDraft.discountType === 'fixed'
+                          ? 'bg-[#F57C00] text-white'
+                          : 'bg-zinc-100 dark:bg-zinc-800 text-zinc-600 dark:text-zinc-300'
+                      }`}
+                    >
+                      ₹
+                    </button>
+                  </div>
+                  <div className="flex-1 flex items-center rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 h-9">
+                    <span className="text-xs text-zinc-400 mr-1">
+                      {itemDraft.discountType === 'fixed' ? '₹' : '%'}
+                    </span>
+                    <input
+                      type="number"
+                      inputMode="decimal"
+                      min="0"
+                      step="any"
+                      value={itemDraft.discountValue}
+                      onChange={(e) => setItemDraft((d) => ({ ...d, discountValue: e.target.value }))}
+                      placeholder="0.00"
+                      className="w-full bg-transparent text-sm text-zinc-900 dark:text-zinc-100 focus:outline-none tabular-nums"
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Tax % Row */}
+              <div className="flex items-center justify-between gap-3 text-sm">
+                <span className="text-zinc-500 dark:text-zinc-400 shrink-0">Tax %</span>
+                <div className="flex items-center gap-2 flex-1 max-w-[220px]">
+                  <select
+                    value={String(itemDraft.taxRate)}
+                    onChange={(e) => setItemDraft((d) => ({ ...d, taxRate: Number(e.target.value) }))}
+                    className="flex-1 h-9 rounded-md border border-zinc-300 dark:border-zinc-700 bg-white dark:bg-zinc-900 px-2 text-xs text-zinc-900 dark:text-zinc-100 focus:outline-none cursor-pointer"
+                  >
+                    <option value="0">None</option>
+                    <option value="5">GST 5%</option>
+                    <option value="12">GST 12%</option>
+                    <option value="18">GST 18%</option>
+                    <option value="28">GST 28%</option>
+                  </select>
+                  <div className="w-20 flex items-center justify-end rounded-md border border-zinc-200 dark:border-zinc-800 bg-zinc-50 dark:bg-zinc-950 px-2 h-9 font-mono text-xs text-zinc-700 dark:text-zinc-300 tabular-nums">
+                    ₹ {draftTaxAmt.toFixed(2)}
+                  </div>
+                </div>
+              </div>
+
+              {/* Total Amount (Editable in real-time) */}
+              <div className="flex items-center justify-between pt-2 border-t border-zinc-100 dark:border-zinc-800 text-sm font-semibold">
+                <span className="text-zinc-900 dark:text-zinc-100">Total Amount:</span>
+                <div className="flex items-center gap-1">
+                  <span className="text-sm font-bold text-zinc-900 dark:text-zinc-100">₹</span>
+                  <input
+                    type="number"
+                    inputMode="decimal"
+                    step="any"
+                    min="0"
+                    value={manualTotalFocused ? manualTotalInput : draftPreviewTotal.toFixed(2)}
+                    onFocus={() => {
+                      setManualTotalFocused(true);
+                      setManualTotalInput(draftPreviewTotal.toFixed(2));
+                    }}
+                    onBlur={() => setManualTotalFocused(false)}
+                    onChange={(e) => handleTotalAmountInput(e.target.value)}
+                    className="w-28 text-right font-mono font-bold text-base text-[#F57C00] bg-transparent border-b border-dashed border-zinc-400 dark:border-zinc-600 focus:border-[#F57C00] focus:outline-none tabular-nums pb-0.5"
+                  />
+                </div>
+              </div>
+            </div>
           </div>
 
           {/* Bottom Split Action Bar (sits cleanly above mobile bottom bar) */}
