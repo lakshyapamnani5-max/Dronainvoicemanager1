@@ -200,3 +200,44 @@
     display: table-footer-group;
   }
 }
+
+/* Offscreen A4 container styles - ensure exact desktop column & flex layouts regardless of mobile/narrow viewport */
+[aria-hidden="true"] .print-sheet {
+  box-sizing: border-box !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:flex-row {
+  flex-direction: row !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:grid-cols-2 {
+  grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:text-right {
+  text-align: right !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:self-start {
+  align-self: flex-start !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:self-center {
+  align-self: center !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:w-auto {
+  width: auto !important;
+}
+[aria-hidden="true"] .print-sheet .sm\:absolute {
+  position: absolute !important;
+}
+[aria-hidden="true"] .print-sheet .md\:grid-cols-12 {
+  grid-template-columns: repeat(12, minmax(0, 1fr)) !important;
+}
+[aria-hidden="true"] .print-sheet .md\:col-span-7 {
+  grid-column: span 7 / span 7 !important;
+}
+[aria-hidden="true"] .print-sheet .md\:col-span-5 {
+  grid-column: span 5 / span 5 !important;
+}
+[aria-hidden="true"] .print-sheet .md\:border-b-0 {
+  border-bottom-width: 0px !important;
+}
+[aria-hidden="true"] .print-sheet .md\:border-r {
+  border-right-width: 1px !important;
+}
