@@ -16,6 +16,7 @@ import {
   cancelInvoice,
   convertQuotationToInvoice,
   createCustomer,
+  deleteInvoice,
   finalizeDraftInvoice,
   getAdminDashboardData,
   getBusinessProfile,
@@ -693,6 +694,15 @@ apiRouter.post('/invoices/:id/cancel', requireAuth, requireTenantWorkspace, (req
     res.json({ invoice });
   } catch (err) {
     res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to cancel invoice' });
+  }
+});
+
+apiRouter.delete('/invoices/:id', requireAuth, requireTenantWorkspace, (req, res) => {
+  try {
+    const result = deleteInvoice(req.auth!, String(req.params.id));
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : 'Failed to delete invoice' });
   }
 });
 

@@ -56,6 +56,7 @@ import {
   prependTenantActivityLogCache,
   removePendingSyncOp,
   removeTenantCustomerCache,
+  removeTenantInvoiceCache,
   removeTenantPaymentCache,
   removeTenantPurchaseCache,
   removeTenantPurchasePaymentCache,
@@ -4240,6 +4241,41 @@ export const rtdbService = {
     });
 
     return { invoice: updated };
+  },
+
+  deleteInvoice: async (invoiceId: string) => {
+    const ctx = await requireTenantContext();
+    const tenantUid = ctx.effectiveUser.uid;
+    const [invoices, payments] = await Promise.all([
+      listTenantInvoicesRaw(tenantUid),
+      listTenantPaymentsRaw(tenantUid),
+    ]);
+    const existing = invoices.find((inv) => inv.id === invoiceId);
+    if (!existing) throw new Error('Invoice not found');
+
+    const patch: Record<string, null> = {
+      [`tenants/${tenantUid}/invoices/${invoiceId}`]: null,
+    };
+    for (const pay of payments.filter((p) => p.invoiceId === invoiceId)) {
+      patch[`tenants/${tenantUid}/payments/${pay.id}`] = null;
+    }
+
+    await update(ref(rtdb), patch);
+    removeTenantInvoiceCache(tenantUid, invoiceId);
+    for (const pay of payments.filter((p) => p.invoiceId === invoiceId)) {
+      removeTenantPaymentCache(tenantUid, pay.id);
+    }
+    await touchTenantMeta(tenantUid, ['invoices', 'payments']);
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: ctx.impersonationSession?.id,
+      action: 'INVOICE_DELETED',
+      entityType: 'invoice',
+      entityId: invoiceId,
+      summary: `Deleted invoice ${existing.invoiceNumber}`,
+    });
+    return { ok: true };
   },
 
   // ==================== QUOTATIONS ====================

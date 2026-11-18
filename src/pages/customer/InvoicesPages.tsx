@@ -76,6 +76,23 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
     notes: '',
   });
   const [paying, setPaying] = React.useState(false);
+  const [deletingInvoiceId, setDeletingInvoiceId] = React.useState<string | null>(null);
+  const [deletingListInv, setDeletingListInv] = React.useState(false);
+
+  const handleDeleteListInvoice = async () => {
+    if (!deletingInvoiceId) return;
+    setDeletingListInv(true);
+    try {
+      await invoicesApi.delete(deletingInvoiceId);
+      notify('success', 'Invoice deleted');
+      setDeletingInvoiceId(null);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete invoice');
+    } finally {
+      setDeletingListInv(false);
+    }
+  };
 
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -361,6 +378,15 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                       >
                         <Download className="h-3.5 w-3.5" />
                       </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="text-red-600 hover:text-red-700"
+                        onClick={() => setDeletingInvoiceId(inv.id)}
+                        aria-label="Delete Invoice"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
                     </div>
                   </div>
                 ))}
@@ -453,6 +479,15 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                             title="Download PDF"
                           >
                             <Download className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            className="text-red-600 hover:text-red-700"
+                            onClick={() => setDeletingInvoiceId(inv.id)}
+                            title="Delete Invoice"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
                           </Button>
                         </div>
                       </TableCell>
@@ -577,6 +612,29 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
           </div>
         </form>
       </Dialog>
+
+      <Dialog
+        open={Boolean(deletingInvoiceId)}
+        onClose={() => setDeletingInvoiceId(null)}
+        title="Delete Invoice?"
+        description="This action will permanently delete this invoice and associated payments. This cannot be undone."
+      >
+        <div className="space-y-4">
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setDeletingInvoiceId(null)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletingListInv}
+              onClick={handleDeleteListInvoice}
+            >
+              {deletingListInv ? 'Deleting...' : 'Delete Invoice'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
     </div>
   );
 }
@@ -608,6 +666,21 @@ export function InvoiceDetailsPage({
     () => initialDetail?.templateId || profile?.defaultInvoiceTemplate || 'gst_theme_1'
   );
   const [settingDefaultTheme, setSettingDefaultTheme] = React.useState(false);
+  const [deleteInvoiceOpen, setDeleteInvoiceOpen] = React.useState(false);
+  const [deletingInvoice, setDeletingInvoice] = React.useState(false);
+
+  const handleDeleteInvoice = async () => {
+    if (!invoice) return;
+    setDeletingInvoice(true);
+    try {
+      await invoicesApi.delete(invoice.id);
+      notify('success', `Deleted invoice ${invoice.invoiceNumber}`);
+      navigate('/invoices');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete invoice');
+      setDeletingInvoice(false);
+    }
+  };
 
   React.useEffect(() => {
     if (invoice?.templateId) {
@@ -865,6 +938,16 @@ export function InvoiceDetailsPage({
               Cancel
             </Button>
           ) : null}
+
+          <Button
+            variant="outline"
+            size="sm"
+            className="text-red-600 hover:text-red-700 border-red-200 dark:border-red-900"
+            onClick={() => setDeleteInvoiceOpen(true)}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete
+          </Button>
         </div>
       </div>
 
@@ -1225,6 +1308,28 @@ export function InvoiceDetailsPage({
               onClick={handleDeletePayment}
             >
               {deletingPay ? 'Deleting...' : 'Delete Payment'}
+            </Button>
+          </div>
+        </div>
+      </Dialog>
+      <Dialog
+        open={deleteInvoiceOpen}
+        onClose={() => setDeleteInvoiceOpen(false)}
+        title={`Delete Invoice ${invoice.invoiceNumber}?`}
+        description="This action will permanently delete this invoice and any associated payment records. This cannot be undone."
+      >
+        <div className="space-y-4">
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setDeleteInvoiceOpen(false)}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletingInvoice}
+              onClick={handleDeleteInvoice}
+            >
+              {deletingInvoice ? 'Deleting...' : 'Delete Invoice'}
             </Button>
           </div>
         </div>

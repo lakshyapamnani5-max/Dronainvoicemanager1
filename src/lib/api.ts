@@ -223,6 +223,7 @@ export const invoicesApi = {
   update: (id: string, payload: SaveDocumentPayload) => rtdbService.saveInvoice(payload, id),
   finalize: (id: string) => rtdbService.finalizeInvoice(id),
   cancel: (id: string, reason: string) => rtdbService.cancelInvoice(id, reason),
+  delete: (id: string) => rtdbService.deleteInvoice(id),
 };
 
 export const quotationsApi = {

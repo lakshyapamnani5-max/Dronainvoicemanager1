@@ -1290,6 +1290,28 @@ export function cancelInvoice(auth: AuthContext, invoiceId: string, reason: stri
   return updated;
 }
 
+export function deleteInvoice(auth: AuthContext, invoiceId: string) {
+  const tenantUid = auth.effectiveUser.uid;
+  db.transaction(() => {
+    const existing = db
+      .prepare('SELECT id, invoice_number FROM invoices WHERE id = ? AND user_uid = ?')
+      .get(invoiceId, tenantUid) as { id: string; invoice_number: string } | undefined;
+    if (!existing) throw new Error('Invoice not found');
+
+    db.prepare('DELETE FROM invoices WHERE id = ? AND user_uid = ?').run(invoiceId, tenantUid);
+    logActivity({
+      actor: auth.actorUser,
+      targetTenantUid: tenantUid,
+      impersonationSessionId: auth.impersonationSession?.id,
+      action: 'INVOICE_DELETED',
+      entityType: 'invoice',
+      entityId: invoiceId,
+      summary: `Deleted invoice ${existing.invoice_number}`,
+    });
+  })();
+  return { ok: true };
+}
+
 function mapQuotationRow(row: Record<string, unknown>, items: ComputedLineItem[]): Quotation {
   return {
     id: String(row.id),

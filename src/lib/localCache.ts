@@ -636,6 +636,15 @@ export function upsertTenantInvoiceCache(tenantUid: string, invoice: Invoice): v
   emitTenantCache(tenantUid, ['invoices', 'customers']);
 }
 
+export function removeTenantInvoiceCache(tenantUid: string, invoiceId: string): void {
+  const entry = getTenantEntry(tenantUid);
+  entry.invoices = entry.invoices.filter((i) => i.id !== invoiceId);
+  entry.syncedAt.invoices = Date.now();
+  sessionSynced.add(`${tenantUid}:invoices`);
+  persistTenantEntry(tenantUid, entry);
+  emitTenantCache(tenantUid, ['invoices']);
+}
+
 export function upsertTenantQuotationCache(tenantUid: string, quotation: Quotation): void {
   const entry = getTenantEntry(tenantUid);
   const idx = entry.quotations.findIndex((q) => q.id === quotation.id);
