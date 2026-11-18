@@ -281,7 +281,13 @@ export function PurchasesDashboardPage({
   const filteredBills = React.useMemo(() => {
     const q = billSearch.trim().toLowerCase();
     return snapshot.purchases.filter((p) => {
-      if (billStatus !== 'all' && p.status !== billStatus) return false;
+      if (billStatus !== 'all') {
+        if (billStatus === 'advance' || billStatus === 'advances' || billStatus === 'advance_paid') {
+          if (!(p.status === 'partially_paid' || (p.amountPaid > 0 && p.balanceDue > 0))) return false;
+        } else if (p.status !== billStatus) {
+          return false;
+        }
+      }
       if (billSupplierId !== 'all' && p.supplierId !== billSupplierId) return false;
       if (billStartDate && p.billDate < billStartDate) return false;
       if (billEndDate && p.billDate > billEndDate) return false;
@@ -973,9 +979,10 @@ export function PurchasesDashboardPage({
                   setBillStatus(e.target.value);
                   setBillPage(1);
                 }}
-                className="w-full sm:w-40"
+                className="w-full sm:w-44"
               >
                 <option value="all">All Statuses</option>
+                <option value="advance">Advance Paid (Partially Paid)</option>
                 <option value="draft">Draft</option>
                 <option value="unpaid">Unpaid</option>
                 <option value="partially_paid">Partially Paid</option>
@@ -1077,6 +1084,11 @@ export function PurchasesDashboardPage({
                             <div className="font-mono text-[11px] text-zinc-500 tabular-nums">
                               Due {formatINR(p.balanceDue)}
                             </div>
+                            {p.amountPaid > 0 ? (
+                              <div className="font-mono text-[10px] text-emerald-600 font-medium tabular-nums">
+                                Paid {formatINR(p.amountPaid)}
+                              </div>
+                            ) : null}
                           </div>
                         </div>
 

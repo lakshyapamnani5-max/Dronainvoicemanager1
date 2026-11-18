@@ -3805,7 +3805,11 @@ export const rtdbService = {
     let list = rawList.map((inv) => mergeDocumentWithLiveSnapshotsSync(inv));
 
     if (params?.status && params.status !== 'all') {
-      list = list.filter((i) => i.status === params.status);
+      if (params.status === 'advance' || params.status === 'advances' || params.status === 'advance_paid') {
+        list = list.filter((i) => i.status === 'partially_paid' || (i.amountPaid > 0 && i.balanceDue > 0));
+      } else {
+        list = list.filter((i) => i.status === params.status);
+      }
     }
     if (params?.customerId && params.customerId !== 'all') {
       list = list.filter((i) => i.customerId === params.customerId);
