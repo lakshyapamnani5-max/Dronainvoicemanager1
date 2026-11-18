@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Building2, Mail, Phone } from 'lucide-react';
 import type { InvoiceTemplateProps } from '../invoiceThemeTypes';
 import { useInvoiceData } from '../templateCommon';
+import { CustomItemTableRenderer } from '../CustomItemTableRenderer';
 
 export function DoubleDivine({
   docType,
@@ -115,6 +116,18 @@ export function DoubleDivine({
 
         {/* Table with Bright Red Header */}
         <div className="px-6 sm:px-8 pt-3">
+          {record.layoutSnapshot?.columns && record.layoutSnapshot.columns.length > 0 ? (
+            <CustomItemTableRenderer
+              layoutSnapshot={record.layoutSnapshot}
+              items={d.items}
+              accentColor="#E53935"
+              borderColor="#C62828"
+              isGst={d.isGst}
+              totalDiscount={d.totalDiscount}
+              grandTotal={d.grandTotal}
+              formatCurrency={d.formatINR}
+            />
+          ) : (
           <div className="border border-[#E53935] rounded-sm overflow-hidden">
             <table className="w-full text-left text-xs border-collapse">
               <thead>
@@ -180,6 +193,7 @@ export function DoubleDivine({
               </tfoot>
             </table>
           </div>
+          )}
         </div>
 
         {/* Lower Summary */}

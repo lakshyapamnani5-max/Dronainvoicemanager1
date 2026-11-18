@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Building2 } from 'lucide-react';
 import type { InvoiceTemplateProps } from '../invoiceThemeTypes';
 import { useInvoiceData } from '../templateCommon';
+import { CustomItemTableRenderer } from '../CustomItemTableRenderer';
 
 export function LandscapeTheme2({
   docType,
@@ -99,6 +100,18 @@ export function LandscapeTheme2({
         </div>
 
         {/* Wide Full 10-Column Data Table */}
+        {record.layoutSnapshot?.columns && record.layoutSnapshot.columns.length > 0 ? (
+          <CustomItemTableRenderer
+            layoutSnapshot={record.layoutSnapshot}
+            items={d.items}
+            accentColor="#1E2430"
+            borderColor="#2D3748"
+            isGst={d.isGst}
+            totalDiscount={d.totalDiscount}
+            grandTotal={d.grandTotal}
+            formatCurrency={d.formatINR}
+          />
+        ) : (
         <div className="border border-zinc-200 rounded-sm overflow-hidden">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
@@ -178,6 +191,7 @@ export function LandscapeTheme2({
             </tfoot>
           </table>
         </div>
+        )}
 
         {/* Expansive 3-Column Landscape Footer */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 text-xs pt-1">

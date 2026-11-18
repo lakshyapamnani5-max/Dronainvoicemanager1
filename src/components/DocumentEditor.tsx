@@ -21,7 +21,18 @@ import {
   Search,
   Trash2,
   X,
+  Copy,
+  ChevronUp,
+  ChevronDown,
+  Sparkles,
+  Calculator,
+  Sliders,
+  LayoutGrid,
 } from 'lucide-react';
+import type { CustomInvoiceLayout, CustomColumnDef } from '../shared/customLayoutTypes';
+import { listCustomLayouts } from '../lib/customLayoutService';
+import { evaluateFormula } from '../lib/formulaEngine';
+import { CustomLayoutEditorModal } from './invoice/customBuilder/CustomLayoutEditorModal';
 import { useAuth } from '../contexts/AuthContext';
 import {
   businessApi,
@@ -357,6 +368,39 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
   const [savingPayEdit, setSavingPayEdit] = React.useState(false);
   const [deletingPayId, setDeletingPayId] = React.useState<string | null>(null);
 
+  // Custom Invoice Layout states
+  const [layoutMode, setLayoutMode] = React.useState<'standard' | 'custom'>(() =>
+    hydratedDoc?.layoutSnapshot ? 'custom' : 'standard'
+  );
+  const [selectedLayoutId, setSelectedLayoutId] = React.useState<string | null>(() =>
+    hydratedDoc?.layoutId || null
+  );
+  const [selectedLayoutSnapshot, setSelectedLayoutSnapshot] = React.useState<CustomInvoiceLayout | null>(() =>
+    hydratedDoc?.layoutSnapshot || null
+  );
+  const [availableLayouts, setAvailableLayouts] = React.useState<CustomInvoiceLayout[]>([]);
+  const [customBuilderModalOpen, setCustomBuilderModalOpen] = React.useState(false);
+  const [editingCustomLayout, setEditingCustomLayout] = React.useState<CustomInvoiceLayout | null>(null);
+
+  // Load custom layouts on mount
+  React.useEffect(() => {
+    if (!tenantUid) return;
+    listCustomLayouts(tenantUid).then((layouts) => {
+      setAvailableLayouts(layouts);
+      if (!hydratedDoc?.layoutSnapshot && !selectedLayoutId) {
+        const defaultLayout = layouts.find((l) => l.isDefault);
+        if (defaultLayout) {
+          setSelectedLayoutId(defaultLayout.id);
+          setSelectedLayoutSnapshot(defaultLayout);
+          setLayoutMode('custom');
+        }
+      } else if (hydratedDoc?.layoutId && !selectedLayoutSnapshot) {
+        const match = layouts.find((l) => l.id === hydratedDoc.layoutId);
+        if (match) setSelectedLayoutSnapshot(match);
+      }
+    });
+  }, [tenantUid, hydratedDoc]);
+
   // Guard user-initiated overrides on new documents so async profile loads still apply cleanly
   const userTouchedGstRef = React.useRef(false);
   const userTouchedTaxModeRef = React.useRef(false);
@@ -637,6 +681,8 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
       grandTotal: calc.grandTotal,
       amountInWords: calc.amountInWords,
       templateId,
+      layoutId: layoutMode === 'custom' ? selectedLayoutId : null,
+      layoutSnapshot: layoutMode === 'custom' ? selectedLayoutSnapshot : null,
       notes,
       terms,
       createdAt: nowIso,
@@ -698,6 +744,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     taxSupplyMode,
     roundOffEnabled,
     templateId,
+    layoutMode,
+    selectedLayoutId,
+    selectedLayoutSnapshot,
     notes,
     terms,
     docType,
@@ -745,7 +794,60 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
     );
   };
 
+  const handleSelectLayout = (layout: CustomInvoiceLayout) => {
+    setSelectedLayoutId(layout.id);
+    setSelectedLayoutSnapshot(layout);
+    // Initialize customFields on existing items
+    setItems((prev) =>
+      prev.map((it) => {
+        const fields = { ...(it.customFields || {}) };
+        for (const col of layout.columns) {
+          if (fields[col.key] === undefined || fields[col.key] === '') {
+            if (col.mappingToCore === 'quantity') fields[col.key] = it.quantity;
+            else if (col.mappingToCore === 'rate') fields[col.key] = it.rate;
+            else if (col.mappingToCore === 'name') fields[col.key] = it.name;
+            else if (col.mappingToCore === 'description') fields[col.key] = it.description;
+            else if (col.mappingToCore === 'hsnSac') fields[col.key] = it.hsnSac;
+            else if (col.mappingToCore === 'unit') fields[col.key] = it.unit;
+            else if (col.defaultValue !== undefined) fields[col.key] = col.defaultValue;
+          }
+        }
+        let updatedIt = { ...it, customFields: fields };
+        // Run formula evaluation passes
+        for (let pass = 0; pass < 2; pass++) {
+          for (const col of layout.columns) {
+            if (col.dataType === 'formula' && col.formula) {
+              const evaluated = evaluateFormula(col.formula, updatedIt.customFields || {}, col.decimalPrecision ?? 2);
+              if (updatedIt.customFields) {
+                updatedIt.customFields[col.key] = evaluated;
+              }
+              if (col.mappingToCore === 'totalAmount' || col.key === 'amount') {
+                const q = updatedIt.quantity || 1;
+                updatedIt.rate = q > 0 ? evaluated / q : evaluated;
+              }
+            }
+          }
+        }
+        return updatedIt;
+      })
+    );
+  };
+
   const addItem = () => {
+    const initialCustomFields: Record<string, any> = {};
+    if (layoutMode === 'custom' && selectedLayoutSnapshot?.columns) {
+      for (const col of selectedLayoutSnapshot.columns) {
+        if (col.defaultValue !== undefined) {
+          initialCustomFields[col.key] = col.defaultValue;
+        } else if (col.dataType === 'quantity') {
+          initialCustomFields[col.key] = 1;
+        } else if (['number', 'decimal', 'currency', 'percentage', 'measurement'].includes(col.dataType)) {
+          initialCustomFields[col.key] = 0;
+        } else {
+          initialCustomFields[col.key] = '';
+        }
+      }
+    }
     setItems((prev) => [
       ...prev,
       {
@@ -758,8 +860,72 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
         discountType: 'percent',
         discountValue: 0,
         taxRate: isGst ? (profile?.defaultTaxRate ?? 18) : 0,
+        customFields: initialCustomFields,
       },
     ]);
+  };
+
+  const updateCustomField = (rowIdx: number, columnKey: string, val: any) => {
+    setItems((prev) =>
+      prev.map((it, i) => {
+        if (i !== rowIdx) return it;
+        const customFields = { ...(it.customFields || {}), [columnKey]: val };
+        let updated: LineItemInput = { ...it, customFields };
+
+        const colDef = selectedLayoutSnapshot?.columns.find((c) => c.key === columnKey);
+        if (colDef?.mappingToCore) {
+          if (colDef.mappingToCore === 'name') updated.name = String(val);
+          else if (colDef.mappingToCore === 'description') updated.description = String(val);
+          else if (colDef.mappingToCore === 'hsnSac') updated.hsnSac = String(val);
+          else if (colDef.mappingToCore === 'quantity') updated.quantity = Math.max(0.001, Number(val) || 1);
+          else if (colDef.mappingToCore === 'unit') updated.unit = String(val);
+          else if (colDef.mappingToCore === 'rate') updated.rate = Number(val) || 0;
+        }
+
+        // Recalculate formula columns for this row (2 passes for dependency chains)
+        if (selectedLayoutSnapshot?.columns) {
+          for (let pass = 0; pass < 2; pass++) {
+            for (const col of selectedLayoutSnapshot.columns) {
+              if (col.dataType === 'formula' && col.formula) {
+                const evaluated = evaluateFormula(col.formula, customFields, col.decimalPrecision ?? 2);
+                customFields[col.key] = evaluated;
+                if (col.mappingToCore === 'totalAmount' || col.key === 'amount') {
+                  const q = updated.quantity || 1;
+                  updated.rate = q > 0 ? evaluated / q : evaluated;
+                }
+              }
+            }
+          }
+        }
+
+        return updated;
+      })
+    );
+  };
+
+  const duplicateItem = (idx: number) => {
+    const target = items[idx];
+    if (!target) return;
+    const duplicated: LineItemInput = {
+      ...JSON.parse(JSON.stringify(target)),
+      customFields: target.customFields ? JSON.parse(JSON.stringify(target.customFields)) : {},
+    };
+    setItems((prev) => {
+      const copy = [...prev];
+      copy.splice(idx + 1, 0, duplicated);
+      return copy;
+    });
+  };
+
+  const moveItem = (idx: number, direction: 'up' | 'down') => {
+    const targetIdx = direction === 'up' ? idx - 1 : idx + 1;
+    if (targetIdx < 0 || targetIdx >= items.length) return;
+    setItems((prev) => {
+      const copy = [...prev];
+      const [moved] = copy.splice(idx, 1);
+      copy.splice(targetIdx, 0, moved);
+      return copy;
+    });
   };
 
   const insertRateCardItems = (selected: RateCardItem[]) => {
@@ -899,6 +1065,8 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           docType === 'invoice'
             ? normalizeTemplateId(templateId)
             : normalizeQuotationTemplateId(templateId),
+        layoutId: layoutMode === 'custom' ? selectedLayoutId : null,
+        layoutSnapshot: layoutMode === 'custom' ? selectedLayoutSnapshot : null,
         quotationTitle: docType === 'quotation' ? quotationTitle : undefined,
         projectDescription: docType === 'quotation' ? projectDescription : undefined,
         deliveryTimeline: docType === 'quotation' ? deliveryTimeline : undefined,
@@ -1556,6 +1724,139 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
               </CardContent>
             </Card>
 
+            {/* Invoice Item Layout Selector Card */}
+            <Card>
+              <CardHeader className="pb-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <CardTitle className="text-sm font-bold flex items-center gap-2">
+                      <LayoutGrid className="h-4 w-4 text-indigo-600" />
+                      Invoice Item Layout
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Choose between standard table columns or a custom industry preset (e.g. Door &amp; Furniture Supplier).
+                    </CardDescription>
+                  </div>
+                  <div className="flex items-center gap-1.5 p-1 rounded-xl bg-zinc-100 dark:bg-zinc-800 self-start sm:self-auto border border-zinc-200 dark:border-zinc-700">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLayoutMode('standard');
+                        setSelectedLayoutId(null);
+                        setSelectedLayoutSnapshot(null);
+                      }}
+                      className={`px-3 py-1.5 text-xs font-semibold rounded-lg transition-all ${
+                        layoutMode === 'standard'
+                          ? 'bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 shadow-xs'
+                          : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+                      }`}
+                    >
+                      Standard Table
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setLayoutMode('custom');
+                        if (selectedLayoutSnapshot) {
+                          handleSelectLayout(selectedLayoutSnapshot);
+                        } else if (availableLayouts.length > 0) {
+                          const def = availableLayouts.find((l) => l.isDefault) || availableLayouts[0];
+                          handleSelectLayout(def);
+                        }
+                      }}
+                      className={`px-3 py-1.5 text-xs font-bold rounded-lg transition-all flex items-center gap-1.5 ${
+                        layoutMode === 'custom'
+                          ? 'bg-indigo-600 text-white shadow-xs'
+                          : 'text-zinc-600 dark:text-zinc-400 hover:text-zinc-900'
+                      }`}
+                    >
+                      <span>Custom Layout</span>
+                      <span className="px-1.5 py-0.2 rounded-full text-[9px] font-black uppercase bg-amber-400 text-amber-950">
+                        {availableLayouts.length} Presets
+                      </span>
+                    </button>
+                  </div>
+                </div>
+              </CardHeader>
+              {layoutMode === 'custom' && (
+                <CardContent className="pt-0 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3 rounded-xl bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/40">
+                    <div className="flex items-center gap-2.5 flex-1">
+                      <Sliders className="h-4 w-4 text-indigo-600 shrink-0" />
+                      <div className="flex-1 max-w-sm">
+                        <label className="text-[11px] font-bold text-zinc-700 dark:text-zinc-300 block mb-1">
+                          Select Saved Layout Preset:
+                        </label>
+                        <select
+                          value={selectedLayoutId || ''}
+                          onChange={(e) => {
+                            const found = availableLayouts.find((l) => l.id === e.target.value);
+                            if (found) {
+                              handleSelectLayout(found);
+                            }
+                          }}
+                          className="w-full px-3 py-1.5 text-xs font-semibold rounded-lg border border-indigo-200 dark:border-indigo-800 bg-white dark:bg-zinc-900 text-zinc-900 dark:text-zinc-100 focus:outline-hidden focus:ring-2 focus:ring-indigo-500"
+                        >
+                          {availableLayouts.map((l) => (
+                            <option key={l.id} value={l.id}>
+                              {l.name} {l.isDefault ? '★ (Default)' : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingCustomLayout(selectedLayoutSnapshot);
+                          setCustomBuilderModalOpen(true);
+                        }}
+                        className="text-xs font-semibold"
+                      >
+                        <Edit2 className="h-3 w-3" />
+                        Edit Preset
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="outline"
+                        onClick={() => {
+                          setEditingCustomLayout(null);
+                          setCustomBuilderModalOpen(true);
+                        }}
+                        className="text-xs font-semibold bg-indigo-600 text-white hover:bg-indigo-700 hover:text-white"
+                      >
+                        <Plus className="h-3 w-3" />
+                        New Preset
+                      </Button>
+                    </div>
+                  </div>
+
+                  {selectedLayoutSnapshot && (
+                    <div className="flex flex-wrap items-center gap-1.5 text-xs text-zinc-600 dark:text-zinc-400">
+                      <span className="font-semibold text-zinc-500">Columns:</span>
+                      {selectedLayoutSnapshot.columns
+                        .filter((c) => c.visible !== false)
+                        .map((c) => (
+                          <span
+                            key={c.id || c.key}
+                            className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[11px] font-medium bg-white dark:bg-zinc-800 border border-zinc-200 dark:border-zinc-700"
+                          >
+                            <span>{c.label}</span>
+                            {c.dataType === 'formula' && (
+                              <Calculator className="h-2.5 w-2.5 text-indigo-500" />
+                            )}
+                          </span>
+                        ))}
+                    </div>
+                  )}
+                </CardContent>
+              )}
+            </Card>
+
             {/* Line Items Table (Desktop) + Card Builder (Mobile) */}
             <Card>
               <CardHeader className="flex flex-wrap flex-row items-center justify-between gap-2 pb-3">
@@ -1588,356 +1889,542 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                 ))}
               </datalist>
               <CardContent className="p-0">
-                {/* Mobile Line Items Card Builder */}
-                <div className="md:hidden p-3.5 space-y-3.5 border-t border-zinc-100 dark:border-zinc-800">
-                  {items.map((item, idx) => {
-                    const computed = calc.items[idx];
-                    return (
-                      <div
-                        key={idx}
-                        className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-950/50"
-                      >
-                        <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200/80 dark:border-zinc-800">
-                          <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
-                            Item #{idx + 1}
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <span className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
-                              {formatINR(computed?.totalAmount || 0)}
-                            </span>
-                            <button
-                              type="button"
-                              onClick={() => removeItem(idx)}
-                              disabled={items.length <= 1}
-                              className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-red-600 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
-                              aria-label={`Remove item ${idx + 1}`}
-                            >
-                              <Trash2 className="h-4 w-4" />
-                            </button>
-                          </div>
-                        </div>
+                {layoutMode === 'custom' && selectedLayoutSnapshot?.columns && selectedLayoutSnapshot.columns.length > 0 ? (
+                  <>
+                    {/* Custom Layout Mobile Stacked Cards */}
+                    <div className="md:hidden p-3.5 space-y-3.5 border-t border-zinc-100 dark:border-zinc-800">
+                      {items.map((item, idx) => {
+                        const computed = calc.items[idx];
+                        const activeCols = selectedLayoutSnapshot.columns.filter((c) => c.visible !== false);
+                        const hasTaxCol = activeCols.some(
+                          (c) => c.mappingToCore === 'taxRate' || c.key.toLowerCase().includes('gst')
+                        );
+                        const hasDiscountCol = activeCols.some(
+                          (c) => c.mappingToCore === 'discount' || c.key.toLowerCase().includes('discount')
+                        );
 
-                        <div className="space-y-1">
-                          <div className="flex items-center justify-between gap-2">
-                            <Label>Item / Service Name *</Label>
-                            {item.name.trim() &&
-                            !rateCardItems.some(
-                              (rc) => rc.name.toLowerCase() === item.name.trim().toLowerCase()
-                            ) ? (
-                              <button
-                                type="button"
-                                disabled={savingToRateCardIdx === idx}
-                                onClick={() => handleSaveLineItemToRateCard(idx)}
-                                className="inline-flex items-center gap-1 text-[11px] font-medium text-[#F57C00] hover:underline cursor-pointer"
-                              >
-                                <BookmarkPlus className="h-3 w-3" />
-                                {savingToRateCardIdx === idx ? 'Saving...' : 'Save to Rate Card'}
-                              </button>
-                            ) : null}
-                          </div>
-                          <Input
-                            list="drona-rate-card-names"
-                            value={item.name}
-                            onChange={(e) => updateItem(idx, { name: e.target.value })}
-                            placeholder="Service or product name"
-                          />
-                        </div>
-
-                        <div className="space-y-1">
-                          <Label>Description (Optional)</Label>
-                          <Input
-                            value={item.description}
-                            onChange={(e) => updateItem(idx, { description: e.target.value })}
-                            placeholder="Details or scope"
-                          />
-                        </div>
-
-                        <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                          {isGst ? (
-                            <div className="space-y-1">
-                              <Label>HSN / SAC</Label>
-                              <HsnSacSelector
-                                value={item.hsnSac}
-                                currentDescription={item.description}
-                                onChange={(val) => updateItem(idx, { hsnSac: val })}
-                                onSelectDescription={(desc) => {
-                                  if (!item.description || item.description.trim() === '') {
-                                    updateItem(idx, { description: desc });
-                                  }
-                                }}
-                                placeholder="998314"
-                              />
+                        return (
+                          <div
+                            key={idx}
+                            className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-950/50"
+                          >
+                            <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200/80 dark:border-zinc-800">
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-bold text-zinc-800 dark:text-zinc-200">
+                                  #{idx + 1}
+                                </span>
+                                <span className="font-mono text-sm font-bold tabular-nums text-indigo-600 dark:text-indigo-400">
+                                  {formatINR(computed?.totalAmount || 0)}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => moveItem(idx, 'up')}
+                                  disabled={idx === 0}
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-zinc-900 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  title="Move Up"
+                                  aria-label="Move Up"
+                                >
+                                  <ChevronUp className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => moveItem(idx, 'down')}
+                                  disabled={idx === items.length - 1}
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-zinc-900 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  title="Move Down"
+                                  aria-label="Move Down"
+                                >
+                                  <ChevronDown className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => duplicateItem(idx)}
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-indigo-600 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  title="Duplicate Row"
+                                  aria-label="Duplicate Row"
+                                >
+                                  <Copy className="h-3.5 w-3.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeItem(idx)}
+                                  disabled={items.length <= 1}
+                                  className="h-8 w-8 inline-flex items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-red-600 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  title="Remove Row"
+                                  aria-label="Remove Row"
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
+                              </div>
                             </div>
-                          ) : null}
-                          <div className="space-y-1">
-                            <Label>Unit</Label>
-                            <Input
-                              value={item.unit}
-                              onChange={(e) => updateItem(idx, { unit: e.target.value })}
-                              placeholder="Nos / Hrs"
-                            />
-                          </div>
-                        </div>
 
-                        <div className="grid grid-cols-2 gap-2.5">
-                          <div className="space-y-1">
-                            <Label>Quantity</Label>
-                            <Input
-                              type="number"
-                              inputMode="decimal"
-                              min="0.01"
-                              step="0.01"
-                              value={item.quantity}
-                              onChange={(e) =>
-                                updateItem(idx, { quantity: Number(e.target.value) })
-                              }
-                              className="font-mono"
-                            />
-                          </div>
-                          <div className="space-y-1">
-                            <Label>Rate (INR)</Label>
-                            <Input
-                              type="number"
-                              inputMode="decimal"
-                              min="0"
-                              step="0.01"
-                              value={item.rate}
-                              onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
-                              className="font-mono"
-                            />
-                          </div>
-                        </div>
+                            {/* Render columns */}
+                            <div className="space-y-2.5">
+                              {activeCols.map((col) => {
+                                const val =
+                                  item.customFields?.[col.key] !== undefined
+                                    ? item.customFields[col.key]
+                                    : col.mappingToCore === 'name'
+                                    ? item.name
+                                    : col.mappingToCore === 'description'
+                                    ? item.description
+                                    : col.mappingToCore === 'hsnSac'
+                                    ? item.hsnSac
+                                    : col.mappingToCore === 'quantity'
+                                    ? item.quantity
+                                    : col.mappingToCore === 'unit'
+                                    ? item.unit
+                                    : col.mappingToCore === 'rate'
+                                    ? item.rate
+                                    : col.defaultValue ?? '';
 
-                        <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
-                          <div className="space-y-1">
-                            <Label>Discount</Label>
-                            <div className="flex gap-1.5">
-                              <Input
-                                type="number"
-                                inputMode="decimal"
-                                min="0"
-                                step="0.01"
-                                value={item.discountValue}
-                                onChange={(e) =>
-                                  updateItem(idx, { discountValue: Number(e.target.value) })
-                                }
-                                className="font-mono flex-1 min-w-0"
-                              />
-                              <Select
-                                value={item.discountType}
-                                onChange={(e) =>
-                                  updateItem(idx, {
-                                    discountType: e.target.value as 'percent' | 'fixed',
-                                  })
-                                }
-                                className="w-16 px-2"
-                              >
-                                <option value="percent">%</option>
-                                <option value="fixed">₹</option>
-                              </Select>
+                                return (
+                                  <div key={col.id || col.key} className="space-y-1">
+                                    <div className="flex items-center justify-between text-xs">
+                                      <Label className="text-zinc-700 dark:text-zinc-300 font-semibold">
+                                        {col.heading || col.label}
+                                        {col.isRequired ? <span className="text-red-500 ml-0.5">*</span> : null}
+                                        {col.unit ? <span className="text-zinc-400 font-normal ml-1">({col.unit})</span> : null}
+                                      </Label>
+                                      {col.dataType === 'formula' && (
+                                        <span className="inline-flex items-center gap-1 text-[10px] font-mono font-medium text-indigo-600 dark:text-indigo-400 bg-indigo-50 dark:bg-indigo-950/40 px-1.5 py-0.5 rounded">
+                                          <Calculator className="h-2.5 w-2.5" />
+                                          {col.formula}
+                                        </span>
+                                      )}
+                                    </div>
+
+                                    {col.dataType === 'formula' ? (
+                                      col.isEditable ? (
+                                        <Input
+                                          type="number"
+                                          inputMode="decimal"
+                                          step="any"
+                                          value={val}
+                                          onChange={(e) =>
+                                            updateCustomField(idx, col.key, e.target.value === '' ? '' : Number(e.target.value))
+                                          }
+                                          className="font-mono text-xs"
+                                        />
+                                      ) : (
+                                        <div className="h-10 px-3 flex items-center justify-between font-mono font-bold text-sm bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-lg text-indigo-900 dark:text-indigo-200">
+                                          <span className="text-xs text-indigo-500 font-sans font-normal">Calculated</span>
+                                          <span>
+                                            {col.numberFormat === 'currency'
+                                              ? formatINR(Number(val) || 0)
+                                              : (Number(val) || 0).toFixed(col.decimalPrecision ?? 2)}
+                                          </span>
+                                        </div>
+                                      )
+                                    ) : col.dataType === 'dropdown' ? (
+                                      <Select
+                                        value={String(val || '')}
+                                        onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                        className="text-xs"
+                                      >
+                                        <option value="">Select option...</option>
+                                        {col.dropdownOptions?.map((opt) => (
+                                          <option key={opt} value={opt}>
+                                            {opt}
+                                          </option>
+                                        ))}
+                                      </Select>
+                                    ) : col.dataType === 'date' ? (
+                                      <Input
+                                        type="date"
+                                        value={String(val || '')}
+                                        onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                        className="text-xs"
+                                      />
+                                    ) : ['number', 'decimal', 'currency', 'quantity', 'percentage', 'measurement'].includes(
+                                        col.dataType
+                                      ) ? (
+                                      <Input
+                                        type="number"
+                                        inputMode="decimal"
+                                        step="any"
+                                        min={col.dataType === 'quantity' ? '0.001' : undefined}
+                                        value={val}
+                                        onChange={(e) =>
+                                          updateCustomField(
+                                            idx,
+                                            col.key,
+                                            e.target.value === '' ? '' : Number(e.target.value)
+                                          )
+                                        }
+                                        placeholder={col.placeholder || col.heading}
+                                        className={`font-mono text-xs ${
+                                          col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
+                                        }`}
+                                      />
+                                    ) : (
+                                      <Input
+                                        value={String(val ?? '')}
+                                        onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                        placeholder={col.placeholder || col.heading}
+                                        className={`text-xs ${
+                                          col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left'
+                                        }`}
+                                      />
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+
+                            {/* GST & Discount Details if not part of custom columns */}
+                            {(!hasTaxCol || !hasDiscountCol) && isGst && (
+                              <details className="pt-2 border-t border-zinc-200/60 dark:border-zinc-800 text-xs">
+                                <summary className="cursor-pointer font-semibold text-zinc-600 dark:text-zinc-400 hover:text-zinc-900 select-none flex items-center justify-between">
+                                  <span>GST & Tax Breakdown</span>
+                                  <span className="text-[11px] font-mono text-indigo-600">
+                                    GST: {item.taxRate}%
+                                  </span>
+                                </summary>
+                                <div className="grid grid-cols-2 gap-2 mt-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px]">GST Rate (%)</Label>
+                                    <Select
+                                      value={item.taxRate}
+                                      onChange={(e) => updateItem(idx, { taxRate: Number(e.target.value) })}
+                                      className="font-mono text-xs"
+                                    >
+                                      {[0, 5, 12, 18, 28].map((r) => (
+                                        <option key={r} value={r}>
+                                          {r}%
+                                        </option>
+                                      ))}
+                                    </Select>
+                                  </div>
+                                  <div className="space-y-1">
+                                    <Label className="text-[11px]">HSN / SAC</Label>
+                                    <Input
+                                      value={item.hsnSac || ''}
+                                      onChange={(e) => updateItem(idx, { hsnSac: e.target.value })}
+                                      placeholder="998314"
+                                      className="font-mono text-xs"
+                                    />
+                                  </div>
+                                </div>
+                              </details>
+                            )}
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-200/70 dark:border-zinc-800 text-[11px] text-zinc-500 font-mono">
+                              <span>Taxable: {formatINR(computed?.taxableAmount || 0)}</span>
+                              {isGst ? (
+                                <span>
+                                  GST ({item.taxRate}%): {formatINR(computed?.taxAmount || 0)}
+                                </span>
+                              ) : null}
                             </div>
                           </div>
-                          {isGst ? (
-                            <div className="space-y-1">
-                              <Label>GST Rate (%)</Label>
-                              <Select
-                                value={item.taxRate}
-                                onChange={(e) =>
-                                  updateItem(idx, { taxRate: Number(e.target.value) })
-                                }
-                                className="font-mono"
-                              >
-                                {[0, 5, 12, 18, 28].map((r) => (
-                                  <option key={r} value={r}>
-                                    {r}%
-                                  </option>
-                                ))}
-                              </Select>
-                            </div>
-                          ) : null}
-                        </div>
+                        );
+                      })}
 
-                        {isGst || (computed?.discountAmount || 0) > 0 ? (
-                          <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-200/70 dark:border-zinc-800 text-[11px] text-zinc-500 font-mono">
-                            <span>Taxable: {formatINR(computed?.taxableAmount || 0)}</span>
-                            {isGst ? (
-                              <span>
-                                GST ({item.taxRate}%): {formatINR(computed?.taxAmount || 0)}
-                              </span>
-                            ) : null}
-                          </div>
-                        ) : null}
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setRateSearch('');
+                            setRateCategory('all');
+                            setSelectedRateIds([]);
+                            setRatePickerOpen(true);
+                          }}
+                        >
+                          <Package className="h-4 w-4 text-[#F57C00]" />
+                          From Rate Card
+                        </Button>
+                        <Button type="button" variant="outline" onClick={addItem}>
+                          <Plus className="h-4 w-4" />
+                          Add Blank Item
+                        </Button>
                       </div>
-                    );
-                  })}
+                    </div>
 
-                  <div className="grid grid-cols-2 gap-2.5">
-                    <Button
-                      type="button"
-                      variant="outline"
-                      onClick={() => {
-                        setRateSearch('');
-                        setRateCategory('all');
-                        setSelectedRateIds([]);
-                        setRatePickerOpen(true);
-                      }}
-                    >
-                      <Package className="h-4 w-4 text-[#F57C00]" />
-                      From Rate Card
-                    </Button>
-                    <Button type="button" variant="outline" onClick={addItem}>
-                      <Plus className="h-4 w-4" />
-                      Add Blank Item
-                    </Button>
-                  </div>
-                </div>
+                    {/* Custom Layout Desktop Table */}
+                    <div className="hidden md:block overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                      <table className="w-full min-w-[950px] text-xs">
+                        <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+                          <tr>
+                            <th className="px-2.5 py-3 text-center font-bold text-zinc-500 w-10">#</th>
+                            {selectedLayoutSnapshot.columns
+                              .filter((c) => c.visible !== false)
+                              .map((col) => {
+                                const alignClass =
+                                  col.align === 'right' ? 'text-right' : col.align === 'center' ? 'text-center' : 'text-left';
+                                return (
+                                  <th
+                                    key={col.id || col.key}
+                                    style={{
+                                      width: col.width
+                                        ? typeof col.width === 'number'
+                                          ? `${col.width}px`
+                                          : col.width
+                                        : undefined,
+                                    }}
+                                    className={`px-3 py-3 font-semibold text-zinc-900 dark:text-zinc-100 ${alignClass}`}
+                                  >
+                                    <div className={`inline-flex items-center gap-1 ${col.align === 'right' ? 'justify-end' : col.align === 'center' ? 'justify-center' : 'justify-start'}`}>
+                                      <span>{col.heading || col.label}</span>
+                                      {col.isRequired ? <span className="text-red-500">*</span> : null}
+                                      {col.unit ? <span className="text-zinc-400 font-normal">({col.unit})</span> : null}
+                                      {col.dataType === 'formula' ? (
+                                        <Calculator className="h-3 w-3 text-indigo-500" title={`Formula: ${col.formula || ''}`} />
+                                      ) : null}
+                                    </div>
+                                  </th>
+                                );
+                              })}
+                            {isGst &&
+                            !selectedLayoutSnapshot.columns.some(
+                              (c) => c.mappingToCore === 'taxRate' || c.key.toLowerCase().includes('gst')
+                            ) ? (
+                              <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24">
+                                GST %
+                              </th>
+                            ) : null}
+                            <th className="px-3 py-3 text-right font-bold text-zinc-900 dark:text-zinc-100 w-32">
+                              Line Total
+                            </th>
+                            <th className="px-2 py-3 text-center w-28 font-semibold text-zinc-500">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
+                          {items.map((item, idx) => {
+                            const computed = calc.items[idx];
+                            const activeCols = selectedLayoutSnapshot.columns.filter((c) => c.visible !== false);
+                            const hasTaxCol = activeCols.some(
+                              (c) => c.mappingToCore === 'taxRate' || c.key.toLowerCase().includes('gst')
+                            );
 
-                {/* Desktop Line Items Table */}
-                <div className="hidden md:block overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
-                  <table className="w-full min-w-[1050px] text-xs">
-                    <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
-                      <tr>
-                        <th className="px-3.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 min-w-[300px]">
-                          Item & Description
-                        </th>
-                        {isGst ? (
-                          <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-44 min-w-[170px]">
-                            HSN/SAC
-                          </th>
-                        ) : null}
-                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
-                          Qty
-                        </th>
-                        <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
-                          Unit
-                        </th>
-                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[125px]">
-                          Rate (INR)
-                        </th>
-                        <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-40 min-w-[155px]">
-                          Discount
-                        </th>
-                        {isGst ? (
-                          <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
-                            GST %
-                          </th>
-                        ) : null}
-                        <th className="px-3 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[120px]">
-                          Total
-                        </th>
-                        <th className="px-2 py-3 w-10"></th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
+                            return (
+                              <tr key={idx} className="align-middle hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                                <td className="px-2.5 py-2.5 text-center font-mono font-bold text-zinc-500">{idx + 1}</td>
+                                {activeCols.map((col) => {
+                                  const val =
+                                    item.customFields?.[col.key] !== undefined
+                                      ? item.customFields[col.key]
+                                      : col.mappingToCore === 'name'
+                                      ? item.name
+                                      : col.mappingToCore === 'description'
+                                      ? item.description
+                                      : col.mappingToCore === 'hsnSac'
+                                      ? item.hsnSac
+                                      : col.mappingToCore === 'quantity'
+                                      ? item.quantity
+                                      : col.mappingToCore === 'unit'
+                                      ? item.unit
+                                      : col.mappingToCore === 'rate'
+                                      ? item.rate
+                                      : col.defaultValue ?? '';
+
+                                  return (
+                                    <td key={col.id || col.key} className="px-2 py-2.5">
+                                      {col.dataType === 'formula' ? (
+                                        col.isEditable ? (
+                                          <Input
+                                            type="number"
+                                            inputMode="decimal"
+                                            step="any"
+                                            value={val}
+                                            onChange={(e) =>
+                                              updateCustomField(
+                                                idx,
+                                                col.key,
+                                                e.target.value === '' ? '' : Number(e.target.value)
+                                              )
+                                            }
+                                            className="h-9 text-xs font-mono"
+                                          />
+                                        ) : (
+                                          <div
+                                            className="h-9 px-2.5 flex items-center justify-end font-mono font-bold text-xs bg-indigo-50/50 dark:bg-indigo-950/20 rounded border border-indigo-200/80 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200"
+                                            title={`Formula: ${col.formula || ''}`}
+                                          >
+                                            {col.numberFormat === 'currency'
+                                              ? formatINR(Number(val) || 0)
+                                              : (Number(val) || 0).toFixed(col.decimalPrecision ?? 2)}
+                                          </div>
+                                        )
+                                      ) : col.dataType === 'dropdown' ? (
+                                        <Select
+                                          value={String(val || '')}
+                                          onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                          className="h-9 text-xs"
+                                        >
+                                          <option value="">Select...</option>
+                                          {col.dropdownOptions?.map((opt) => (
+                                            <option key={opt} value={opt}>
+                                              {opt}
+                                            </option>
+                                          ))}
+                                        </Select>
+                                      ) : col.dataType === 'date' ? (
+                                        <Input
+                                          type="date"
+                                          value={String(val || '')}
+                                          onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                          className="h-9 text-xs"
+                                        />
+                                      ) : ['number', 'decimal', 'currency', 'quantity', 'percentage', 'measurement'].includes(
+                                          col.dataType
+                                        ) ? (
+                                        <Input
+                                          type="number"
+                                          inputMode="decimal"
+                                          step="any"
+                                          min={col.dataType === 'quantity' ? '0.001' : undefined}
+                                          value={val}
+                                          onChange={(e) =>
+                                            updateCustomField(
+                                              idx,
+                                              col.key,
+                                              e.target.value === '' ? '' : Number(e.target.value)
+                                            )
+                                          }
+                                          placeholder={col.placeholder || col.heading}
+                                          className={`h-9 text-xs font-mono ${
+                                            col.align === 'right'
+                                              ? 'text-right'
+                                              : col.align === 'center'
+                                              ? 'text-center'
+                                              : 'text-left'
+                                          }`}
+                                        />
+                                      ) : (
+                                        <Input
+                                          value={String(val ?? '')}
+                                          onChange={(e) => updateCustomField(idx, col.key, e.target.value)}
+                                          placeholder={col.placeholder || col.heading}
+                                          className={`h-9 text-xs ${
+                                            col.align === 'right'
+                                              ? 'text-right'
+                                              : col.align === 'center'
+                                              ? 'text-center'
+                                              : 'text-left'
+                                          }`}
+                                        />
+                                      )}
+                                    </td>
+                                  );
+                                })}
+
+                                {isGst && !hasTaxCol ? (
+                                  <td className="px-2 py-2.5 w-24">
+                                    <Select
+                                      value={item.taxRate}
+                                      onChange={(e) => updateItem(idx, { taxRate: Number(e.target.value) })}
+                                      className="h-9 text-xs font-mono"
+                                    >
+                                      {[0, 5, 12, 18, 28].map((r) => (
+                                        <option key={r} value={r}>
+                                          {r}%
+                                        </option>
+                                      ))}
+                                    </Select>
+                                  </td>
+                                ) : null}
+
+                                <td className="px-3 py-2.5 text-right font-mono tabular-nums text-xs font-bold text-zinc-900 dark:text-zinc-100">
+                                  {formatINR(computed?.totalAmount || 0)}
+                                </td>
+
+                                <td className="px-2 py-2.5 text-center">
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => moveItem(idx, 'up')}
+                                      disabled={idx === 0}
+                                      className="p-1 rounded text-zinc-400 hover:text-zinc-800 disabled:opacity-20 cursor-pointer"
+                                      title="Move Up"
+                                      aria-label="Move Up"
+                                    >
+                                      <ChevronUp className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => moveItem(idx, 'down')}
+                                      disabled={idx === items.length - 1}
+                                      className="p-1 rounded text-zinc-400 hover:text-zinc-800 disabled:opacity-20 cursor-pointer"
+                                      title="Move Down"
+                                      aria-label="Move Down"
+                                    >
+                                      <ChevronDown className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => duplicateItem(idx)}
+                                      className="p-1 rounded text-zinc-400 hover:text-indigo-600 cursor-pointer"
+                                      title="Duplicate Row"
+                                      aria-label="Duplicate Row"
+                                    >
+                                      <Copy className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeItem(idx)}
+                                      disabled={items.length <= 1}
+                                      className="p-1 rounded text-zinc-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
+                                      title="Remove Row"
+                                      aria-label="Remove Row"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {/* Standard Mobile Line Items Card Builder */}
+                    <div className="md:hidden p-3.5 space-y-3.5 border-t border-zinc-100 dark:border-zinc-800">
                       {items.map((item, idx) => {
                         const computed = calc.items[idx];
                         return (
-                          <tr key={idx} className="align-top hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
-                            <td className="px-3.5 py-3 space-y-1.5 min-w-[300px]">
-                              <Input
-                                list="drona-rate-card-names"
-                                value={item.name}
-                                onChange={(e) => updateItem(idx, { name: e.target.value })}
-                                placeholder="Service or product name"
-                                className="h-10 text-xs font-medium"
-                              />
-                              <Input
-                                value={item.description}
-                                onChange={(e) => updateItem(idx, { description: e.target.value })}
-                                placeholder="Optional description / details"
-                                className="h-9 text-xs text-zinc-600 dark:text-zinc-300"
-                              />
-                            </td>
-                            {isGst ? (
-                              <td className="px-2.5 py-3 min-w-[170px]">
-                                <HsnSacSelector
-                                  value={item.hsnSac}
-                                  currentDescription={item.description}
-                                  onChange={(val) => updateItem(idx, { hsnSac: val })}
-                                  onSelectDescription={(desc) => {
-                                    if (!item.description || item.description.trim() === '') {
-                                      updateItem(idx, { description: desc });
-                                    }
-                                  }}
-                                  placeholder="998314"
-                                  className="h-10 text-xs font-mono"
-                                />
-                              </td>
-                            ) : null}
-                            <td className="px-2.5 py-3 min-w-[95px]">
-                              <Input
-                                type="number"
-                                min="0.01"
-                                step="0.01"
-                                value={item.quantity}
-                                onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
-                                className="h-10 text-xs text-right font-mono"
-                              />
-                            </td>
-                            <td className="px-2.5 py-3 min-w-[95px]">
-                              <Input
-                                value={item.unit}
-                                onChange={(e) => updateItem(idx, { unit: e.target.value })}
-                                placeholder="Nos"
-                                className="h-10 text-xs text-center"
-                              />
-                            </td>
-                            <td className="px-2.5 py-3 min-w-[125px]">
-                              <Input
-                                type="number"
-                                min="0"
-                                step="0.01"
-                                value={item.rate}
-                                onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
-                                className="h-10 text-xs text-right font-mono font-medium"
-                              />
-                            </td>
-                            <td className="px-2.5 py-3 min-w-[155px]">
-                              <div className="flex gap-1.5">
-                                <Input
-                                  type="number"
-                                  min="0"
-                                  step="0.01"
-                                  value={item.discountValue}
-                                  onChange={(e) =>
-                                    updateItem(idx, { discountValue: Number(e.target.value) })
-                                  }
-                                  className="h-10 text-xs text-right font-mono flex-1 min-w-[65px]"
-                                />
-                                <Select
-                                  value={item.discountType}
-                                  onChange={(e) =>
-                                    updateItem(idx, {
-                                      discountType: e.target.value as 'percent' | 'fixed',
-                                    })
-                                  }
-                                  className="h-10 text-xs px-2 w-14 font-semibold shrink-0"
+                          <div
+                            key={idx}
+                            className="rounded-xl border border-zinc-200 bg-zinc-50/60 p-3.5 space-y-3 dark:border-zinc-800 dark:bg-zinc-950/50"
+                          >
+                            <div className="flex items-center justify-between gap-2 pb-2 border-b border-zinc-200/80 dark:border-zinc-800">
+                              <span className="text-xs font-semibold text-zinc-700 dark:text-zinc-300">
+                                Item #{idx + 1}
+                              </span>
+                              <div className="flex items-center gap-2">
+                                <span className="font-mono text-sm font-bold tabular-nums text-[#F57C00]">
+                                  {formatINR(computed?.totalAmount || 0)}
+                                </span>
+                                <button
+                                  type="button"
+                                  onClick={() => duplicateItem(idx)}
+                                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-indigo-600 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  title="Duplicate Item"
+                                  aria-label={`Duplicate item ${idx + 1}`}
                                 >
-                                  <option value="percent">%</option>
-                                  <option value="fixed">₹</option>
-                                </Select>
+                                  <Copy className="h-4 w-4" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => removeItem(idx)}
+                                  disabled={items.length <= 1}
+                                  className="flex h-9 w-9 items-center justify-center rounded-lg border border-zinc-200 bg-white text-zinc-500 hover:text-red-600 disabled:opacity-30 dark:border-zinc-800 dark:bg-zinc-900 cursor-pointer"
+                                  aria-label={`Remove item ${idx + 1}`}
+                                >
+                                  <Trash2 className="h-4 w-4" />
+                                </button>
                               </div>
-                            </td>
-                            {isGst ? (
-                              <td className="px-2.5 py-3 min-w-[95px]">
-                                <Select
-                                  value={item.taxRate}
-                                  onChange={(e) => updateItem(idx, { taxRate: Number(e.target.value) })}
-                                  className="h-10 text-xs font-mono font-semibold"
-                                >
-                                  {[0, 5, 12, 18, 28].map((r) => (
-                                    <option key={r} value={r}>
-                                      {r}%
-                                    </option>
-                                  ))}
-                                </Select>
-                              </td>
-                            ) : null}
-                            <td className="px-3 py-3 text-right font-mono tabular-nums text-sm font-bold text-zinc-900 dark:text-zinc-100 min-w-[120px]">
-                              {formatINR(computed?.totalAmount || 0)}
-                            </td>
-                            <td className="px-2 py-3 text-center">
-                              <div className="inline-flex items-center gap-0.5">
+                            </div>
+
+                            <div className="space-y-1">
+                              <div className="flex items-center justify-between gap-2">
+                                <Label>Item / Service Name *</Label>
                                 {item.name.trim() &&
                                 !rateCardItems.some(
                                   (rc) => rc.name.toLowerCase() === item.name.trim().toLowerCase()
@@ -1946,30 +2433,359 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                     type="button"
                                     disabled={savingToRateCardIdx === idx}
                                     onClick={() => handleSaveLineItemToRateCard(idx)}
-                                    className="p-1.5 text-zinc-400 hover:text-[#F57C00] cursor-pointer"
-                                    title="Save item to Rate Card"
-                                    aria-label="Save item to Rate Card"
+                                    className="inline-flex items-center gap-1 text-[11px] font-medium text-[#F57C00] hover:underline cursor-pointer"
                                   >
-                                    <BookmarkPlus className="h-3.5 w-3.5" />
+                                    <BookmarkPlus className="h-3 w-3" />
+                                    {savingToRateCardIdx === idx ? 'Saving...' : 'Save to Rate Card'}
                                   </button>
                                 ) : null}
-                                <button
-                                  type="button"
-                                  onClick={() => removeItem(idx)}
-                                  disabled={items.length <= 1}
-                                  className="p-1.5 text-zinc-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
-                                  aria-label="Remove item"
-                                >
-                                  <Trash2 className="h-3.5 w-3.5" />
-                                </button>
                               </div>
-                            </td>
-                          </tr>
+                              <Input
+                                list="drona-rate-card-names"
+                                value={item.name}
+                                onChange={(e) => updateItem(idx, { name: e.target.value })}
+                                placeholder="Service or product name"
+                              />
+                            </div>
+
+                            <div className="space-y-1">
+                              <Label>Description (Optional)</Label>
+                              <Input
+                                value={item.description}
+                                onChange={(e) => updateItem(idx, { description: e.target.value })}
+                                placeholder="Details or scope"
+                              />
+                            </div>
+
+                            <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                              {isGst ? (
+                                <div className="space-y-1">
+                                  <Label>HSN / SAC</Label>
+                                  <HsnSacSelector
+                                    value={item.hsnSac}
+                                    currentDescription={item.description}
+                                    onChange={(val) => updateItem(idx, { hsnSac: val })}
+                                    onSelectDescription={(desc) => {
+                                      if (!item.description || item.description.trim() === '') {
+                                        updateItem(idx, { description: desc });
+                                      }
+                                    }}
+                                    placeholder="998314"
+                                  />
+                                </div>
+                              ) : null}
+                              <div className="space-y-1">
+                                <Label>Unit</Label>
+                                <Input
+                                  value={item.unit}
+                                  onChange={(e) => updateItem(idx, { unit: e.target.value })}
+                                  placeholder="Nos / Hrs"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2.5">
+                              <div className="space-y-1">
+                                <Label>Quantity</Label>
+                                <Input
+                                  type="number"
+                                  inputMode="decimal"
+                                  min="0.01"
+                                  step="0.01"
+                                  value={item.quantity}
+                                  onChange={(e) =>
+                                    updateItem(idx, { quantity: Number(e.target.value) })
+                                  }
+                                  className="font-mono"
+                                />
+                              </div>
+                              <div className="space-y-1">
+                                <Label>Rate (INR)</Label>
+                                <Input
+                                  type="number"
+                                  inputMode="decimal"
+                                  min="0"
+                                  step="0.01"
+                                  value={item.rate}
+                                  onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
+                                  className="font-mono"
+                                />
+                              </div>
+                            </div>
+
+                            <div className={`grid gap-2.5 ${isGst ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                              <div className="space-y-1">
+                                <Label>Discount</Label>
+                                <div className="flex gap-1.5">
+                                  <Input
+                                    type="number"
+                                    inputMode="decimal"
+                                    min="0"
+                                    step="0.01"
+                                    value={item.discountValue}
+                                    onChange={(e) =>
+                                      updateItem(idx, { discountValue: Number(e.target.value) })
+                                    }
+                                    className="font-mono flex-1 min-w-0"
+                                  />
+                                  <Select
+                                    value={item.discountType}
+                                    onChange={(e) =>
+                                      updateItem(idx, {
+                                        discountType: e.target.value as 'percent' | 'fixed',
+                                      })
+                                    }
+                                    className="w-16 px-2"
+                                  >
+                                    <option value="percent">%</option>
+                                    <option value="fixed">₹</option>
+                                  </Select>
+                                </div>
+                              </div>
+                              {isGst ? (
+                                <div className="space-y-1">
+                                  <Label>GST Rate (%)</Label>
+                                  <Select
+                                    value={item.taxRate}
+                                    onChange={(e) =>
+                                      updateItem(idx, { taxRate: Number(e.target.value) })
+                                    }
+                                    className="font-mono"
+                                  >
+                                    {[0, 5, 12, 18, 28].map((r) => (
+                                      <option key={r} value={r}>
+                                        {r}%
+                                      </option>
+                                    ))}
+                                  </Select>
+                                </div>
+                              ) : null}
+                            </div>
+
+                            {isGst || (computed?.discountAmount || 0) > 0 ? (
+                              <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-200/70 dark:border-zinc-800 text-[11px] text-zinc-500 font-mono">
+                                <span>Taxable: {formatINR(computed?.taxableAmount || 0)}</span>
+                                {isGst ? (
+                                  <span>
+                                    GST ({item.taxRate}%): {formatINR(computed?.taxAmount || 0)}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
+                          </div>
                         );
                       })}
-                    </tbody>
-                  </table>
-                </div>
+
+                      <div className="grid grid-cols-2 gap-2.5">
+                        <Button
+                          type="button"
+                          variant="outline"
+                          onClick={() => {
+                            setRateSearch('');
+                            setRateCategory('all');
+                            setSelectedRateIds([]);
+                            setRatePickerOpen(true);
+                          }}
+                        >
+                          <Package className="h-4 w-4 text-[#F57C00]" />
+                          From Rate Card
+                        </Button>
+                        <Button type="button" variant="outline" onClick={addItem}>
+                          <Plus className="h-4 w-4" />
+                          Add Blank Item
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* Standard Desktop Line Items Table */}
+                    <div className="hidden md:block overflow-x-auto rounded-lg border border-zinc-200 dark:border-zinc-800">
+                      <table className="w-full min-w-[1050px] text-xs">
+                        <thead className="border-b border-zinc-200 bg-zinc-50 dark:border-zinc-800 dark:bg-zinc-950">
+                          <tr>
+                            <th className="px-3.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 min-w-[300px]">
+                              Item & Description
+                            </th>
+                            {isGst ? (
+                              <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-44 min-w-[170px]">
+                                HSN/SAC
+                              </th>
+                            ) : null}
+                            <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                              Qty
+                            </th>
+                            <th className="px-2.5 py-3 text-left font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                              Unit
+                            </th>
+                            <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[125px]">
+                              Rate (INR)
+                            </th>
+                            <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-40 min-w-[155px]">
+                              Discount
+                            </th>
+                            {isGst ? (
+                              <th className="px-2.5 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-24 min-w-[95px]">
+                                GST %
+                              </th>
+                            ) : null}
+                            <th className="px-3 py-3 text-right font-semibold text-zinc-900 dark:text-zinc-100 w-32 min-w-[120px]">
+                              Total
+                            </th>
+                            <th className="px-2 py-3 w-16 text-center">Actions</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-zinc-100 dark:divide-zinc-800 bg-white dark:bg-zinc-900">
+                          {items.map((item, idx) => {
+                            const computed = calc.items[idx];
+                            return (
+                              <tr key={idx} className="align-top hover:bg-zinc-50/60 dark:hover:bg-zinc-800/40">
+                                <td className="px-3.5 py-3 space-y-1.5 min-w-[300px]">
+                                  <Input
+                                    list="drona-rate-card-names"
+                                    value={item.name}
+                                    onChange={(e) => updateItem(idx, { name: e.target.value })}
+                                    placeholder="Service or product name"
+                                    className="h-10 text-xs font-medium"
+                                  />
+                                  <Input
+                                    value={item.description}
+                                    onChange={(e) => updateItem(idx, { description: e.target.value })}
+                                    placeholder="Optional description / details"
+                                    className="h-9 text-xs text-zinc-600 dark:text-zinc-300"
+                                  />
+                                </td>
+                                {isGst ? (
+                                  <td className="px-2.5 py-3 min-w-[170px]">
+                                    <HsnSacSelector
+                                      value={item.hsnSac}
+                                      currentDescription={item.description}
+                                      onChange={(val) => updateItem(idx, { hsnSac: val })}
+                                      onSelectDescription={(desc) => {
+                                        if (!item.description || item.description.trim() === '') {
+                                          updateItem(idx, { description: desc });
+                                        }
+                                      }}
+                                      placeholder="998314"
+                                      className="h-10 text-xs font-mono"
+                                    />
+                                  </td>
+                                ) : null}
+                                <td className="px-2.5 py-3 min-w-[95px]">
+                                  <Input
+                                    type="number"
+                                    min="0.01"
+                                    step="0.01"
+                                    value={item.quantity}
+                                    onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
+                                    className="h-10 text-xs text-right font-mono"
+                                  />
+                                </td>
+                                <td className="px-2.5 py-3 min-w-[95px]">
+                                  <Input
+                                    value={item.unit}
+                                    onChange={(e) => updateItem(idx, { unit: e.target.value })}
+                                    placeholder="Nos"
+                                    className="h-10 text-xs text-center"
+                                  />
+                                </td>
+                                <td className="px-2.5 py-3 min-w-[125px]">
+                                  <Input
+                                    type="number"
+                                    min="0"
+                                    step="0.01"
+                                    value={item.rate}
+                                    onChange={(e) => updateItem(idx, { rate: Number(e.target.value) })}
+                                    className="h-10 text-xs text-right font-mono font-medium"
+                                  />
+                                </td>
+                                <td className="px-2.5 py-3 min-w-[155px]">
+                                  <div className="flex gap-1.5">
+                                    <Input
+                                      type="number"
+                                      min="0"
+                                      step="0.01"
+                                      value={item.discountValue}
+                                      onChange={(e) =>
+                                        updateItem(idx, { discountValue: Number(e.target.value) })
+                                      }
+                                      className="h-10 text-xs text-right font-mono flex-1 min-w-[65px]"
+                                    />
+                                    <Select
+                                      value={item.discountType}
+                                      onChange={(e) =>
+                                        updateItem(idx, {
+                                          discountType: e.target.value as 'percent' | 'fixed',
+                                        })
+                                      }
+                                      className="h-10 text-xs px-2 w-14 font-semibold shrink-0"
+                                    >
+                                      <option value="percent">%</option>
+                                      <option value="fixed">₹</option>
+                                    </Select>
+                                  </div>
+                                </td>
+                                {isGst ? (
+                                  <td className="px-2.5 py-3 min-w-[95px]">
+                                    <Select
+                                      value={item.taxRate}
+                                      onChange={(e) => updateItem(idx, { taxRate: Number(e.target.value) })}
+                                      className="h-10 text-xs font-mono font-semibold"
+                                    >
+                                      {[0, 5, 12, 18, 28].map((r) => (
+                                        <option key={r} value={r}>
+                                          {r}%
+                                        </option>
+                                      ))}
+                                    </Select>
+                                  </td>
+                                ) : null}
+                                <td className="px-3 py-3 text-right font-mono tabular-nums text-sm font-bold text-zinc-900 dark:text-zinc-100 min-w-[120px]">
+                                  {formatINR(computed?.totalAmount || 0)}
+                                </td>
+                                <td className="px-2 py-3 text-center">
+                                  <div className="inline-flex items-center gap-0.5">
+                                    {item.name.trim() &&
+                                    !rateCardItems.some(
+                                      (rc) => rc.name.toLowerCase() === item.name.trim().toLowerCase()
+                                    ) ? (
+                                      <button
+                                        type="button"
+                                        disabled={savingToRateCardIdx === idx}
+                                        onClick={() => handleSaveLineItemToRateCard(idx)}
+                                        className="p-1.5 text-zinc-400 hover:text-[#F57C00] cursor-pointer"
+                                        title="Save item to Rate Card"
+                                        aria-label="Save item to Rate Card"
+                                      >
+                                        <BookmarkPlus className="h-3.5 w-3.5" />
+                                      </button>
+                                    ) : null}
+                                    <button
+                                      type="button"
+                                      onClick={() => duplicateItem(idx)}
+                                      className="p-1.5 text-zinc-400 hover:text-indigo-600 cursor-pointer"
+                                      title="Duplicate item"
+                                      aria-label="Duplicate item"
+                                    >
+                                      <Copy className="h-3.5 w-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => removeItem(idx)}
+                                      disabled={items.length <= 1}
+                                      className="p-1.5 text-zinc-400 hover:text-red-600 disabled:opacity-30 cursor-pointer"
+                                      aria-label="Remove item"
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </>
+                )}
               </CardContent>
             </Card>
 
@@ -2747,6 +3563,23 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
           </div>
         </div>
       </Dialog>
+
+      {/* Custom Invoice Layout Builder Modal */}
+      <CustomLayoutEditorModal
+        layout={editingCustomLayout}
+        isOpen={customBuilderModalOpen}
+        onClose={() => setCustomBuilderModalOpen(false)}
+        onSave={async (savedLayout) => {
+          if (!tenantUid) return;
+          await saveCustomLayout(tenantUid, savedLayout);
+          const nextLayouts = await listCustomLayouts(tenantUid);
+          setAvailableLayouts(nextLayouts);
+          setSelectedLayoutId(savedLayout.id);
+          setSelectedLayoutSnapshot(savedLayout);
+          setLayoutMode('custom');
+          notify('success', `Saved preset "${savedLayout.name}"`);
+        }}
+      />
 
       {/* Floating button to restore live preview when collapsed */}
       {viewMode === 'editor' && (

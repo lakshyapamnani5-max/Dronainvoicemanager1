@@ -84,76 +84,169 @@ async function generateThemePdfFromDom(
   const targetWidthPx = isLandscape ? 1123 : 794; // Exact A4 width at 96 DPI
   const targetMinHeightPx = isLandscape ? 794 : 1123;
 
-  const container = document.createElement('div');
-  container.setAttribute('aria-hidden', 'true');
-  container.style.position = 'fixed';
-  container.style.left = '0';
-  container.style.top = '0';
-  container.style.width = `${targetWidthPx}px`;
-  container.style.minHeight = `${targetMinHeightPx}px`;
-  container.style.background = '#ffffff';
-  container.style.zIndex = '-9999';
-  container.style.opacity = '1';
-  container.style.pointerEvents = 'none';
-  container.style.overflow = 'visible';
-  document.body.appendChild(container);
+  // 1. Check if the preview is ALREADY mounted and visible on the page
+  const existingSheet = document.querySelector('.invoice-preview-root .print-sheet') as HTMLElement;
+  const existingRoot = document.querySelector('.invoice-preview-root') as HTMLElement;
+  const liveTarget = existingSheet || existingRoot;
 
+  let container: HTMLDivElement | null = null;
   let root: any = null;
+
   try {
-    const React = await import('react');
-    const { createRoot } = await import('react-dom/client');
-    const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
-    const { toCanvas } = await import('html-to-image');
+    let targetElement: HTMLElement;
 
-    root = createRoot(container);
-    root.render(
-      React.createElement(InvoicePreview, {
-        docType: 'invoice',
-        record,
-        templateOverride: normId,
-        a4Ratio: true,
-      })
-    );
+    if (liveTarget && liveTarget.offsetWidth > 100 && liveTarget.offsetHeight > 100) {
+      targetElement = liveTarget;
+    } else {
+      // Offscreen mounting when downloading from table list view
+      container = document.createElement('div');
+      container.setAttribute('aria-hidden', 'true');
+      container.style.position = 'fixed';
+      container.style.left = '0';
+      container.style.top = '0';
+      container.style.width = `${targetWidthPx}px`;
+      container.style.minHeight = `${targetMinHeightPx}px`;
+      container.style.background = '#ffffff';
+      container.style.zIndex = '-9999';
+      container.style.opacity = '1';
+      container.style.pointerEvents = 'none';
+      container.style.overflow = 'visible';
+      document.body.appendChild(container);
 
-    // Wait for fonts, images, SVGs and components to finish rendering
-    if (document.fonts?.ready) {
-      try {
-        await document.fonts.ready;
-      } catch {}
-    }
-    await new Promise((r) => setTimeout(r, 400));
+      const React = await import('react');
+      const { createRoot } = await import('react-dom/client');
+      const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
 
-    // Wait for all images inside container to finish loading / decoding
-    const imgs = Array.from(container.querySelectorAll('img'));
-    if (imgs.length > 0) {
-      await Promise.all(
-        imgs.map((img) => {
-          if (img.complete) return Promise.resolve(null);
-          return new Promise((resolve) => {
-            img.onload = () => resolve(null);
-            img.onerror = () => resolve(null);
-            setTimeout(resolve, 500);
-          });
+      root = createRoot(container);
+      root.render(
+        React.createElement(InvoicePreview, {
+          docType: 'invoice',
+          record,
+          templateOverride: normId,
+          a4Ratio: true,
         })
       );
+
+      // Wait for fonts, images, and React to finish rendering
+      if (document.fonts?.ready) {
+        try {
+          await document.fonts.ready;
+        } catch {}
+      }
+      await new Promise((r) => setTimeout(r, 450));
+
+      const imgs = Array.from(container.querySelectorAll('img'));
+      if (imgs.length > 0) {
+        await Promise.all(
+          imgs.map((img) => {
+            if (img.complete) return Promise.resolve(null);
+            return new Promise((resolve) => {
+              img.onload = () => resolve(null);
+              img.onerror = () => resolve(null);
+              setTimeout(resolve, 500);
+            });
+          })
+        );
+      }
+
+      targetElement = (container.firstElementChild as HTMLElement) || container;
     }
 
-    const targetElement = (container.firstElementChild as HTMLElement) || container;
     const computedHeight = Math.max(
       targetMinHeightPx,
       targetElement.scrollHeight || targetElement.offsetHeight || targetMinHeightPx
     );
 
-    // Use native browser rendering via SVG foreignObject (100% identical to preview, supports oklch/flex/grid)
-    const canvas = await toCanvas(targetElement, {
-      pixelRatio: 2, // 192 DPI - crisp, sharp vector-like typography and lines
-      backgroundColor: '#ffffff',
-      skipFonts: true, // Use browser's already active fonts without external CORS fetch
-      width: targetWidthPx,
-      height: computedHeight,
-      canvasWidth: targetWidthPx * 2,
-      canvasHeight: computedHeight * 2,
-    });
+    let canvas: HTMLCanvasElement | null = null;
+
+    // Method 1: html-to-image (exact native browser rendering with foreignObject)
+    try {
+      const { toCanvas } = await import('html-to-image');
+      canvas = await toCanvas(targetElement, {
+        pixelRatio: 2, // 192 DPI - crisp, sharp vector-like typography and lines
+        backgroundColor: '#ffffff',
+        skipFonts: true, // Use browser's active fonts
+        cacheBust: false,
+        imagePlaceholder: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7',
+        onImageErrorHandler: () => null,
+        width: targetWidthPx,
+        height: computedHeight,
+        canvasWidth: targetWidthPx * 2,
+        canvasHeight: computedHeight * 2,
+      });
+    } catch (errHtmlToImage) {
+      console.warn('html-to-image toCanvas failed, attempting html2canvas fallback:', errHtmlToImage);
+    }
+
+    // Method 2: html2canvas with OKLCH color sanitization
+    if (!canvas) {
+      const html2canvasModule = await import('html2canvas');
+      const html2canvas = (html2canvasModule as any).default || html2canvasModule;
+      canvas = await html2canvas(targetElement, {
+        scale: 2,
+        useCORS: true,
+        allowTaint: true,
+        backgroundColor: '#ffffff',
+        logging: false,
+        width: targetWidthPx,
+        windowWidth: targetWidthPx,
+        scrollX: 0,
+        scrollY: 0,
+        x: 0,
+        y: 0,
+        onclone: (clonedDoc: Document) => {
+          const tmpCanvas = document.createElement('canvas');
+          const tmpCtx = tmpCanvas.getContext('2d');
+          if (tmpCtx) {
+            const colorConverter = (match: string) => {
+              try {
+                tmpCtx.fillStyle = '#000000';
+                tmpCtx.fillStyle = match;
+                return tmpCtx.fillStyle || '#000000';
+              } catch {
+                return '#000000';
+              }
+            };
+
+            clonedDoc.querySelectorAll('style').forEach((st) => {
+              if (
+                st.textContent &&
+                (st.textContent.includes('oklch') ||
+                  st.textContent.includes('color-mix') ||
+                  st.textContent.includes('color('))
+              ) {
+                st.textContent = st.textContent.replace(
+                  /(?:oklch|color-mix|lab|color)\([^)]+\)/g,
+                  colorConverter
+                );
+              }
+            });
+
+            clonedDoc.querySelectorAll('*').forEach((el) => {
+              const htmlEl = el as HTMLElement;
+              if (htmlEl.style) {
+                const bg = htmlEl.style.backgroundColor;
+                if (bg && (bg.includes('oklch') || bg.includes('color('))) {
+                  htmlEl.style.backgroundColor = colorConverter(bg);
+                }
+                const col = htmlEl.style.color;
+                if (col && (col.includes('oklch') || col.includes('color('))) {
+                  htmlEl.style.color = colorConverter(col);
+                }
+                const bc = htmlEl.style.borderColor;
+                if (bc && (bc.includes('oklch') || bc.includes('color('))) {
+                  htmlEl.style.borderColor = colorConverter(bc);
+                }
+              }
+            });
+          }
+        },
+      });
+    }
+
+    if (!canvas || canvas.width === 0 || canvas.height === 0) {
+      return false;
+    }
 
     const pdf = new jsPDF({
       orientation: isLandscape ? 'landscape' : 'portrait',
@@ -218,7 +311,11 @@ async function generateThemePdfFromDom(
         root.unmount();
       } catch {}
     }
-    container.remove();
+    if (container) {
+      try {
+        container.remove();
+      } catch {}
+    }
   }
 }
 
@@ -281,7 +378,7 @@ async function generateVectorInvoicePdf(
   } else if (normId === 'gst_theme_2') {
     accentRgb = [37, 99, 235]; // royal blue
   } else if (normId === 'gst_theme_3') {
-    accentRgb = [13, 148, 136]; // teal emerald
+    accentRgb = [123, 115, 214]; // royal violet #7B73D6
   } else if (normId === 'gst_theme_4') {
     accentRgb = [217, 119, 6]; // amber
   } else if (normId === 'gst_theme_5') {

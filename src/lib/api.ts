@@ -82,6 +82,8 @@ export interface SaveDocumentPayload {
   taxSupplyMode: TaxSupplyMode;
   roundOffEnabled: boolean;
   templateId?: TemplateId;
+  layoutId?: string | null;
+  layoutSnapshot?: CustomInvoiceLayout | null;
   quotationTitle?: string;
   projectDescription?: string;
   deliveryTimeline?: string;

@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Building2 } from 'lucide-react';
 import type { InvoiceTemplateProps } from '../invoiceThemeTypes';
 import { useInvoiceData } from '../templateCommon';
+import { CustomItemTableRenderer } from '../CustomItemTableRenderer';
 
 export function GSTTheme1({
   docType,
@@ -109,6 +110,18 @@ export function GSTTheme1({
         </div>
 
         {/* Items Table */}
+        {record.layoutSnapshot?.columns && record.layoutSnapshot.columns.length > 0 ? (
+          <CustomItemTableRenderer
+            layoutSnapshot={record.layoutSnapshot}
+            items={d.items}
+            accentColor="#3F3F46"
+            borderColor="#52525B"
+            isGst={d.isGst}
+            totalDiscount={d.totalDiscount}
+            grandTotal={d.grandTotal}
+            formatCurrency={d.formatINR}
+          />
+        ) : (
         <div className="border border-zinc-300 rounded-sm overflow-hidden">
           <table className="w-full text-left text-xs border-collapse">
             <thead>
@@ -174,6 +187,7 @@ export function GSTTheme1({
             </tfoot>
           </table>
         </div>
+        )}
 
         {/* Lower Summary Section */}
         <div className="grid grid-cols-1 md:grid-cols-12 gap-4 text-xs pt-2">
