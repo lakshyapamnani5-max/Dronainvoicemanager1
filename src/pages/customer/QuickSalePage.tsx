@@ -720,7 +720,7 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
       setLastQuickSavedInvoice(finalInvoice);
 
       if (mode === 'save_and_download') {
-        await generateDocumentPdf('invoice', finalInvoice);
+        await generateDocumentPdf('invoice', finalInvoice, finalInvoice.templateId || templateId);
         notify('success', `Saved ${finalInvoice.invoiceNumber} & downloaded PDF`);
         setSavedInvoice(finalInvoice);
       } else if (mode === 'save_and_new') {
@@ -752,7 +752,7 @@ export function QuickSalePage({ navigate, onBack }: QuickSalePageProps) {
   const handleDownloadInvoicePdf = async (inv: Invoice) => {
     setDownloadingPdf(true);
     try {
-      await generateDocumentPdf('invoice', inv);
+      await generateDocumentPdf('invoice', inv, inv.templateId || templateId);
       notify('success', `Downloaded ${inv.invoiceNumber}.pdf`);
     } catch (err) {
       notify('error', err instanceof Error ? err.message : 'Failed to generate PDF');

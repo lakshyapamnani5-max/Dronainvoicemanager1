@@ -58,28 +58,78 @@
   background: rgba(113, 113, 122, 0.45);
 }
 
-/* Print mode for A4 documents */
+/* Print mode for A4 documents - exact theme rendering and zero unwanted margins */
 @media print {
   @page {
-    size: A4 portrait;
-    margin: 10mm;
+    margin: 6mm !important;
   }
 
-  body {
+  *, *:before, *:after {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
     background: #ffffff !important;
     color: #09090b !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
   }
 
-  .no-print {
+  /* Hide app navigation, headers, footers, toast, action buttons, theme selectors */
+  .no-print,
+  aside,
+  header,
+  footer,
+  nav,
+  .toast-container {
     display: none !important;
   }
 
-  .print-only-sheet {
-    box-shadow: none !important;
-    border: none !important;
-    margin: 0 !important;
+  /* Reset AppShell flex containers & overflow scroll traps */
+  main,
+  div[class*="overflow-"],
+  div[class*="space-y-"] {
     padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    height: auto !important;
+    max-width: none !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* Force print sheet to full width and transparent/white background */
+  .invoice-preview-root,
+  .print-sheet {
     width: 100% !important;
     max-width: none !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    border: none !important;
+    box-shadow: none !important;
+    background: #ffffff !important;
+    page-break-inside: auto;
+  }
+
+  table {
+    page-break-inside: auto;
+  }
+
+  tr {
+    page-break-inside: avoid;
+    page-break-after: auto;
+  }
+
+  thead {
+    display: table-header-group;
+  }
+
+  tfoot {
+    display: table-footer-group;
   }
 }

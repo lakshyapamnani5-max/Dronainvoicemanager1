@@ -16,8 +16,10 @@ import type {
 } from '../shared/types';
 import { formatDate } from './utils';
 import { normalizeTemplateId } from '../components/invoice/invoiceThemeRegistry';
+import type { StandardTemplateId } from '../components/invoice/invoiceThemeTypes';
 import { generateQuotationPdf } from '../components/quotation/quotationPdfGenerator';
 import { resolveLatestDocumentForDownload } from './liveSnapshots';
+import { getCachedSession } from './localCache';
 
 async function generateUpiQrDataUrl(
   upiId: string,
@@ -71,6 +73,126 @@ async function loadLogoForPdf(
   });
 }
 
+async function generateThemePdfFromDom(
+  record: Invoice,
+  normId: StandardTemplateId
+): Promise<boolean> {
+  if (typeof window === 'undefined' || typeof document === 'undefined') {
+    return false;
+  }
+  const isLandscape = normId === 'landscape_theme_2';
+  const targetWidthPx = isLandscape ? 1123 : 794; // Exact A4 width at 96 DPI
+  const container = document.createElement('div');
+  container.setAttribute('aria-hidden', 'true');
+  container.style.position = 'fixed';
+  container.style.left = '-99999px';
+  container.style.top = '0';
+  container.style.width = `${targetWidthPx}px`;
+  container.style.minHeight = isLandscape ? '794px' : '1123px';
+  container.style.background = '#ffffff';
+  container.style.zIndex = '-9999';
+  container.style.pointerEvents = 'none';
+  container.style.overflow = 'visible';
+  document.body.appendChild(container);
+
+  let root: any = null;
+  try {
+    const React = await import('react');
+    const { createRoot } = await import('react-dom/client');
+    const { InvoicePreview } = await import('../components/invoice/InvoicePreview');
+    const html2canvasModule = await import('html2canvas');
+    const html2canvas = (html2canvasModule as any).default || html2canvasModule;
+
+    root = createRoot(container);
+    root.render(
+      React.createElement(InvoicePreview, {
+        docType: 'invoice',
+        record,
+        templateOverride: normId,
+        a4Ratio: true,
+      })
+    );
+
+    // Allow components, images, SVGs and QRCode data URLs to complete rendering
+    await new Promise((r) => setTimeout(r, 350));
+
+    const targetElement = (container.firstElementChild as HTMLElement) || container;
+
+    const canvas = await html2canvas(targetElement, {
+      scale: 2, // 192 DPI - crisp typography and vector-like lines
+      useCORS: true,
+      allowTaint: true,
+      backgroundColor: '#ffffff',
+      logging: false,
+      windowWidth: targetWidthPx,
+    });
+
+    const pdf = new jsPDF({
+      orientation: isLandscape ? 'landscape' : 'portrait',
+      unit: 'mm',
+      format: 'a4',
+    });
+
+    const pdfW = pdf.internal.pageSize.getWidth();
+    const pdfH = pdf.internal.pageSize.getHeight();
+    const imgTotalHeightMm = (canvas.height * pdfW) / canvas.width;
+
+    if (imgTotalHeightMm <= pdfH + 2) {
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      pdf.addImage(imgData, 'JPEG', 0, 0, pdfW, imgTotalHeightMm);
+    } else {
+      const pageCanvasHeightPx = Math.floor((canvas.width * pdfH) / pdfW);
+      let renderedHeightPx = 0;
+      let pageNumber = 0;
+
+      while (renderedHeightPx < canvas.height) {
+        if (pageNumber > 0) {
+          pdf.addPage('a4', isLandscape ? 'landscape' : 'portrait');
+        }
+        const currentSliceHeightPx = Math.min(pageCanvasHeightPx, canvas.height - renderedHeightPx);
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = currentSliceHeightPx;
+        const sliceCtx = sliceCanvas.getContext('2d');
+        if (sliceCtx) {
+          sliceCtx.fillStyle = '#ffffff';
+          sliceCtx.fillRect(0, 0, canvas.width, currentSliceHeightPx);
+          sliceCtx.drawImage(
+            canvas,
+            0,
+            renderedHeightPx,
+            canvas.width,
+            currentSliceHeightPx,
+            0,
+            0,
+            canvas.width,
+            currentSliceHeightPx
+          );
+          const sliceHeightMm = (currentSliceHeightPx * pdfW) / canvas.width;
+          const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.95);
+          pdf.addImage(sliceData, 'JPEG', 0, 0, pdfW, sliceHeightMm);
+        }
+        renderedHeightPx += currentSliceHeightPx;
+        pageNumber++;
+      }
+    }
+
+    const safeNumber = (record.invoiceNumber || 'Invoice').replace(/[^a-zA-Z0-9_-]/g, '_');
+    pdf.save(`${safeNumber}.pdf`);
+    return true;
+  } catch (err) {
+    console.warn('DOM theme PDF rendering failed, using vector PDF fallback:', err);
+    return false;
+  } finally {
+    if (root) {
+      try {
+        root.unmount();
+      } catch {}
+    }
+    container.remove();
+  }
+}
+
 export async function generateDocumentPdf(
   docType: 'invoice' | 'quotation',
   inputRecord: Invoice | Quotation,
@@ -80,8 +202,30 @@ export async function generateDocumentPdf(
     await generateQuotationPdf(inputRecord as Quotation, overrideTemplate);
     return;
   }
-  const record = await resolveLatestDocumentForDownload(inputRecord);
-  const normId = normalizeTemplateId(overrideTemplate || record.templateId);
+  const record = (await resolveLatestDocumentForDownload(inputRecord)) as Invoice;
+  const profile = getCachedSession()?.businessProfile;
+  const resolvedTemplate =
+    overrideTemplate || record.templateId || profile?.defaultInvoiceTemplate || 'gst_theme_1';
+  const normId = normalizeTemplateId(resolvedTemplate);
+
+  // In browser: render the exact high-fidelity React theme and convert to A4 PDF
+  if (typeof window !== 'undefined' && typeof document !== 'undefined') {
+    try {
+      const ok = await generateThemePdfFromDom(record, normId);
+      if (ok) return;
+    } catch (err) {
+      console.warn('DOM theme PDF rendering failed, falling back to vector PDF:', err);
+    }
+  }
+
+  // Fallback / Node.js test environment: Vector jsPDF generator with theme colors
+  await generateVectorInvoicePdf(record, normId);
+}
+
+async function generateVectorInvoicePdf(
+  record: Invoice,
+  normId: StandardTemplateId
+): Promise<void> {
   const isLandscape = normId === 'landscape_theme_2';
   const pdf = new jsPDF({
     orientation: isLandscape ? 'landscape' : 'portrait',
@@ -94,11 +238,9 @@ export async function generateDocumentPdf(
 
   const biz = record.businessSnapshot;
   const cust = record.customerSnapshot;
-  const isInvoice = docType === 'invoice';
-  const inv = isInvoice ? (record as Invoice) : null;
-  const quo = !isInvoice ? (record as Quotation) : null;
-  const docNumber = inv ? inv.invoiceNumber : quo!.quotationNumber;
-  const docTitle = isInvoice ? (record.isGst ? 'TAX INVOICE' : 'BILL OF SUPPLY') : 'QUOTATION';
+  const inv = record;
+  const docNumber = inv.invoiceNumber;
+  const docTitle = record.isGst ? 'TAX INVOICE' : 'BILL OF SUPPLY';
 
   let accentRgb: [number, number, number] = [124, 120, 212]; // royal violet default
   if (normId === 'double_divine') {
@@ -107,8 +249,18 @@ export async function generateDocumentPdf(
     accentRgb = [30, 36, 48]; // charcoal slate
   } else if (normId === 'gst_theme_1') {
     accentRgb = [63, 63, 70]; // dark slate
+  } else if (normId === 'gst_theme_2') {
+    accentRgb = [37, 99, 235]; // royal blue
+  } else if (normId === 'gst_theme_3') {
+    accentRgb = [13, 148, 136]; // teal emerald
+  } else if (normId === 'gst_theme_4') {
+    accentRgb = [217, 119, 6]; // amber
+  } else if (normId === 'gst_theme_5') {
+    accentRgb = [14, 116, 144]; // cyan slate
   } else if (normId === 'gst_theme_6') {
-    accentRgb = [88, 80, 236]; // indigo
+    accentRgb = [79, 70, 229]; // indigo
+  } else if (normId === 'french_elite') {
+    accentRgb = [124, 120, 212]; // royal violet
   }
 
   // Load Business Logo if available

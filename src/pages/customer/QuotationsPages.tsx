@@ -33,6 +33,7 @@ import { useToast } from '../../components/ui/toast';
 
 export function QuotationsListPage({ navigate }: { navigate: (path: string) => void }) {
   const { session } = useAuth();
+  const profile = session?.businessProfile;
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
   const initialHydrated = React.useMemo(() => {
@@ -277,7 +278,7 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => generateDocumentPdf('quotation', q)}
+                        onClick={() => generateDocumentPdf('quotation', q, q.templateId || profile?.defaultQuotationTemplate)}
                         aria-label="Download PDF"
                       >
                         <Download className="h-3.5 w-3.5" />
@@ -381,7 +382,7 @@ export function QuotationsListPage({ navigate }: { navigate: (path: string) => v
                             <Button
                               size="sm"
                               variant="ghost"
-                              onClick={() => generateDocumentPdf('quotation', q)}
+                              onClick={() => generateDocumentPdf('quotation', q, q.templateId || profile?.defaultQuotationTemplate)}
                               title="Download PDF"
                             >
                               <Download className="h-3.5 w-3.5" />
