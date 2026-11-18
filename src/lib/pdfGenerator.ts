@@ -450,17 +450,10 @@ async function generateVectorInvoicePdf(
     pdf.setFontSize(8);
     pdf.setTextColor(82, 82, 91);
     let mY = y + 16.5;
-    if (inv) {
-      pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, col2X, mY);
-      mY += 3.8;
-      pdf.text(`Due: ${formatDate(inv.dueDate)}`, col2X, mY);
-      mY += 3.8;
-    } else if (quo) {
-      pdf.text(`Date: ${formatDate(quo.quotationDate)}`, col2X, mY);
-      mY += 3.8;
-      pdf.text(`Valid: ${formatDate(quo.validUntil)}`, col2X, mY);
-      mY += 3.8;
-    }
+    pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, col2X, mY);
+    mY += 3.8;
+    pdf.text(`Due: ${formatDate(inv.dueDate)}`, col2X, mY);
+    mY += 3.8;
     pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, col2X, mY);
 
     // Col 3: Customer Details
@@ -544,7 +537,7 @@ async function generateVectorInvoicePdf(
     pdf.setFont('helvetica', 'normal');
     pdf.setFontSize(8);
     pdf.setTextColor(82, 82, 91);
-    const dDateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    const dDateStr = `Date: ${formatDate(inv.invoiceDate)}`;
     pdf.text(dDateStr, pageWidth - margin, 25, { align: 'right' });
 
     y = 28;
@@ -647,7 +640,7 @@ async function generateVectorInvoicePdf(
     pdf.setFontSize(8);
     pdf.setTextColor(24, 24, 27);
     pdf.text(`Invoice No.: ${docNumber}`, margin, y);
-    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    const dateStr = `Date: ${formatDate(inv.invoiceDate)}`;
     pdf.text(dateStr, margin, y + 4.5);
     if (inv?.dueDate) {
       pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, margin, y + 9);
@@ -780,7 +773,7 @@ async function generateVectorInvoicePdf(
     let rY = y;
     pdf.text(`Invoice No.: ${docNumber}`, pageWidth - margin, rY, { align: 'right' });
     rY += 4;
-    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    const dateStr = `Date: ${formatDate(inv.invoiceDate)}`;
     pdf.text(dateStr, pageWidth - margin, rY, { align: 'right' });
     rY += 4;
     if (inv?.dueDate) {
@@ -840,7 +833,7 @@ async function generateVectorInvoicePdf(
     pdf.setFontSize(8);
     pdf.setTextColor(82, 82, 91);
     pdf.text(`Invoice No.: ${docNumber}`, rBoxX + 4, y + 5);
-    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    const dateStr = `Date: ${formatDate(inv.invoiceDate)}`;
     pdf.text(dateStr, rBoxX + 4, y + 9.5);
     if (inv?.dueDate) {
       pdf.text(`Due Date: ${formatDate(inv.dueDate)}`, rBoxX + 4, y + 14);
@@ -967,7 +960,7 @@ async function generateVectorInvoicePdf(
     let rY = y + 4.5;
     pdf.text(`Invoice No.: ${docNumber}`, pageWidth - margin, rY, { align: 'right' });
     rY += 4;
-    const dateStr = inv ? `Date: ${formatDate(inv.invoiceDate)}` : `Date: ${formatDate(quo!.quotationDate)}`;
+    const dateStr = `Date: ${formatDate(inv.invoiceDate)}`;
     pdf.text(dateStr, pageWidth - margin, rY, { align: 'right' });
     rY += 4;
     if (inv?.dueDate) {
@@ -1028,17 +1021,10 @@ async function generateVectorInvoicePdf(
     pdf.setFontSize(8);
     pdf.setTextColor(82, 82, 91);
     let rY = y + 9;
-    if (inv) {
-      pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, pageWidth - margin, rY, { align: 'right' });
-      rY += 3.8;
-      pdf.text(`Due: ${formatDate(inv.dueDate)}`, pageWidth - margin, rY, { align: 'right' });
-      rY += 3.8;
-    } else if (quo) {
-      pdf.text(`Date: ${formatDate(quo.quotationDate)}`, pageWidth - margin, rY, { align: 'right' });
-      rY += 3.8;
-      pdf.text(`Valid: ${formatDate(quo.validUntil)}`, pageWidth - margin, rY, { align: 'right' });
-      rY += 3.8;
-    }
+    pdf.text(`Date: ${formatDate(inv.invoiceDate)}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 3.8;
+    pdf.text(`Due: ${formatDate(inv.dueDate)}`, pageWidth - margin, rY, { align: 'right' });
+    rY += 3.8;
     pdf.text(`Place of Supply: ${record.placeOfSupply || cust.state || '-'}`, pageWidth - margin, rY, { align: 'right' });
 
     y = Math.max(bY, rY, y + (logoInfo ? logoInfo.drawH : 0)) + 3;
@@ -1222,7 +1208,7 @@ async function generateVectorInvoicePdf(
     bottomY = 16;
   }
 
-  const qrAmount = inv ? (inv.balanceDue > 0 ? inv.balanceDue : inv.grandTotal) : record.grandTotal;
+  const qrAmount = inv.balanceDue > 0 ? inv.balanceDue : inv.grandTotal;
   const cleanUpiId = (biz.upiId || '').trim();
   const qrData = cleanUpiId
     ? await generateUpiQrDataUrl(cleanUpiId, biz.businessName, qrAmount, docNumber)

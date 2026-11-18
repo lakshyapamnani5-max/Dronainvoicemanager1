@@ -110,6 +110,7 @@ import type {
   Customer,
   CustomerAnalyticsData,
   CustomerSnapshot,
+  CustomInvoiceLayout,
   DiscountType,
   ImpersonationSession,
   Invoice,

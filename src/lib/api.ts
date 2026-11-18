@@ -5,6 +5,7 @@ import type {
   BusinessProfile,
   Customer,
   CustomerAnalyticsData,
+  CustomInvoiceLayout,
   GstinLookupResponse,
   ImpersonationSession,
   Invoice,

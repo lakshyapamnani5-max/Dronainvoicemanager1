@@ -390,7 +390,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => generateDocumentPdf('invoice', inv, inv.templateId || profile?.defaultInvoiceTemplate)}
+                        onClick={() => generateDocumentPdf('invoice', inv, inv.templateId)}
                         aria-label="Download PDF"
                       >
                         <Download className="h-3.5 w-3.5" />
@@ -492,7 +492,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                           <Button
                             size="sm"
                             variant="ghost"
-                            onClick={() => generateDocumentPdf('invoice', inv, inv.templateId || profile?.defaultInvoiceTemplate)}
+                            onClick={() => generateDocumentPdf('invoice', inv, inv.templateId)}
                             title="Download PDF"
                           >
                             <Download className="h-3.5 w-3.5" />

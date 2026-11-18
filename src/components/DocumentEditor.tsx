@@ -30,7 +30,7 @@ import {
   LayoutGrid,
 } from 'lucide-react';
 import type { CustomInvoiceLayout, CustomColumnDef } from '../shared/customLayoutTypes';
-import { listCustomLayouts } from '../lib/customLayoutService';
+import { listCustomLayouts, saveCustomLayout } from '../lib/customLayoutService';
 import { evaluateFormula } from '../lib/formulaEngine';
 import { CustomLayoutEditorModal } from './invoice/customBuilder/CustomLayoutEditorModal';
 import { useAuth } from '../contexts/AuthContext';
@@ -73,7 +73,7 @@ import {
 import type { QuotationTemplateId } from './quotation/quotationThemeTypes';
 import { HsnSacSelector } from './HsnSacSelector';
 import { Button } from './ui/button';
-import { Card, CardContent, CardHeader, CardTitle } from './ui/card';
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card';
 import { Dialog } from './ui/dialog';
 import { Input, Label, Select, Textarea } from './ui/input';
 import { useToast } from './ui/toast';
@@ -2012,7 +2012,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                         <div className="h-10 px-3 flex items-center justify-between font-mono font-bold text-sm bg-indigo-50/60 dark:bg-indigo-950/20 border border-indigo-200 dark:border-indigo-900/50 rounded-lg text-indigo-900 dark:text-indigo-200">
                                           <span className="text-xs text-indigo-500 font-sans font-normal">Calculated</span>
                                           <span>
-                                            {col.numberFormat === 'currency'
+                                            {col.numberFormat === 'inr'
                                               ? formatINR(Number(val) || 0)
                                               : (Number(val) || 0).toFixed(col.decimalPrecision ?? 2)}
                                           </span>
@@ -2172,7 +2172,9 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                       {col.isRequired ? <span className="text-red-500">*</span> : null}
                                       {col.unit ? <span className="text-zinc-400 font-normal">({col.unit})</span> : null}
                                       {col.dataType === 'formula' ? (
-                                        <Calculator className="h-3 w-3 text-indigo-500" title={`Formula: ${col.formula || ''}`} />
+                                        <span title={`Formula: ${col.formula || ''}`} className="inline-flex">
+                                          <Calculator className="h-3 w-3 text-indigo-500" />
+                                        </span>
                                       ) : null}
                                     </div>
                                   </th>
@@ -2244,7 +2246,7 @@ export function DocumentEditor({ docType, editId, navigate }: DocumentEditorProp
                                             className="h-9 px-2.5 flex items-center justify-end font-mono font-bold text-xs bg-indigo-50/50 dark:bg-indigo-950/20 rounded border border-indigo-200/80 dark:border-indigo-900/40 text-indigo-900 dark:text-indigo-200"
                                             title={`Formula: ${col.formula || ''}`}
                                           >
-                                            {col.numberFormat === 'currency'
+                                            {col.numberFormat === 'inr'
                                               ? formatINR(Number(val) || 0)
                                               : (Number(val) || 0).toFixed(col.decimalPrecision ?? 2)}
                                           </div>

@@ -352,7 +352,7 @@ export function GstReportsPage({ navigate }: GstReportsPageProps) {
               <Button
                 variant="outline"
                 size="sm"
-                onClick={loadInvoices}
+                onClick={() => void loadInvoices(true)}
                 disabled={loadingInvoices}
                 className="h-8 text-xs cursor-pointer"
               >
