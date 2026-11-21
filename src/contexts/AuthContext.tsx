@@ -6,12 +6,14 @@ import {
   authApi,
   cachedRead,
   ensureTenantMetaListener,
+  getLocalDeviceSessionId,
   getStoredToken,
   setStoredToken,
   updateRuntimeSessionCache,
 } from '../lib/api';
 import { firebaseAuth, initFirebaseAnalytics, rtdb } from '../lib/firebase';
-import type { AuthSessionState, BusinessProfile } from '../shared/types';
+import { useToast } from '../components/ui/toast';
+import type { AuthSessionState, BusinessProfile, UserDeviceSession } from '../shared/types';
 
 interface AuthContextValue {
   session: AuthSessionState | null;
@@ -36,7 +38,19 @@ interface AuthContextValue {
 
 const AuthContext = React.createContext<AuthContextValue | null>(null);
 
+function formatRevokedReasonMessage(reason?: string | null, maxLogins?: number): string {
+  if (reason === 'admin_revoked') {
+    return 'Your device session was signed out by Drona Admin.';
+  }
+  const limitText =
+    typeof maxLogins === 'number' && maxLogins >= 1
+      ? ` (max ${maxLogins} login${maxLogins === 1 ? '' : 's'} allowed)`
+      : '';
+  return `Signed out because your account logged in on another device${limitText}.`;
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
+  const { notify } = useToast();
   const initialCachedSession = React.useMemo(() => {
     if (!getStoredToken()) return null;
     return cachedRead.getCachedSession();
@@ -52,14 +66,32 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       setStoredToken(res.session.actorUser.uid);
       updateRuntimeSessionCache(res.session);
       setSession(res.session);
-    } catch {
-      setStoredToken(null);
-      updateRuntimeSessionCache(null);
-      setSession(null);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : '';
+      const isRevoked = msg.startsWith('SESSION_REVOKED:');
+      const isFatalAuth =
+        isRevoked ||
+        !firebaseAuth.currentUser ||
+        msg.includes('Authentication required') ||
+        msg.includes('deactivated') ||
+        msg.includes('not found');
+
+      if (isFatalAuth) {
+        if (isRevoked) {
+          notify('error', msg.replace(/^SESSION_REVOKED:/, ''));
+        } else if (msg.includes('deactivated')) {
+          notify('error', msg);
+        }
+        setStoredToken(null);
+        updateRuntimeSessionCache(null);
+        setSession(null);
+      }
+      // On transient network/offline errors while Firebase user is still authenticated,
+      // keep the cached session active so phones aren't unexpectedly logged out.
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [notify]);
 
   const refreshSession = React.useCallback(() => runRefreshSession(true), [runRefreshSession]);
 
@@ -87,10 +119,12 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => unsub();
   }, [runRefreshSession]);
 
-  // Live RTDB sync for active user record, effective user record, business profile, and lightweight _meta
+  // Live RTDB sync for active user record, device session quota, effective user record, business profile, and lightweight _meta
   const actorUid = session?.actorUser.uid;
   const effectiveUid = session?.effectiveUser.uid;
   const effectiveRole = session?.effectiveUser.role;
+  const isImpersonating = Boolean(session?.isImpersonating);
+  const actorMaxLogins = session?.actorUser.maxLogins;
 
   React.useEffect(() => {
     if (!actorUid || !effectiveUid) return;
@@ -106,6 +140,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
         if (!snap.exists()) {
           await signOut(firebaseAuth);
+          setStoredToken(null);
           updateRuntimeSessionCache(null);
           setSession(null);
           return;
@@ -116,11 +151,38 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setStoredToken(null);
           updateRuntimeSessionCache(null);
           setSession(null);
+          notify('error', 'Your account has been deactivated by Drona Admin.');
           return;
         }
         void runRefreshSession(true);
       })
     );
+
+    const localSessionId = getLocalDeviceSessionId();
+    if (localSessionId && !isImpersonating) {
+      let seenSessionOnce = false;
+      unsubs.push(
+        onValue(ref(rtdb, `userSessions/${actorUid}/${localSessionId}`), async (snap) => {
+          if (snap.exists()) {
+            seenSessionOnce = true;
+            const sessVal = snap.val() as UserDeviceSession;
+            if (sessVal.revoked) {
+              await signOut(firebaseAuth).catch(() => {});
+              setStoredToken(null);
+              updateRuntimeSessionCache(null);
+              setSession(null);
+              notify('error', formatRevokedReasonMessage(sessVal.revokedReason, actorMaxLogins));
+            }
+          } else if (seenSessionOnce) {
+            await signOut(firebaseAuth).catch(() => {});
+            setStoredToken(null);
+            updateRuntimeSessionCache(null);
+            setSession(null);
+            notify('error', formatRevokedReasonMessage(null, actorMaxLogins));
+          }
+        })
+      );
+    }
 
     if (effectiveUid !== actorUid) {
       let initializedEff = false;
@@ -166,7 +228,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       for (const u of unsubs) u();
     };
-  }, [actorUid, effectiveUid, effectiveRole, runRefreshSession]);
+  }, [actorUid, effectiveUid, effectiveRole, isImpersonating, actorMaxLogins, runRefreshSession, notify]);
 
   const login = React.useCallback(
     async (email: string, password: string, portal?: 'admin' | 'customer') => {

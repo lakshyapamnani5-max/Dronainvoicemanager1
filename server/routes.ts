@@ -934,13 +934,21 @@ apiRouter.post('/admin/users', requireAuth, requireSuperAdmin, (req, res) => {
   }
 
   const settings = getPlatformSettings();
+  const gstinCredits = Math.max(
+    0,
+    Math.round(Number(req.body?.gstinCredits ?? settings.defaultGstinCredits ?? 10))
+  );
+  const maxLogins = Math.max(
+    1,
+    Math.round(Number(req.body?.maxLogins ?? settings.defaultMaxLogins ?? 2))
+  );
   const uid = generateId('usr');
   const now = new Date().toISOString();
 
   db.transaction(() => {
     db.prepare(`
-      INSERT INTO users (uid, email, password_hash, role, status, owner_name, business_name, phone, gstin, subscription_plan, subscription_amount, created_at, updated_at)
-      VALUES (?, ?, ?, 'business', 'active', ?, ?, ?, ?, ?, ?, ?, ?)
+      INSERT INTO users (uid, email, password_hash, role, status, owner_name, business_name, phone, gstin, subscription_plan, subscription_amount, gstin_credits, gstin_credits_used, max_logins, created_at, updated_at)
+      VALUES (?, ?, ?, 'business', 'active', ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)
     `).run(
       uid,
       email,
@@ -951,6 +959,8 @@ apiRouter.post('/admin/users', requireAuth, requireSuperAdmin, (req, res) => {
       gstin,
       subscriptionPlan,
       subscriptionAmount,
+      gstinCredits,
+      maxLogins,
       now,
       now
     );
@@ -1022,6 +1032,9 @@ apiRouter.put('/admin/users/:uid', requireAuth, requireSuperAdmin, (req, res) =>
   const gstin = sanitizeStr(req.body?.gstin ?? existing.gstin, 20).toUpperCase();
   const subscriptionPlan = sanitizeStr(req.body?.subscriptionPlan ?? existing.subscription_plan, 40);
   const subscriptionAmount = Math.max(0, Math.round(Number(req.body?.subscriptionAmount ?? existing.subscription_amount)));
+  const gstinCredits = Math.max(0, Math.round(Number(req.body?.gstinCredits ?? existing.gstin_credits ?? 10)));
+  const gstinCreditsUsed = Math.max(0, Math.round(Number(req.body?.gstinCreditsUsed ?? existing.gstin_credits_used ?? 0)));
+  const maxLogins = Math.max(1, Math.round(Number(req.body?.maxLogins ?? existing.max_logins ?? 2)));
 
   if (gstin && !isValidGstin(gstin)) {
     res.status(400).json({ error: 'Invalid GSTIN format' });
@@ -1031,9 +1044,9 @@ apiRouter.put('/admin/users/:uid', requireAuth, requireSuperAdmin, (req, res) =>
   const now = new Date().toISOString();
   db.transaction(() => {
     db.prepare(`
-      UPDATE users SET business_name = ?, owner_name = ?, phone = ?, gstin = ?, subscription_plan = ?, subscription_amount = ?, updated_at = ?
+      UPDATE users SET business_name = ?, owner_name = ?, phone = ?, gstin = ?, subscription_plan = ?, subscription_amount = ?, gstin_credits = ?, gstin_credits_used = ?, max_logins = ?, updated_at = ?
       WHERE uid = ?
-    `).run(businessName, ownerName, phone, gstin, subscriptionPlan, subscriptionAmount, now, uid);
+    `).run(businessName, ownerName, phone, gstin, subscriptionPlan, subscriptionAmount, gstinCredits, gstinCreditsUsed, maxLogins, now, uid);
 
     db.prepare(`
       UPDATE business_profiles SET business_name = ?, owner_name = ?, phone = ?, gstin = ?, updated_at = ?
@@ -1052,6 +1065,52 @@ apiRouter.put('/admin/users/:uid', requireAuth, requireSuperAdmin, (req, res) =>
 
   const updated = mapUserRow(db.prepare('SELECT * FROM users WHERE uid = ?').get(uid) as never);
   res.json({ user: updated });
+});
+
+apiRouter.delete('/admin/users/:uid', requireAuth, requireSuperAdmin, (req, res) => {
+  const uid = String(req.params.uid);
+  if (!uid || uid === req.auth!.actorUser.uid) {
+    res.status(400).json({ error: 'Cannot delete your own super admin account' });
+    return;
+  }
+
+  const existing = db.prepare('SELECT * FROM users WHERE uid = ?').get(uid) as
+    | { uid: string; role: string; business_name: string; email: string }
+    | undefined;
+  if (!existing) {
+    res.status(404).json({ error: 'Business account not found' });
+    return;
+  }
+  if (existing.role === 'super_admin') {
+    res.status(403).json({ error: 'Cannot delete a super admin account' });
+    return;
+  }
+
+  db.transaction(() => {
+    db.prepare('DELETE FROM payments WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM quotation_items WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM quotations WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM invoice_items WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM invoices WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM customers WHERE user_uid = ?').run(uid);
+    db.prepare('DELETE FROM sessions WHERE user_uid = ?').run(uid);
+    db.prepare('UPDATE impersonation_sessions SET active = 0, ended_at = ? WHERE target_uid = ? AND active = 1').run(
+      new Date().toISOString(),
+      uid
+    );
+    db.prepare('DELETE FROM users WHERE uid = ?').run(uid);
+
+    logActivity({
+      actor: req.auth!.actorUser,
+      targetTenantUid: uid,
+      action: 'ADMIN_DELETED_USER',
+      entityType: 'user',
+      entityId: uid,
+      summary: `Drona Admin deleted business account ${existing.business_name} (${existing.email})`,
+    });
+  })();
+
+  res.json({ ok: true });
 });
 
 apiRouter.post('/admin/users/:uid/status', requireAuth, requireSuperAdmin, (req, res) => {
@@ -1370,6 +1429,14 @@ apiRouter.put('/admin/settings', requireAuth, requireSuperAdmin, (req, res) => {
       0,
       Math.round(Number(req.body?.defaultSubscriptionMonthly ?? current.defaultSubscriptionMonthly))
     ),
+    defaultGstinCredits: Math.max(
+      0,
+      Math.round(Number(req.body?.defaultGstinCredits ?? current.defaultGstinCredits ?? 10))
+    ),
+    defaultMaxLogins: Math.max(
+      1,
+      Math.round(Number(req.body?.defaultMaxLogins ?? current.defaultMaxLogins ?? 2))
+    ),
     maintenanceMode:
       req.body?.maintenanceMode !== undefined
         ? Boolean(req.body.maintenanceMode)
@@ -1382,6 +1449,7 @@ apiRouter.put('/admin/settings', requireAuth, requireSuperAdmin, (req, res) => {
       UPDATE platform_settings SET
         allow_self_registration = ?, platform_name = ?, support_email = ?, default_currency = ?,
         default_invoice_prefix = ?, default_quotation_prefix = ?, default_subscription_monthly = ?,
+        default_gstin_credits = ?, default_max_logins = ?,
         maintenance_mode = ?, updated_at = ?
       WHERE id = 1
     `).run(
@@ -1392,6 +1460,8 @@ apiRouter.put('/admin/settings', requireAuth, requireSuperAdmin, (req, res) => {
       next.defaultInvoicePrefix,
       next.defaultQuotationPrefix,
       next.defaultSubscriptionMonthly,
+      next.defaultGstinCredits,
+      next.defaultMaxLogins,
       next.maintenanceMode ? 1 : 0,
       next.updatedAt
     );

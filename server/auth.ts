@@ -31,6 +31,9 @@ interface RawUserRow {
   gstin: string;
   subscription_plan: string;
   subscription_amount: number;
+  gstin_credits?: number;
+  gstin_credits_used?: number;
+  max_logins?: number;
   created_at: string;
   updated_at: string;
   last_login_at: string | null;
@@ -48,6 +51,9 @@ export function mapUserRow(row: RawUserRow): UserRecord {
     gstin: row.gstin,
     subscriptionPlan: row.subscription_plan,
     subscriptionAmount: row.subscription_amount,
+    gstinCredits: Number(row.gstin_credits ?? 10),
+    gstinCreditsUsed: Math.max(0, Number(row.gstin_credits_used ?? 0)),
+    maxLogins: Math.max(1, Number(row.max_logins ?? 2)),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     lastLoginAt: row.last_login_at,

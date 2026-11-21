@@ -79,6 +79,22 @@ export interface UserRecord {
   createdAt: string;
   updatedAt: string;
   lastLoginAt: string | null;
+  gstinCredits: number;
+  gstinCreditsUsed: number;
+  maxLogins: number;
+}
+
+export interface UserDeviceSession {
+  sessionId: string;
+  userUid: string;
+  deviceId: string;
+  deviceLabel: string;
+  userAgent: string;
+  createdAt: string;
+  lastActiveAt: string;
+  revoked?: boolean;
+  revokedAt?: string | null;
+  revokedReason?: string | null;
 }
 
 export interface BusinessProfile {
@@ -368,6 +384,8 @@ export interface PlatformSettings {
   defaultInvoicePrefix: string;
   defaultQuotationPrefix: string;
   defaultSubscriptionMonthly: number;
+  defaultGstinCredits: number;
+  defaultMaxLogins: number;
   maintenanceMode: boolean;
   updatedAt: string;
 }

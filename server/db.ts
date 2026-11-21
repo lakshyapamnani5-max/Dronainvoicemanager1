@@ -21,6 +21,8 @@ export function initializeDatabase(): void {
       default_invoice_prefix TEXT NOT NULL DEFAULT 'INV',
       default_quotation_prefix TEXT NOT NULL DEFAULT 'QUO',
       default_subscription_monthly INTEGER NOT NULL DEFAULT 1999,
+      default_gstin_credits INTEGER NOT NULL DEFAULT 10,
+      default_max_logins INTEGER NOT NULL DEFAULT 2,
       maintenance_mode INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL
     );
@@ -37,6 +39,9 @@ export function initializeDatabase(): void {
       gstin TEXT NOT NULL DEFAULT '',
       subscription_plan TEXT NOT NULL DEFAULT 'Growth',
       subscription_amount INTEGER NOT NULL DEFAULT 1999,
+      gstin_credits INTEGER NOT NULL DEFAULT 10,
+      gstin_credits_used INTEGER NOT NULL DEFAULT 0,
+      max_logins INTEGER NOT NULL DEFAULT 2,
       created_at TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       last_login_at TEXT
@@ -311,6 +316,18 @@ export function initializeDatabase(): void {
     CREATE INDEX IF NOT EXISTS idx_activity_created ON activity_logs(created_at DESC);
     CREATE INDEX IF NOT EXISTS idx_impersonation_active ON impersonation_sessions(active, started_at DESC);
   `);
+
+  const safeAddCol = (table: string, col: string, def: string) => {
+    const cols = db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === col)) {
+      db.exec(`ALTER TABLE ${table} ADD COLUMN ${col} ${def}`);
+    }
+  };
+  safeAddCol('platform_settings', 'default_gstin_credits', 'INTEGER NOT NULL DEFAULT 10');
+  safeAddCol('platform_settings', 'default_max_logins', 'INTEGER NOT NULL DEFAULT 2');
+  safeAddCol('users', 'gstin_credits', 'INTEGER NOT NULL DEFAULT 10');
+  safeAddCol('users', 'gstin_credits_used', 'INTEGER NOT NULL DEFAULT 0');
+  safeAddCol('users', 'max_logins', 'INTEGER NOT NULL DEFAULT 2');
 
   seedInitialDatabase();
 }

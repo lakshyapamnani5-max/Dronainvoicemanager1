@@ -88,9 +88,18 @@ export function GstCustomerLookupView({
   navigate: (path: string) => void;
   onCustomerSaved?: (customer: Customer) => void;
 }) {
-  const { session } = useAuth();
+  const { session, refreshSession } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const { notify } = useToast();
+
+  const isUnlimitedAdmin =
+    session?.actorUser.role === 'super_admin' && !session?.isImpersonating;
+  const totalGstinCredits = Math.max(0, session?.effectiveUser.gstinCredits ?? 10);
+  const usedGstinCredits = Math.max(0, session?.effectiveUser.gstinCreditsUsed ?? 0);
+  const remainingGstinCredits = isUnlimitedAdmin
+    ? 999999
+    : Math.max(0, totalGstinCredits - usedGstinCredits);
+  const gstinCreditsExhausted = !isUnlimitedAdmin && remainingGstinCredits <= 0;
 
   const [gstinInput, setGstinInput] = React.useState('');
   const [lookingUp, setLookingUp] = React.useState(false);
@@ -198,6 +207,9 @@ export function GstCustomerLookupView({
       setFromCache(hitCache);
       setRecentLookups(gstinApi.getRecentLookups());
       populateFormFromResult(result);
+      if (!hitCache) {
+        void refreshSession();
+      }
       notify(
         'success',
         hitCache
@@ -276,14 +288,34 @@ export function GstCustomerLookupView({
                 and principal business address directly from the GST network.
               </CardDescription>
             </div>
-            {lookupResult?.credits_remaining !== undefined ? (
-              <div className="rounded-md border border-zinc-200 bg-zinc-50 px-2.5 py-1 text-[11px] font-mono text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400">
-                API Credits Left: <span className="font-semibold text-zinc-900 dark:text-zinc-100">{lookupResult.credits_remaining}</span>
-              </div>
-            ) : null}
+            <div
+              className={`rounded-md border px-2.5 py-1 text-[11px] font-mono ${
+                gstinCreditsExhausted
+                  ? 'border-red-200 bg-red-50 text-red-700 dark:border-red-900/60 dark:bg-red-950/30 dark:text-red-300'
+                  : 'border-zinc-200 bg-zinc-50 text-zinc-600 dark:border-zinc-800 dark:bg-zinc-900 dark:text-zinc-400'
+              }`}
+            >
+              GSTIN Credits Left:{' '}
+              <span className="font-semibold text-zinc-900 dark:text-zinc-100">
+                {isUnlimitedAdmin
+                  ? 'Unlimited (Admin)'
+                  : `${remainingGstinCredits} / ${totalGstinCredits}`}
+              </span>
+            </div>
           </div>
         </CardHeader>
         <CardContent className="space-y-4">
+          {gstinCreditsExhausted ? (
+            <div className="flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs text-amber-800 dark:border-amber-900/50 dark:bg-amber-950/25 dark:text-amber-300">
+              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>
+                Your live GSTIN lookup credits are exhausted (0 of {totalGstinCredits} remaining).
+                Contact Drona Admin to assign more credits. Previously cached GSTINs below remain
+                available for 0 credits.
+              </span>
+            </div>
+          ) : null}
+
           <form onSubmit={(e) => void handleLookup(e)} className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
               <Search className="absolute left-3 top-3 h-4 w-4 text-zinc-400" />
@@ -305,7 +337,16 @@ export function GstCustomerLookupView({
               </span>
             </div>
 
-            <Button type="submit" disabled={lookingUp || !cleanedGstin} className="h-10 sm:w-auto w-full">
+            <Button
+              type="submit"
+              disabled={
+                lookingUp ||
+                !cleanedGstin ||
+                (gstinCreditsExhausted &&
+                  !recentLookups.some((item) => item.gstin === cleanedGstin))
+              }
+              className="h-10 sm:w-auto w-full"
+            >
               <Search className="h-4 w-4" />
               {lookingUp ? 'Fetching GST Details...' : 'Fetch GST Details'}
             </Button>
@@ -343,7 +384,7 @@ export function GstCustomerLookupView({
                 )}
               </div>
 
-              {lookupResult && fromCache ? (
+              {lookupResult && fromCache && !gstinCreditsExhausted ? (
                 <button
                   type="button"
                   onClick={() => void handleLookup(undefined, lookupResult.gstin, true)}
@@ -351,7 +392,7 @@ export function GstCustomerLookupView({
                   className="inline-flex items-center gap-1 text-xs font-medium text-[#F57C00] hover:underline cursor-pointer"
                 >
                   <RefreshCw className={`h-3 w-3 ${lookingUp ? 'animate-spin' : ''}`} />
-                  Refresh Live from GSTN
+                  Refresh Live from GSTN (1 Credit)
                 </button>
               ) : null}
             </div>

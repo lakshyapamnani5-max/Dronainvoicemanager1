@@ -137,6 +137,7 @@ import type {
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
+  UserDeviceSession,
   UserRecord,
   UserRole,
 } from '../shared/types';
@@ -160,6 +161,70 @@ import type { AdminUserRow, SaveDocumentPayload } from './api';
 import type { GstExportRecord } from '../shared/gstnTypes';
 
 const IMPERSONATION_STORAGE_KEY = 'drona_rtdb_impersonation_id';
+const DEVICE_ID_STORAGE_KEY = 'drona_device_id';
+const DEVICE_SESSION_STORAGE_KEY = 'drona_device_session_id';
+let fallbackDeviceId = '';
+let fallbackDeviceSessionId: string | null = null;
+
+export function getOrCreateDeviceId(): string {
+  try {
+    const existing = localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+    if (existing && existing.trim()) return existing.trim();
+    const created = generateId('dev');
+    localStorage.setItem(DEVICE_ID_STORAGE_KEY, created);
+    return created;
+  } catch {
+    if (!fallbackDeviceId) fallbackDeviceId = generateId('dev');
+    return fallbackDeviceId;
+  }
+}
+
+export function getLocalDeviceSessionId(): string | null {
+  try {
+    const val = localStorage.getItem(DEVICE_SESSION_STORAGE_KEY);
+    return val && val.trim() ? val.trim() : fallbackDeviceSessionId;
+  } catch {
+    return fallbackDeviceSessionId;
+  }
+}
+
+export function setLocalDeviceSessionId(sessionId: string | null): void {
+  fallbackDeviceSessionId = sessionId;
+  try {
+    if (sessionId) localStorage.setItem(DEVICE_SESSION_STORAGE_KEY, sessionId);
+    else localStorage.removeItem(DEVICE_SESSION_STORAGE_KEY);
+  } catch {
+    // ignore storage errors
+  }
+}
+
+function detectDeviceLabel(): string {
+  if (typeof navigator === 'undefined') return 'Web Browser';
+  const ua = navigator.userAgent || '';
+  const os = /Android/i.test(ua)
+    ? 'Android Phone'
+    : /iPhone/i.test(ua)
+      ? 'iPhone'
+      : /iPad/i.test(ua)
+        ? 'iPad'
+        : /Windows/i.test(ua)
+          ? 'Windows PC'
+          : /Mac OS X|Macintosh/i.test(ua)
+            ? 'Mac'
+            : /Linux/i.test(ua)
+              ? 'Linux'
+              : 'Device';
+  const browser = /Edg\//i.test(ua)
+    ? 'Edge'
+    : /Chrome\//i.test(ua) && !/Edg\//i.test(ua)
+      ? 'Chrome'
+      : /Firefox\//i.test(ua)
+        ? 'Firefox'
+        : /Safari\//i.test(ua) && !/Chrome\//i.test(ua)
+          ? 'Safari'
+          : 'Browser';
+  return `${os} (${browser})`;
+}
 
 const DEMO_ACCOUNTS = {
   admin: {
@@ -283,6 +348,8 @@ function defaultPlatformSettings(): PlatformSettings {
     defaultInvoicePrefix: 'INV',
     defaultQuotationPrefix: 'QTN',
     defaultSubscriptionMonthly: 1999,
+    defaultGstinCredits: 10,
+    defaultMaxLogins: 2,
     maintenanceMode: false,
     updatedAt: new Date().toISOString(),
   };
@@ -300,6 +367,9 @@ function normalizeUserRecord(uid: string, raw: Record<string, unknown>): UserRec
     gstin: String(raw.gstin || ''),
     subscriptionPlan: String(raw.subscriptionPlan || 'Growth'),
     subscriptionAmount: Number(raw.subscriptionAmount ?? 1999),
+    gstinCredits: Math.max(0, Math.floor(Number(raw.gstinCredits ?? 10))),
+    gstinCreditsUsed: Math.max(0, Math.floor(Number(raw.gstinCreditsUsed ?? 0))),
+    maxLogins: Math.max(1, Math.floor(Number(raw.maxLogins ?? 2))),
     createdAt: String(raw.createdAt || new Date().toISOString()),
     updatedAt: String(raw.updatedAt || new Date().toISOString()),
     lastLoginAt: raw.lastLoginAt ? String(raw.lastLoginAt) : null,
@@ -1053,6 +1123,9 @@ async function seedDemoBusinessWorkspace(
     gstin: cfg.gstin,
     subscriptionPlan: cfg.subscriptionPlan,
     subscriptionAmount: cfg.subscriptionAmount,
+    gstinCredits: 25,
+    gstinCreditsUsed: 0,
+    maxLogins: 2,
     createdAt: addDaysISO(todayISO(), -45) + 'T09:00:00.000Z',
     updatedAt: now,
     lastLoginAt: now,
@@ -1562,6 +1635,99 @@ export function updateRuntimeSessionCache(session: AuthSessionState | null): voi
   setCachedSession(session);
 }
 
+async function enforceMaxLoginsForUser(
+  uid: string,
+  maxLogins: number,
+  keepSessionId?: string
+): Promise<void> {
+  const limit = Math.max(1, Math.floor(maxLogins));
+  const snap = await get(ref(rtdb, `userSessions/${uid}`));
+  if (!snap.exists()) return;
+
+  const now = new Date().toISOString();
+  const cutoffPrune = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const raw = snap.val() as Record<string, UserDeviceSession>;
+  const entries = Object.values(raw);
+
+  const active = entries
+    .filter((s) => s && s.sessionId && !s.revoked)
+    .sort((a, b) => {
+      if (keepSessionId && a.sessionId === keepSessionId) return -1;
+      if (keepSessionId && b.sessionId === keepSessionId) return 1;
+      return `${b.lastActiveAt || b.createdAt}`.localeCompare(`${a.lastActiveAt || a.createdAt}`);
+    });
+
+  const updates: Record<string, unknown> = {};
+  active.forEach((sess, idx) => {
+    if (idx >= limit) {
+      updates[`userSessions/${uid}/${sess.sessionId}/revoked`] = true;
+      updates[`userSessions/${uid}/${sess.sessionId}/revokedAt`] = now;
+      updates[`userSessions/${uid}/${sess.sessionId}/revokedReason`] = 'max_logins_exceeded';
+    }
+  });
+
+  for (const s of entries) {
+    if (
+      s?.sessionId &&
+      s.revoked &&
+      s.revokedAt &&
+      new Date(s.revokedAt).getTime() < cutoffPrune
+    ) {
+      updates[`userSessions/${uid}/${s.sessionId}`] = null;
+    }
+  }
+
+  if (Object.keys(updates).length > 0) {
+    await update(ref(rtdb), updates);
+  }
+}
+
+async function registerDeviceSessionForUser(
+  user: UserRecord,
+  isExplicitLogin: boolean
+): Promise<string> {
+  if (typeof window === 'undefined') return '';
+  const deviceId = getOrCreateDeviceId();
+  const existingLocal = getLocalDeviceSessionId();
+  const sessionId =
+    !isExplicitLogin && existingLocal ? existingLocal : generateId('ses');
+  const now = new Date().toISOString();
+
+  const sessionRecord: UserDeviceSession = {
+    sessionId,
+    userUid: user.uid,
+    deviceId,
+    deviceLabel: detectDeviceLabel(),
+    userAgent: typeof navigator !== 'undefined' ? (navigator.userAgent || '').slice(0, 200) : '',
+    createdAt: now,
+    lastActiveAt: now,
+    revoked: false,
+    revokedAt: null,
+    revokedReason: null,
+  };
+
+  // Deduplicate previous sessions from the same browser/device so re-login doesn't waste a slot
+  const existingSnap = await get(ref(rtdb, `userSessions/${user.uid}`));
+  const updates: Record<string, unknown> = {
+    [`userSessions/${user.uid}/${sessionId}`]: stripUndefined(sessionRecord),
+  };
+  if (existingSnap.exists()) {
+    const raw = existingSnap.val() as Record<string, UserDeviceSession>;
+    for (const s of Object.values(raw)) {
+      if (s?.sessionId && s.sessionId !== sessionId && s.deviceId === deviceId && !s.revoked) {
+        updates[`userSessions/${user.uid}/${s.sessionId}`] = null;
+      }
+    }
+  }
+  await update(ref(rtdb), updates);
+  setLocalDeviceSessionId(sessionId);
+
+  const effectiveLimit =
+    user.role === 'super_admin' ? 20 : Math.max(1, Math.floor(user.maxLogins ?? 2));
+  await enforceMaxLoginsForUser(user.uid, effectiveLimit, sessionId);
+  return sessionId;
+}
+
 async function resolveCurrentAuthContext(forceRefresh = false): Promise<{
   actorUser: UserRecord;
   effectiveUser: UserRecord;
@@ -1608,8 +1774,35 @@ async function resolveCurrentAuthContext(forceRefresh = false): Promise<{
     const actorUser = normalizeUserRecord(fbUser.uid, userSnap.val() as Record<string, unknown>);
     if (actorUser.status !== 'active') {
       updateRuntimeSessionCache(null);
+      setLocalDeviceSessionId(null);
       await signOut(firebaseAuth);
       throw new Error('Your account has been deactivated by Drona Admin.');
+    }
+
+    // Validate or register current device session for multi-login quota enforcement
+    const localSessionId = getLocalDeviceSessionId();
+    if (localSessionId) {
+      const sessSnap = await get(ref(rtdb, `userSessions/${fbUser.uid}/${localSessionId}`));
+      if (sessSnap.exists()) {
+        const sessVal = sessSnap.val() as UserDeviceSession;
+        if (sessVal.revoked) {
+          setLocalDeviceSessionId(null);
+          updateRuntimeSessionCache(null);
+          await signOut(firebaseAuth);
+          throw new Error(
+            sessVal.revokedReason === 'admin_revoked'
+              ? 'SESSION_REVOKED:Your device session was signed out by Drona Admin.'
+              : `SESSION_REVOKED:Signed out because your account logged in on another device (max ${actorUser.maxLogins} login${actorUser.maxLogins === 1 ? '' : 's'} allowed).`
+          );
+        }
+        void update(ref(rtdb, `userSessions/${fbUser.uid}/${localSessionId}`), {
+          lastActiveAt: new Date().toISOString(),
+        }).catch(() => {});
+      } else {
+        await registerDeviceSessionForUser(actorUser, false);
+      }
+    } else {
+      await registerDeviceSessionForUser(actorUser, false);
     }
 
     let effectiveUser = actorUser;
@@ -3188,8 +3381,9 @@ export const rtdbService = {
       }
 
       const uid = cred.user.uid;
-      await ensurePlatformSettings();
+      const settings = await ensurePlatformSettings();
 
+      let signedInUser: UserRecord;
       const userSnap = await get(ref(rtdb, `users/${uid}`));
       if (!userSnap.exists()) {
         const now = new Date().toISOString();
@@ -3205,16 +3399,24 @@ export const rtdbService = {
             gstin: DEMO_ACCOUNTS.admin.gstin,
             subscriptionPlan: 'Platform',
             subscriptionAmount: 0,
+            gstinCredits: 9999,
+            gstinCreditsUsed: 0,
+            maxLogins: 20,
             createdAt: now,
             updatedAt: now,
             lastLoginAt: now,
           };
           await set(ref(rtdb, `users/${uid}`), stripUndefined(adminRec));
           await seedDemoBusinessesFromAdmin();
+          signedInUser = adminRec;
         } else if (email === DEMO_ACCOUNTS.biz1.email) {
           await seedDemoBusinessWorkspace(uid, DEMO_ACCOUNTS.biz1, true);
+          const s = await get(ref(rtdb, `users/${uid}`));
+          signedInUser = normalizeUserRecord(uid, (s.val() || {}) as Record<string, unknown>);
         } else if (email === DEMO_ACCOUNTS.biz2.email) {
           await seedDemoBusinessWorkspace(uid, DEMO_ACCOUNTS.biz2, true);
+          const s = await get(ref(rtdb, `users/${uid}`));
+          signedInUser = normalizeUserRecord(uid, (s.val() || {}) as Record<string, unknown>);
         } else {
           let roleToCreate: UserRole = 'business';
           if (portal === 'admin') {
@@ -3246,6 +3448,9 @@ export const rtdbService = {
             gstin: '',
             subscriptionPlan: roleToCreate === 'super_admin' ? 'Platform' : 'Growth',
             subscriptionAmount: roleToCreate === 'super_admin' ? 0 : 1999,
+            gstinCredits: roleToCreate === 'super_admin' ? 9999 : settings.defaultGstinCredits,
+            gstinCreditsUsed: 0,
+            maxLogins: roleToCreate === 'super_admin' ? 20 : settings.defaultMaxLogins,
             createdAt: now,
             updatedAt: now,
             lastLoginAt: now,
@@ -3260,6 +3465,7 @@ export const rtdbService = {
             });
             await set(ref(rtdb, `businessProfiles/${uid}`), stripUndefined(prof));
           }
+          signedInUser = newRec;
         }
       } else {
         const existing = normalizeUserRecord(uid, userSnap.val() as Record<string, unknown>);
@@ -3277,8 +3483,10 @@ export const rtdbService = {
         if (existing.role === 'super_admin') {
           await seedDemoBusinessesFromAdmin();
         }
+        signedInUser = existing;
       }
 
+      await registerDeviceSessionForUser(signedInUser, true);
       setStoredImpersonationId(null);
       const ctx = await resolveCurrentAuthContext(true);
       await logActivity({
@@ -3342,6 +3550,9 @@ export const rtdbService = {
         gstin,
         subscriptionPlan: 'Growth',
         subscriptionAmount: settings.defaultSubscriptionMonthly,
+        gstinCredits: settings.defaultGstinCredits,
+        gstinCreditsUsed: 0,
+        maxLogins: settings.defaultMaxLogins,
         createdAt: now,
         updatedAt: now,
         lastLoginAt: now,
@@ -3363,6 +3574,7 @@ export const rtdbService = {
 
       await set(ref(rtdb, `users/${uid}`), stripUndefined(userRec));
       await set(ref(rtdb, `businessProfiles/${uid}`), stripUndefined(profileRec));
+      await registerDeviceSessionForUser(userRec, true);
 
       setStoredImpersonationId(null);
       const ctx = await resolveCurrentAuthContext(true);
@@ -3381,6 +3593,12 @@ export const rtdbService = {
   },
 
   logout: async () => {
+    const uid = firebaseAuth.currentUser?.uid;
+    const sessionId = getLocalDeviceSessionId();
+    if (uid && sessionId) {
+      await remove(ref(rtdb, `userSessions/${uid}/${sessionId}`)).catch(() => {});
+    }
+    setLocalDeviceSessionId(null);
     setStoredImpersonationId(null);
     updateRuntimeSessionCache(null);
     clearAllRuntimeSessionCaches();
@@ -5971,6 +6189,8 @@ export const rtdbService = {
     address?: string;
     subscriptionPlan: string;
     subscriptionAmount: number;
+    gstinCredits?: number;
+    maxLogins?: number;
   }): Promise<{ user: UserRecord }> => {
     const ctx = await requireSuperAdminContext();
     const settings = await ensurePlatformSettings();
@@ -5984,6 +6204,14 @@ export const rtdbService = {
     const address = sanitizeStr(payload.address, 400);
     const subscriptionPlan = sanitizeStr(payload.subscriptionPlan, 40) || 'Growth';
     const subscriptionAmount = Math.max(0, Number(payload.subscriptionAmount) || 0);
+    const gstinCredits = Math.max(
+      0,
+      Math.floor(Number(payload.gstinCredits ?? settings.defaultGstinCredits ?? 10))
+    );
+    const maxLogins = Math.max(
+      1,
+      Math.floor(Number(payload.maxLogins ?? settings.defaultMaxLogins ?? 2))
+    );
 
     if (!email || !email.includes('@')) throw new Error('Valid email is required');
     if (!payload.password || payload.password.length < 8) {
@@ -6012,6 +6240,9 @@ export const rtdbService = {
         gstin,
         subscriptionPlan,
         subscriptionAmount,
+        gstinCredits,
+        gstinCreditsUsed: 0,
+        maxLogins,
         createdAt: now,
         updatedAt: now,
         lastLoginAt: null,
@@ -6041,7 +6272,7 @@ export const rtdbService = {
         action: 'ADMIN_CREATED_USER',
         entityType: 'user',
         entityId: uid,
-        summary: `Drona Admin provisioned business account for ${businessName} (${email})`,
+        summary: `Drona Admin provisioned business account for ${businessName} (${email}) · ${gstinCredits} GSTIN credits · ${maxLogins} max logins`,
       });
 
       return { user: userRec };
@@ -6052,13 +6283,14 @@ export const rtdbService = {
 
   adminGetUserDetails: async (uid: string) => {
     await requireSuperAdminContext();
-    const [userSnap, profSnap, invoices, quotations, analytics, logsSnap] = await Promise.all([
+    const [userSnap, profSnap, invoices, quotations, analytics, logsSnap, sessionsSnap] = await Promise.all([
       get(ref(rtdb, `users/${uid}`)),
       get(ref(rtdb, `businessProfiles/${uid}`)),
       listTenantInvoicesRaw(uid),
       listTenantQuotationsRaw(uid),
       computeCustomerAnalyticsForTenant(uid),
       get(ref(rtdb, `tenants/${uid}/activityLogs`)),
+      get(ref(rtdb, `userSessions/${uid}`)),
     ]);
 
     if (!userSnap.exists()) throw new Error('User not found');
@@ -6072,8 +6304,13 @@ export const rtdbService = {
           .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
           .slice(0, 30)
       : [];
+    const deviceSessions = sessionsSnap.exists()
+      ? Object.values(sessionsSnap.val() as Record<string, UserDeviceSession>)
+          .filter((s) => s && !s.revoked)
+          .sort((a, b) => `${b.lastActiveAt || b.createdAt}`.localeCompare(`${a.lastActiveAt || a.createdAt}`))
+      : [];
 
-    return { user, profile, invoices, quotations, analytics, logs };
+    return { user, profile, invoices, quotations, analytics, logs, deviceSessions };
   },
 
   adminUpdateUser: async (
@@ -6085,6 +6322,9 @@ export const rtdbService = {
       gstin?: string;
       subscriptionPlan?: string;
       subscriptionAmount?: number;
+      gstinCredits?: number;
+      gstinCreditsUsed?: number;
+      maxLogins?: number;
     }
   ) => {
     const ctx = await requireSuperAdminContext();
@@ -6107,6 +6347,18 @@ export const rtdbService = {
         0,
         Number(payload.subscriptionAmount ?? existing.subscriptionAmount) || 0
       ),
+      gstinCredits: Math.max(
+        0,
+        Math.floor(Number(payload.gstinCredits ?? existing.gstinCredits))
+      ),
+      gstinCreditsUsed: Math.max(
+        0,
+        Math.floor(Number(payload.gstinCreditsUsed ?? existing.gstinCreditsUsed))
+      ),
+      maxLogins: Math.max(
+        1,
+        Math.floor(Number(payload.maxLogins ?? existing.maxLogins))
+      ),
       updatedAt: now,
     };
 
@@ -6118,6 +6370,9 @@ export const rtdbService = {
       gstin: updated.gstin,
       updatedAt: now,
     });
+    if (updated.role === 'business') {
+      await enforceMaxLoginsForUser(uid, updated.maxLogins);
+    }
     invalidateAdminSlices(['users', 'activityLogs']);
 
     await logActivity({
@@ -6126,7 +6381,7 @@ export const rtdbService = {
       action: 'ADMIN_UPDATED_USER',
       entityType: 'user',
       entityId: uid,
-      summary: `Drona Admin updated account profile for ${updated.businessName}`,
+      summary: `Drona Admin updated ${updated.businessName} (GSTIN credits: ${updated.gstinCredits}, used: ${updated.gstinCreditsUsed}, max logins: ${updated.maxLogins})`,
     });
 
     return { user: updated };
@@ -6157,6 +6412,56 @@ export const rtdbService = {
     });
 
     return { ok: true, status };
+  },
+
+  adminDeleteUser: async (uid: string): Promise<{ ok: true }> => {
+    const ctx = await requireSuperAdminContext();
+    if (!uid || uid === ctx.actorUser.uid) {
+      throw new Error('Cannot delete your own super admin account');
+    }
+    const userSnap = await get(ref(rtdb, `users/${uid}`));
+    if (!userSnap.exists()) throw new Error('User not found');
+    const existing = normalizeUserRecord(uid, userSnap.val() as Record<string, unknown>);
+    if (existing.role === 'super_admin') {
+      throw new Error('Cannot delete a super admin account');
+    }
+
+    const now = new Date().toISOString();
+    const updates: Record<string, unknown> = {
+      [`users/${uid}`]: null,
+      [`businessProfiles/${uid}`]: null,
+      [`tenants/${uid}`]: null,
+      [`userSessions/${uid}`]: null,
+    };
+
+    const impSnap = await get(ref(rtdb, 'impersonationSessions'));
+    if (impSnap.exists()) {
+      const impMap = impSnap.val() as Record<string, ImpersonationSession>;
+      const storedImpId = getStoredImpersonationId();
+      for (const imp of Object.values(impMap)) {
+        if (imp?.id && imp.targetUid === uid && imp.active) {
+          updates[`impersonationSessions/${imp.id}/active`] = false;
+          updates[`impersonationSessions/${imp.id}/endedAt`] = now;
+          if (storedImpId === imp.id) {
+            setStoredImpersonationId(null);
+          }
+        }
+      }
+    }
+
+    await update(ref(rtdb), updates);
+    invalidateAdminSlices(['users', 'tenants', 'impersonationSessions', 'activityLogs']);
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: uid,
+      action: 'ADMIN_DELETED_USER',
+      entityType: 'user',
+      entityId: uid,
+      summary: `Drona Admin deleted business account ${existing.businessName} (${existing.email})`,
+    });
+
+    return { ok: true };
   },
 
   adminResetUserPassword: async (uid: string) => {
@@ -6415,6 +6720,14 @@ export const rtdbService = {
         0,
         Number(input.defaultSubscriptionMonthly ?? cur.defaultSubscriptionMonthly) || 0
       ),
+      defaultGstinCredits: Math.max(
+        0,
+        Math.floor(Number(input.defaultGstinCredits ?? cur.defaultGstinCredits ?? 10))
+      ),
+      defaultMaxLogins: Math.max(
+        1,
+        Math.floor(Number(input.defaultMaxLogins ?? cur.defaultMaxLogins ?? 2))
+      ),
       maintenanceMode:
         input.maintenanceMode !== undefined ? Boolean(input.maintenanceMode) : cur.maintenanceMode,
       updatedAt: new Date().toISOString(),
@@ -6484,5 +6797,156 @@ export const rtdbService = {
     const tenantUid = ctx.effectiveUser.uid;
     await remove(ref(rtdb, `tenants/${tenantUid}/gstExports/${exportId}`));
     return { success: true };
+  },
+
+  // ==================== GSTIN CREDITS & DEVICE SESSIONS ====================
+  checkGstinCreditsAvailable: async (): Promise<{
+    remaining: number;
+    total: number;
+    used: number;
+  }> => {
+    const ctx = await resolveCurrentAuthContext();
+    if (ctx.actorUser.role === 'super_admin' && !ctx.isImpersonating) {
+      return { remaining: 999999, total: 999999, used: 0 };
+    }
+    const targetUid = ctx.effectiveUser.uid;
+    const snap = await get(ref(rtdb, `users/${targetUid}`));
+    const user = snap.exists()
+      ? normalizeUserRecord(targetUid, snap.val() as Record<string, unknown>)
+      : ctx.effectiveUser;
+    const total = Math.max(0, Math.floor(user.gstinCredits));
+    const used = Math.max(0, Math.floor(user.gstinCreditsUsed));
+    const remaining = Math.max(0, total - used);
+    if (remaining <= 0) {
+      throw new Error(
+        `GSTIN lookup credits exhausted (0 of ${total} remaining). Contact Drona Admin to add more GSTIN credits.`
+      );
+    }
+    return { remaining, total, used };
+  },
+
+  consumeGstinCredit: async (gstin: string): Promise<{
+    remaining: number;
+    total: number;
+    used: number;
+  }> => {
+    const ctx = await resolveCurrentAuthContext();
+    if (ctx.actorUser.role === 'super_admin' && !ctx.isImpersonating) {
+      return { remaining: 999999, total: 999999, used: 0 };
+    }
+    const targetUid = ctx.effectiveUser.uid;
+    const userRef = ref(rtdb, `users/${targetUid}`);
+    const now = new Date().toISOString();
+
+    const txRes = await runTransaction(userRef, (current) => {
+      if (!current || typeof current !== 'object') return current;
+      const rec = current as Record<string, unknown>;
+      const total = Math.max(0, Math.floor(Number(rec.gstinCredits ?? 10)));
+      const used = Math.max(0, Math.floor(Number(rec.gstinCreditsUsed ?? 0)));
+      if (used >= total) {
+        return undefined; // Abort: no credits remaining
+      }
+      return {
+        ...rec,
+        gstinCreditsUsed: used + 1,
+        updatedAt: now,
+      };
+    });
+
+    if (!txRes.committed || !txRes.snapshot.exists()) {
+      throw new Error(
+        'GSTIN lookup credits exhausted. Contact Drona Admin to assign more GSTIN credits.'
+      );
+    }
+
+    const updatedUser = normalizeUserRecord(
+      targetUid,
+      txRes.snapshot.val() as Record<string, unknown>
+    );
+    const total = updatedUser.gstinCredits;
+    const used = updatedUser.gstinCreditsUsed;
+    const remaining = Math.max(0, total - used);
+
+    if (runtimeAuthSession) {
+      const nextSession: AuthSessionState = {
+        ...runtimeAuthSession,
+        actorUser:
+          runtimeAuthSession.actorUser.uid === targetUid ? updatedUser : runtimeAuthSession.actorUser,
+        effectiveUser:
+          runtimeAuthSession.effectiveUser.uid === targetUid
+            ? updatedUser
+            : runtimeAuthSession.effectiveUser,
+      };
+      updateRuntimeSessionCache(nextSession);
+    }
+    invalidateAdminSlices(['users', 'activityLogs']);
+
+    await logActivity({
+      actor: ctx.actorUser,
+      targetTenantUid: targetUid,
+      action: 'GSTIN_CREDIT_USED',
+      entityType: 'gstin_credit',
+      entityId: gstin,
+      summary: `Used 1 GSTIN credit for ${gstin} (${remaining} of ${total} remaining)`,
+    });
+
+    return { remaining, total, used };
+  },
+
+  listUserDeviceSessions: async (uid?: string): Promise<{ sessions: UserDeviceSession[] }> => {
+    const ctx = await resolveCurrentAuthContext();
+    const targetUid = uid || ctx.actorUser.uid;
+    if (targetUid !== ctx.actorUser.uid && ctx.actorUser.role !== 'super_admin') {
+      throw new Error('Forbidden');
+    }
+    const snap = await get(ref(rtdb, `userSessions/${targetUid}`));
+    if (!snap.exists()) return { sessions: [] };
+    const sessions = Object.values(snap.val() as Record<string, UserDeviceSession>)
+      .filter((s) => s && !s.revoked)
+      .sort((a, b) => `${b.lastActiveAt || b.createdAt}`.localeCompare(`${a.lastActiveAt || a.createdAt}`));
+    return { sessions };
+  },
+
+  revokeUserDeviceSession: async (uid: string, sessionId: string) => {
+    const ctx = await resolveCurrentAuthContext();
+    if (uid !== ctx.actorUser.uid && ctx.actorUser.role !== 'super_admin') {
+      throw new Error('Forbidden');
+    }
+    const reason =
+      ctx.actorUser.role === 'super_admin' && uid !== ctx.actorUser.uid
+        ? 'admin_revoked'
+        : 'user_revoked';
+    await update(ref(rtdb, `userSessions/${uid}/${sessionId}`), {
+      revoked: true,
+      revokedAt: new Date().toISOString(),
+      revokedReason: reason,
+    });
+    return { ok: true };
+  },
+
+  revokeAllUserDeviceSessions: async (uid: string, keepSessionId?: string) => {
+    const ctx = await resolveCurrentAuthContext();
+    if (uid !== ctx.actorUser.uid && ctx.actorUser.role !== 'super_admin') {
+      throw new Error('Forbidden');
+    }
+    const snap = await get(ref(rtdb, `userSessions/${uid}`));
+    if (!snap.exists()) return { ok: true };
+    const now = new Date().toISOString();
+    const reason =
+      ctx.actorUser.role === 'super_admin' && uid !== ctx.actorUser.uid
+        ? 'admin_revoked'
+        : 'user_revoked';
+    const updates: Record<string, unknown> = {};
+    for (const s of Object.values(snap.val() as Record<string, UserDeviceSession>)) {
+      if (s?.sessionId && !s.revoked && (!keepSessionId || s.sessionId !== keepSessionId)) {
+        updates[`userSessions/${uid}/${s.sessionId}/revoked`] = true;
+        updates[`userSessions/${uid}/${s.sessionId}/revokedAt`] = now;
+        updates[`userSessions/${uid}/${s.sessionId}/revokedReason`] = reason;
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      await update(ref(rtdb), updates);
+    }
+    return { ok: true };
   },
 };

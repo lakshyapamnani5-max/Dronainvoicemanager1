@@ -668,6 +668,39 @@ export function AdminPlatformSettingsPage() {
             </div>
           </div>
 
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div className="space-y-1">
+              <Label>Default GSTIN Credits (New Accounts)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={settings.defaultGstinCredits ?? 10}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    defaultGstinCredits: Math.max(0, Number(e.target.value)),
+                  })
+                }
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Default Max Concurrent Logins</Label>
+              <Input
+                type="number"
+                min={1}
+                value={settings.defaultMaxLogins ?? 2}
+                onChange={(e) =>
+                  setSettings({
+                    ...settings,
+                    defaultMaxLogins: Math.max(1, Number(e.target.value)),
+                  })
+                }
+                className="font-mono"
+              />
+            </div>
+          </div>
+
           <div className="space-y-2 pt-2">
             <label className="flex items-center gap-2 text-sm cursor-pointer">
               <input

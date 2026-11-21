@@ -1,12 +1,18 @@
 import * as React from 'react';
 import {
+  AlertTriangle,
   ArrowLeft,
+  Edit2,
   Eye,
   KeyRound,
   LogIn,
+  LogOut,
   Plus,
   Power,
   Search,
+  ShieldCheck,
+  Smartphone,
+  Trash2,
   UserCheck,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
@@ -14,7 +20,15 @@ import { adminApi, cachedRead, type AdminUserRow } from '../../lib/api';
 import { formatDate, formatDateTime } from '../../lib/utils';
 import { formatINR, fromPaise, toPaise } from '../../shared/gstCalculator';
 import { INDIAN_STATES } from '../../shared/indianStates';
-import type { ActivityLog, BusinessProfile, CustomerAnalyticsData, Invoice, Quotation, UserRecord } from '../../shared/types';
+import type {
+  ActivityLog,
+  BusinessProfile,
+  CustomerAnalyticsData,
+  Invoice,
+  Quotation,
+  UserDeviceSession,
+  UserRecord,
+} from '../../shared/types';
 import { AccountStatusLabel, InvoiceStatusLabel, QuotationStatusLabel } from '../../components/StatusText';
 import { Button } from '../../components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '../../components/ui/card';
@@ -97,6 +111,120 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
       return b.createdAt.localeCompare(a.createdAt);
     });
   }, [allUsers, search, statusFilter, sortKey]);
+
+  const [editTarget, setEditTarget] = React.useState<AdminUserRow | null>(null);
+  const [editForm, setEditForm] = React.useState({
+    businessName: '',
+    ownerName: '',
+    phone: '',
+    gstin: '',
+    subscriptionPlan: 'Growth',
+    subscriptionAmount: 1999,
+    gstinCredits: 10,
+    gstinCreditsUsed: 0,
+    maxLogins: 2,
+  });
+  const [savingEdit, setSavingEdit] = React.useState(false);
+  const [editSessions, setEditSessions] = React.useState<UserDeviceSession[]>([]);
+  const [loadingSessions, setLoadingSessions] = React.useState(false);
+  const [sessionBusy, setSessionBusy] = React.useState(false);
+  const [deleteTarget, setDeleteTarget] = React.useState<AdminUserRow | null>(null);
+  const [deletingUser, setDeletingUser] = React.useState(false);
+
+  const openEditModal = async (u: AdminUserRow) => {
+    setEditTarget(u);
+    setEditForm({
+      businessName: u.businessName,
+      ownerName: u.ownerName,
+      phone: u.phone || '',
+      gstin: u.gstin || '',
+      subscriptionPlan: u.subscriptionPlan || 'Growth',
+      subscriptionAmount: u.subscriptionAmount ?? 1999,
+      gstinCredits: u.gstinCredits ?? 10,
+      gstinCreditsUsed: u.gstinCreditsUsed ?? 0,
+      maxLogins: u.maxLogins ?? 2,
+    });
+    setEditSessions([]);
+    setLoadingSessions(true);
+    try {
+      const res = await adminApi.listUserSessions(u.uid);
+      setEditSessions(res.sessions || []);
+    } catch {
+      setEditSessions([]);
+    } finally {
+      setLoadingSessions(false);
+    }
+  };
+
+  const handleSaveEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!editTarget) return;
+    setSavingEdit(true);
+    try {
+      await adminApi.updateUser(editTarget.uid, {
+        ...editForm,
+        gstinCredits: Math.max(0, Number(editForm.gstinCredits) || 0),
+        gstinCreditsUsed: Math.max(0, Number(editForm.gstinCreditsUsed) || 0),
+        maxLogins: Math.max(1, Number(editForm.maxLogins) || 1),
+      });
+      notify('success', `Updated ${editForm.businessName}`);
+      setEditTarget(null);
+      load(true);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update customer');
+    } finally {
+      setSavingEdit(false);
+    }
+  };
+
+  const handleRevokeEditSession = async (sessionId: string) => {
+    if (!editTarget) return;
+    setSessionBusy(true);
+    try {
+      await adminApi.revokeUserSession(editTarget.uid, sessionId);
+      const res = await adminApi.listUserSessions(editTarget.uid);
+      setEditSessions(res.sessions || []);
+      notify('success', 'Device signed out');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out device');
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const handleRevokeAllEditSessions = async () => {
+    if (!editTarget) return;
+    setSessionBusy(true);
+    try {
+      await adminApi.revokeAllUserSessions(editTarget.uid);
+      setEditSessions([]);
+      notify('success', `All active devices signed out for ${editTarget.businessName}`);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out devices');
+    } finally {
+      setSessionBusy(false);
+    }
+  };
+
+  const handleConfirmDelete = async () => {
+    if (!deleteTarget) return;
+    const target = deleteTarget;
+    setDeletingUser(true);
+    try {
+      await adminApi.deleteUser(target.uid);
+      setAllUsers((prev) => prev.filter((item) => item.uid !== target.uid));
+      notify('success', `Deleted account for ${target.businessName}`);
+      setDeleteTarget(null);
+      if (editTarget?.uid === target.uid) {
+        setEditTarget(null);
+      }
+      load(true);
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete user');
+    } finally {
+      setDeletingUser(false);
+    }
+  };
 
   const handleToggleStatus = async (u: AdminUserRow) => {
     const next = u.status === 'active' ? 'inactive' : 'active';
@@ -207,7 +335,22 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                       </div>
                     </div>
 
-                    <div className="flex items-center gap-2 pt-1">
+                    <div className="flex items-center justify-between gap-2 text-[11px] rounded-md bg-zinc-50 dark:bg-zinc-900 px-2.5 py-1.5 border border-zinc-100 dark:border-zinc-800">
+                      <span className="text-zinc-600 dark:text-zinc-400">
+                        GSTIN Credits:{' '}
+                        <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                          {Math.max(0, (u.gstinCredits ?? 10) - (u.gstinCreditsUsed ?? 0))}/{u.gstinCredits ?? 10}
+                        </span>
+                      </span>
+                      <span className="text-zinc-600 dark:text-zinc-400">
+                        Max Logins:{' '}
+                        <span className="font-mono font-semibold text-zinc-900 dark:text-zinc-100">
+                          {u.maxLogins ?? 2}
+                        </span>
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-1.5 pt-1">
                       <Button
                         size="sm"
                         variant="outline"
@@ -220,9 +363,18 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                       <Button
                         size="sm"
                         variant="outline"
+                        onClick={() => openEditModal(u)}
+                        title="Edit Credits, Logins & Profile"
+                        className="h-9 px-2.5"
+                      >
+                        <Edit2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
                         onClick={() => navigate(`/admin/users/${u.uid}`)}
                         title="View Profile & Analytics"
-                        className="h-9 px-3"
+                        className="h-9 px-2.5"
                       >
                         <Eye className="h-3.5 w-3.5" />
                       </Button>
@@ -231,13 +383,22 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                         variant="outline"
                         onClick={() => handleToggleStatus(u)}
                         title={u.status === 'active' ? 'Deactivate Account' : 'Activate Account'}
-                        className="h-9 px-3"
+                        className="h-9 px-2.5"
                       >
                         <Power
                           className={`h-3.5 w-3.5 ${
                             u.status === 'active' ? 'text-emerald-600' : 'text-red-500'
                           }`}
                         />
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        onClick={() => setDeleteTarget(u)}
+                        title="Delete User"
+                        className="h-9 px-2.5 text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                      >
+                        <Trash2 className="h-3.5 w-3.5" />
                       </Button>
                     </div>
                   </div>
@@ -253,6 +414,7 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                       <TableHead>GSTIN</TableHead>
                       <TableHead>Created</TableHead>
                       <TableHead>Status</TableHead>
+                      <TableHead>Quotas (GSTIN / Logins)</TableHead>
                       <TableHead className="text-right">Invoices / Quotes</TableHead>
                       <TableHead className="text-right">Business Sales</TableHead>
                       <TableHead className="text-right">Actions</TableHead>
@@ -286,6 +448,14 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                         <TableCell>
                           <AccountStatusLabel status={u.status} />
                         </TableCell>
+                        <TableCell className="text-xs font-mono">
+                          <div className="text-zinc-900 dark:text-zinc-100 font-semibold">
+                            {Math.max(0, (u.gstinCredits ?? 10) - (u.gstinCreditsUsed ?? 0))}/{u.gstinCredits ?? 10} cr
+                          </div>
+                          <div className="text-[11px] text-zinc-500">
+                            Max {u.maxLogins ?? 2} login{(u.maxLogins ?? 2) === 1 ? '' : 's'}
+                          </div>
+                        </TableCell>
                         <TableCell className="text-right font-mono text-xs tabular-nums">
                           {u.invoiceCount} / {u.quotationCount}
                         </TableCell>
@@ -307,6 +477,14 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                             <Button
                               size="sm"
                               variant="ghost"
+                              onClick={() => openEditModal(u)}
+                              title="Edit Credits, Logins & Profile"
+                            >
+                              <Edit2 className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
                               onClick={() => navigate(`/admin/users/${u.uid}`)}
                               title="View Profile & Analytics"
                             >
@@ -324,6 +502,15 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                                 }`}
                               />
                             </Button>
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              onClick={() => setDeleteTarget(u)}
+                              title="Delete User"
+                              className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
                           </div>
                         </TableCell>
                       </TableRow>
@@ -339,6 +526,325 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
           )}
         </CardContent>
       </Card>
+
+      <Dialog
+        open={editTarget !== null}
+        onClose={() => setEditTarget(null)}
+        title={`Edit User — ${editTarget?.businessName || ''}`}
+        description="Update GSTIN credits, concurrent device logins, or business account details."
+        maxWidthClass="max-w-2xl"
+      >
+        {editTarget ? (
+          <form onSubmit={handleSaveEdit} className="space-y-5">
+            {/* GSTIN Credits & Login Quotas */}
+            <div className="rounded-lg border border-zinc-200 bg-zinc-50/70 p-3.5 dark:border-zinc-800 dark:bg-zinc-900/60 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                  <ShieldCheck className="h-4 w-4 text-[#F57C00]" />
+                  GSTIN Credits & Device Login Limits
+                </div>
+                <span className="font-mono text-xs font-semibold text-[#F57C00]">
+                  {Math.max(
+                    0,
+                    (Number(editForm.gstinCredits) || 0) - (Number(editForm.gstinCreditsUsed) || 0)
+                  )}{' '}
+                  credits left
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label>GSTIN Credits (Total)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editForm.gstinCredits}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        gstinCredits: Math.max(0, Number(e.target.value)),
+                      })
+                    }
+                    className="font-mono bg-white dark:bg-zinc-950"
+                  />
+                  <div className="flex items-center gap-1.5 pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          gstinCredits: Math.max(0, prev.gstinCredits) + 10,
+                        }))
+                      }
+                      className="h-6 px-2 text-[11px]"
+                    >
+                      +10
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      onClick={() =>
+                        setEditForm((prev) => ({
+                          ...prev,
+                          gstinCredits: Math.max(0, prev.gstinCredits) + 25,
+                        }))
+                      }
+                      className="h-6 px-2 text-[11px]"
+                    >
+                      +25
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Credits Used</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editForm.gstinCreditsUsed}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        gstinCreditsUsed: Math.max(0, Number(e.target.value)),
+                      })
+                    }
+                    className="font-mono bg-white dark:bg-zinc-950"
+                  />
+                  <div className="pt-1">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={editForm.gstinCreditsUsed === 0}
+                      onClick={() => setEditForm((prev) => ({ ...prev, gstinCreditsUsed: 0 }))}
+                      className="h-6 px-2 text-[11px]"
+                    >
+                      Reset (0)
+                    </Button>
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <Label>Max Concurrent Logins</Label>
+                  <Input
+                    type="number"
+                    min={1}
+                    value={editForm.maxLogins}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        maxLogins: Math.max(1, Number(e.target.value)),
+                      })
+                    }
+                    className="font-mono bg-white dark:bg-zinc-950"
+                  />
+                  <p className="text-[11px] text-zinc-500 pt-0.5">
+                    Oldest device signs out if exceeded
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Active Device Logins */}
+            <div className="rounded-lg border border-zinc-200 p-3.5 dark:border-zinc-800 space-y-2.5">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-xs font-semibold text-zinc-900 dark:text-zinc-100">
+                  <Smartphone className="h-4 w-4 text-[#F57C00]" />
+                  Active Logins ({editSessions.length} / {Math.max(1, editForm.maxLogins)})
+                </div>
+                {editSessions.length > 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={sessionBusy}
+                    onClick={handleRevokeAllEditSessions}
+                    className="h-7 px-2.5 text-xs"
+                  >
+                    <LogOut className="h-3 w-3" />
+                    Sign Out All
+                  </Button>
+                ) : null}
+              </div>
+
+              {loadingSessions ? (
+                <div className="text-xs text-zinc-500 py-2">Loading active device sessions...</div>
+              ) : editSessions.length === 0 ? (
+                <div className="text-xs text-zinc-500 py-1.5">
+                  No active device sessions recorded for this user.
+                </div>
+              ) : (
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800 rounded-md border border-zinc-100 dark:border-zinc-800 max-h-40 overflow-y-auto">
+                  {editSessions.map((sess) => (
+                    <div
+                      key={sess.sessionId}
+                      className="flex items-center justify-between gap-2 px-3 py-2 text-xs"
+                    >
+                      <div className="min-w-0">
+                        <div className="font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                          {sess.deviceLabel || 'Device'}
+                        </div>
+                        <div className="text-[11px] font-mono text-zinc-500">
+                          Active: {formatDateTime(sess.lastActiveAt || sess.createdAt)}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        disabled={sessionBusy}
+                        onClick={() => handleRevokeEditSession(sess.sessionId)}
+                        className="h-7 px-2 text-xs text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                      >
+                        Sign Out
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Business Profile Fields */}
+            <div className="space-y-3">
+              <div className="space-y-1">
+                <Label>Business Name</Label>
+                <Input
+                  required
+                  value={editForm.businessName}
+                  onChange={(e) => setEditForm({ ...editForm, businessName: e.target.value })}
+                />
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <Label>Owner Name</Label>
+                  <Input
+                    required
+                    value={editForm.ownerName}
+                    onChange={(e) => setEditForm({ ...editForm, ownerName: e.target.value })}
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Phone</Label>
+                  <Input
+                    value={editForm.phone}
+                    onChange={(e) => setEditForm({ ...editForm, phone: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="space-y-1">
+                  <Label>GSTIN</Label>
+                  <Input
+                    value={editForm.gstin}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, gstin: e.target.value.toUpperCase() })
+                    }
+                    className="font-mono uppercase"
+                  />
+                </div>
+                <div className="space-y-1">
+                  <Label>Plan</Label>
+                  <Select
+                    value={editForm.subscriptionPlan}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, subscriptionPlan: e.target.value })
+                    }
+                  >
+                    <option value="Starter">Starter</option>
+                    <option value="Growth">Growth</option>
+                    <option value="Enterprise">Enterprise</option>
+                  </Select>
+                </div>
+                <div className="space-y-1">
+                  <Label>Monthly Fee (INR)</Label>
+                  <Input
+                    type="number"
+                    min={0}
+                    value={editForm.subscriptionAmount}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, subscriptionAmount: Number(e.target.value) })
+                    }
+                    className="font-mono"
+                  />
+                </div>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center justify-between gap-2 pt-2 border-t border-zinc-100 dark:border-zinc-800">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setDeleteTarget(editTarget)}
+                className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-red-900/50 dark:hover:bg-red-950/30"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                Delete User
+              </Button>
+              <div className="flex items-center gap-2">
+                <Button type="button" variant="outline" onClick={() => setEditTarget(null)}>
+                  Cancel
+                </Button>
+                <Button type="submit" disabled={savingEdit}>
+                  {savingEdit ? 'Saving...' : 'Save Changes'}
+                </Button>
+              </div>
+            </div>
+          </form>
+        ) : null}
+      </Dialog>
+
+      <Dialog
+        open={deleteTarget !== null}
+        onClose={() => {
+          if (!deletingUser) setDeleteTarget(null);
+        }}
+        title="Delete Business Account"
+        description="This permanently removes the user record, active device logins, and workspace data."
+        maxWidthClass="max-w-md"
+      >
+        {deleteTarget ? (
+          <div className="space-y-4">
+            <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50/70 p-3.5 text-xs text-red-900 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
+              <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+              <div className="space-y-1 leading-relaxed">
+                <div className="font-semibold">
+                  Are you sure you want to delete {deleteTarget.businessName}?
+                </div>
+                <div className="text-red-800/90 dark:text-red-300/90">
+                  Email: <span className="font-mono">{deleteTarget.email}</span>
+                </div>
+                <div className="text-red-800/90 dark:text-red-300/90">
+                  Workspace data: {deleteTarget.invoiceCount} invoices, {deleteTarget.quotationCount}{' '}
+                  quotations, and all active logins will be removed immediately.
+                </div>
+              </div>
+            </div>
+
+            <div className="flex justify-end gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={deletingUser}
+                onClick={() => setDeleteTarget(null)}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                variant="destructive"
+                disabled={deletingUser}
+                onClick={handleConfirmDelete}
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                {deletingUser ? 'Deleting...' : 'Delete Account'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </Dialog>
     </div>
   );
 }
@@ -357,7 +863,22 @@ export function AdminCreateUserPage({ navigate }: { navigate: (path: string) => 
     address: '',
     subscriptionPlan: 'Growth',
     subscriptionAmount: 1999,
+    gstinCredits: 10,
+    maxLogins: 2,
   });
+
+  React.useEffect(() => {
+    adminApi
+      .getSettings()
+      .then((res) => {
+        setForm((prev) => ({
+          ...prev,
+          gstinCredits: res.settings.defaultGstinCredits ?? prev.gstinCredits,
+          maxLogins: res.settings.defaultMaxLogins ?? prev.maxLogins,
+        }));
+      })
+      .catch(() => {});
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -491,6 +1012,39 @@ export function AdminCreateUserPage({ navigate }: { navigate: (path: string) => 
               </div>
             </div>
 
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div className="space-y-1">
+                <Label>GSTIN Lookup Credits</Label>
+                <Input
+                  type="number"
+                  min={0}
+                  value={form.gstinCredits}
+                  onChange={(e) =>
+                    setForm({ ...form, gstinCredits: Math.max(0, Number(e.target.value)) })
+                  }
+                  className="font-mono"
+                />
+                <p className="text-[11px] text-zinc-500">
+                  Number of live GSTIN API searches allowed for this account
+                </p>
+              </div>
+              <div className="space-y-1">
+                <Label>Max Concurrent Logins</Label>
+                <Input
+                  type="number"
+                  min={1}
+                  value={form.maxLogins}
+                  onChange={(e) =>
+                    setForm({ ...form, maxLogins: Math.max(1, Number(e.target.value)) })
+                  }
+                  className="font-mono"
+                />
+                <p className="text-[11px] text-zinc-500">
+                  Phones/browsers allowed simultaneously before oldest device signs out
+                </p>
+              </div>
+            </div>
+
             <div className="space-y-1">
               <Label>Business Address</Label>
               <Input
@@ -521,6 +1075,7 @@ function readCachedUserDetails(uid: string): {
   quotations: Quotation[];
   analytics: CustomerAnalyticsData;
   logs: ActivityLog[];
+  deviceSessions: UserDeviceSession[];
 } | null {
   const adminCache = cachedRead.getAdminCache();
   const user = adminCache.users.find((u) => u.uid === uid);
@@ -565,6 +1120,7 @@ function readCachedUserDetails(uid: string): {
     quotations: sortedQuotations,
     analytics,
     logs,
+    deviceSessions: [],
   };
 }
 
@@ -585,6 +1141,7 @@ export function AdminUserDetailsPage({
     quotations: Quotation[];
     analytics: CustomerAnalyticsData;
     logs: ActivityLog[];
+    deviceSessions: UserDeviceSession[];
   } | null>(initialData);
   const [loading, setLoading] = React.useState(!initialData);
 
@@ -596,10 +1153,16 @@ export function AdminUserDetailsPage({
     gstin: initialData?.user.gstin || '',
     subscriptionPlan: initialData?.user.subscriptionPlan || 'Growth',
     subscriptionAmount: initialData?.user.subscriptionAmount ?? 1999,
+    gstinCredits: initialData?.user.gstinCredits ?? 10,
+    gstinCreditsUsed: initialData?.user.gstinCreditsUsed ?? 0,
+    maxLogins: initialData?.user.maxLogins ?? 2,
   }));
 
   const [pwOpen, setPwOpen] = React.useState(false);
   const [sendingReset, setSendingReset] = React.useState(false);
+  const [quotaBusy, setQuotaBusy] = React.useState(false);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
+  const [deletingUser, setDeletingUser] = React.useState(false);
 
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -614,6 +1177,9 @@ export function AdminUserDetailsPage({
           gstin: res.user.gstin,
           subscriptionPlan: res.user.subscriptionPlan,
           subscriptionAmount: res.user.subscriptionAmount,
+          gstinCredits: res.user.gstinCredits ?? 10,
+          gstinCreditsUsed: res.user.gstinCreditsUsed ?? 0,
+          maxLogins: res.user.maxLogins ?? 2,
         });
       }
     } catch (err) {
@@ -640,7 +1206,11 @@ export function AdminUserDetailsPage({
     return <div className="p-8 text-sm text-zinc-500">Loading business account...</div>;
   }
 
-  const { user, invoices, quotations, analytics, logs } = data;
+  const { user, invoices, quotations, analytics, logs, deviceSessions } = data;
+  const totalCredits = Math.max(0, user.gstinCredits ?? 10);
+  const usedCredits = Math.max(0, user.gstinCreditsUsed ?? 0);
+  const remainingCredits = Math.max(0, totalCredits - usedCredits);
+  const maxLoginsAllowed = Math.max(1, user.maxLogins ?? 2);
 
   const handleSaveEdit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -685,6 +1255,72 @@ export function AdminUserDetailsPage({
     load();
   };
 
+  const handleQuickAddCredits = async (delta: number) => {
+    setQuotaBusy(true);
+    try {
+      await adminApi.updateUser(uid, { gstinCredits: totalCredits + delta });
+      notify('success', `Added ${delta} GSTIN credits to ${user.businessName}`);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to update GSTIN credits');
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const handleResetCreditsUsed = async () => {
+    setQuotaBusy(true);
+    try {
+      await adminApi.updateUser(uid, { gstinCreditsUsed: 0 });
+      notify('success', `Reset used GSTIN credits for ${user.businessName}`);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to reset used credits');
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const handleRevokeSession = async (sessionId: string) => {
+    setQuotaBusy(true);
+    try {
+      await adminApi.revokeUserSession(uid, sessionId);
+      notify('success', 'Device signed out');
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out device');
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const handleRevokeAllSessions = async () => {
+    setQuotaBusy(true);
+    try {
+      await adminApi.revokeAllUserSessions(uid);
+      notify('success', `All active devices signed out for ${user.businessName}`);
+      load();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out devices');
+    } finally {
+      setQuotaBusy(false);
+    }
+  };
+
+  const handleDeleteUser = async () => {
+    setDeletingUser(true);
+    try {
+      await adminApi.deleteUser(uid);
+      notify('success', `Deleted account for ${user.businessName}`);
+      setDeleteOpen(false);
+      navigate('/admin/users');
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to delete user');
+    } finally {
+      setDeletingUser(false);
+    }
+  };
+
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -698,7 +1334,8 @@ export function AdminUserDetailsPage({
 
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={() => setEditOpen(true)}>
-            Edit Profile
+            <Edit2 className="h-3.5 w-3.5" />
+            Edit Credits & Profile
           </Button>
           <Button variant="outline" size="sm" onClick={() => setPwOpen(true)}>
             <KeyRound className="h-3.5 w-3.5" />
@@ -706,6 +1343,15 @@ export function AdminUserDetailsPage({
           </Button>
           <Button variant="outline" size="sm" onClick={handleToggleStatus}>
             {user.status === 'active' ? 'Deactivate' : 'Activate'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setDeleteOpen(true)}
+            className="text-red-600 border-red-200 hover:bg-red-50 hover:text-red-700 dark:border-red-900/50 dark:hover:bg-red-950/30"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+            Delete User
           </Button>
           <Button size="sm" onClick={handleImpersonate}>
             <UserCheck className="h-4 w-4" />
@@ -739,6 +1385,147 @@ export function AdminUserDetailsPage({
             {formatINR(user.subscriptionAmount)}/mo
           </div>
           <div className="text-[11px] sm:text-xs text-zinc-500 mt-0.5">{user.subscriptionPlan} Plan</div>
+        </Card>
+      </div>
+
+      {/* Quotas, GSTIN Credits & Active Logins */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <ShieldCheck className="h-4 w-4 text-[#F57C00]" />
+                  GSTIN Lookup Credits
+                </CardTitle>
+                <CardDescription>
+                  Only assigned GSTIN credits can be used for live GSTN searches
+                </CardDescription>
+              </div>
+              <div className="text-right">
+                <div className="text-xl font-bold font-mono tabular-nums text-zinc-900 dark:text-zinc-100">
+                  {remainingCredits} <span className="text-xs font-normal text-zinc-500">left</span>
+                </div>
+                <div className="text-[11px] font-mono text-zinc-500">
+                  {usedCredits} used / {totalCredits} total
+                </div>
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="h-2 w-full rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+              <div
+                className={`h-full transition-all ${
+                  remainingCredits === 0 ? 'bg-red-500' : 'bg-[#F57C00]'
+                }`}
+                style={{
+                  width: `${
+                    totalCredits > 0 ? Math.min(100, Math.round((usedCredits / totalCredits) * 100)) : 100
+                  }%`,
+                }}
+              />
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={quotaBusy}
+                onClick={() => handleQuickAddCredits(10)}
+              >
+                +10 Credits
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={quotaBusy}
+                onClick={() => handleQuickAddCredits(25)}
+              >
+                +25 Credits
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                disabled={quotaBusy || usedCredits === 0}
+                onClick={handleResetCreditsUsed}
+              >
+                Reset Used
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                onClick={() => setEditOpen(true)}
+              >
+                Edit Quotas
+              </Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <CardTitle className="flex items-center gap-2 text-base">
+                  <Smartphone className="h-4 w-4 text-[#F57C00]" />
+                  Device Logins ({deviceSessions.length} / {maxLoginsAllowed})
+                </CardTitle>
+                <CardDescription>
+                  Concurrent phones/browsers allowed before oldest device signs out
+                </CardDescription>
+              </div>
+              {deviceSessions.length > 0 ? (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  disabled={quotaBusy}
+                  onClick={handleRevokeAllSessions}
+                >
+                  <LogOut className="h-3.5 w-3.5" />
+                  Sign Out All
+                </Button>
+              ) : null}
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-2.5">
+            {deviceSessions.length === 0 ? (
+              <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-4 text-xs text-zinc-500 text-center">
+                No active device sessions recorded yet. Up to {maxLoginsAllowed} concurrent device{maxLoginsAllowed === 1 ? '' : 's'} allowed.
+              </div>
+            ) : (
+              <div className="divide-y divide-zinc-100 dark:divide-zinc-800 rounded-lg border border-zinc-100 dark:border-zinc-800">
+                {deviceSessions.map((sess) => (
+                  <div
+                    key={sess.sessionId}
+                    className="flex items-center justify-between gap-3 px-3 py-2.5 text-xs"
+                  >
+                    <div className="min-w-0">
+                      <div className="font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                        {sess.deviceLabel || 'Device'}
+                      </div>
+                      <div className="text-[11px] font-mono text-zinc-500">
+                        Active: {formatDateTime(sess.lastActiveAt || sess.createdAt)}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="ghost"
+                      disabled={quotaBusy}
+                      onClick={() => handleRevokeSession(sess.sessionId)}
+                      className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                    >
+                      Sign Out
+                    </Button>
+                  </div>
+                ))}
+              </div>
+            )}
+          </CardContent>
         </Card>
       </div>
 
@@ -875,7 +1662,7 @@ export function AdminUserDetailsPage({
         </CardContent>
       </Card>
 
-      <Dialog open={editOpen} onClose={() => setEditOpen(false)} title="Edit Business Profile">
+      <Dialog open={editOpen} onClose={() => setEditOpen(false)} title="Edit Business Profile & Quotas">
         <form onSubmit={handleSaveEdit} className="space-y-4">
           <div className="space-y-1">
             <Label>Business Name</Label>
@@ -936,6 +1723,47 @@ export function AdminUserDetailsPage({
               />
             </div>
           </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-1 border-t border-zinc-100 dark:border-zinc-800">
+            <div className="space-y-1">
+              <Label>GSTIN Credits (Total)</Label>
+              <Input
+                type="number"
+                min={0}
+                value={editForm.gstinCredits}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, gstinCredits: Math.max(0, Number(e.target.value)) })
+                }
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Credits Used</Label>
+              <Input
+                type="number"
+                min={0}
+                value={editForm.gstinCreditsUsed}
+                onChange={(e) =>
+                  setEditForm({
+                    ...editForm,
+                    gstinCreditsUsed: Math.max(0, Number(e.target.value)),
+                  })
+                }
+                className="font-mono"
+              />
+            </div>
+            <div className="space-y-1">
+              <Label>Max Logins</Label>
+              <Input
+                type="number"
+                min={1}
+                value={editForm.maxLogins}
+                onChange={(e) =>
+                  setEditForm({ ...editForm, maxLogins: Math.max(1, Number(e.target.value)) })
+                }
+                className="font-mono"
+              />
+            </div>
+          </div>
           <div className="flex justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => setEditOpen(false)}>
               Cancel
@@ -968,6 +1796,55 @@ export function AdminUserDetailsPage({
             </Button>
           </div>
         </form>
+      </Dialog>
+
+      <Dialog
+        open={deleteOpen}
+        onClose={() => {
+          if (!deletingUser) setDeleteOpen(false);
+        }}
+        title="Delete Business Account"
+        description="This permanently removes the user record, active device logins, and workspace data."
+        maxWidthClass="max-w-md"
+      >
+        <div className="space-y-4">
+          <div className="flex items-start gap-3 rounded-lg border border-red-200 bg-red-50/70 p-3.5 text-xs text-red-900 dark:border-red-900/50 dark:bg-red-950/30 dark:text-red-200">
+            <AlertTriangle className="h-4 w-4 text-red-600 shrink-0 mt-0.5" />
+            <div className="space-y-1 leading-relaxed">
+              <div className="font-semibold">
+                Are you sure you want to delete {user.businessName}?
+              </div>
+              <div className="text-red-800/90 dark:text-red-300/90">
+                Email: <span className="font-mono">{user.email}</span>
+              </div>
+              <div className="text-red-800/90 dark:text-red-300/90">
+                Workspace data: {invoices.length} invoices, {quotations.length} quotations, and{' '}
+                {deviceSessions.length} active device login{deviceSessions.length === 1 ? '' : 's'}{' '}
+                will be removed immediately.
+              </div>
+            </div>
+          </div>
+
+          <div className="flex justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              disabled={deletingUser}
+              onClick={() => setDeleteOpen(false)}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              variant="destructive"
+              disabled={deletingUser}
+              onClick={handleDeleteUser}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+              {deletingUser ? 'Deleting...' : 'Delete Account'}
+            </Button>
+          </div>
+        </div>
       </Dialog>
     </div>
   );

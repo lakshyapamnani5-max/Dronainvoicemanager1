@@ -143,6 +143,8 @@ export function getPlatformSettings(): PlatformSettings {
     default_invoice_prefix: string;
     default_quotation_prefix: string;
     default_subscription_monthly: number;
+    default_gstin_credits?: number;
+    default_max_logins?: number;
     maintenance_mode: number;
     updated_at: string;
   };
@@ -154,6 +156,8 @@ export function getPlatformSettings(): PlatformSettings {
     defaultInvoicePrefix: row.default_invoice_prefix,
     defaultQuotationPrefix: row.default_quotation_prefix,
     defaultSubscriptionMonthly: row.default_subscription_monthly,
+    defaultGstinCredits: Math.max(0, Number(row.default_gstin_credits ?? 10)),
+    defaultMaxLogins: Math.max(1, Number(row.default_max_logins ?? 2)),
     maintenanceMode: Boolean(row.maintenance_mode),
     updatedAt: row.updated_at,
   };

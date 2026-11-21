@@ -9,7 +9,15 @@
       ".indexOn": ["email", "role", "status", "createdAt"],
       "$uid": {
         ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
-        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || (auth.uid === $uid && (!data.exists() || newData.child('role').val() === data.child('role').val())))"
+        ".write": "auth != null && (root.child('users').child(auth.uid).child('role').val() === 'super_admin' || (auth.uid === $uid && (!data.exists() || (newData.child('role').val() === data.child('role').val() && newData.child('status').val() === data.child('status').val() && ((!data.child('gstinCredits').exists() && !newData.child('gstinCredits').exists()) || newData.child('gstinCredits').val() === data.child('gstinCredits').val()) && ((!data.child('maxLogins').exists() && !newData.child('maxLogins').exists()) || newData.child('maxLogins').val() === data.child('maxLogins').val()) && (!newData.child('gstinCreditsUsed').exists() || (newData.child('gstinCreditsUsed').isNumber() && newData.child('gstinCreditsUsed').val() >= 0 && (!data.child('gstinCreditsUsed').exists() || newData.child('gstinCreditsUsed').val() >= data.child('gstinCreditsUsed').val())))))))"
+      }
+    },
+    "userSessions": {
+      ".read": "auth != null && root.child('users').child(auth.uid).child('role').val() === 'super_admin'",
+      "$uid": {
+        ".read": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        ".write": "auth != null && (auth.uid === $uid || root.child('users').child(auth.uid).child('role').val() === 'super_admin')",
+        ".indexOn": ["lastActiveAt", "createdAt"]
       }
     },
     "businessProfiles": {

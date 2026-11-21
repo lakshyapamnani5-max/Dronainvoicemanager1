@@ -85,10 +85,18 @@ export function PurchasesDashboardPage({
   initialTab?: 'overview' | 'bills' | 'suppliers';
   navigate: (path: string) => void;
 }) {
-  const { session } = useAuth();
+  const { session, refreshSession } = useAuth();
   const tenantUid = session?.effectiveUser.uid;
   const profile = session?.businessProfile || null;
   const { notify } = useToast();
+
+  const isUnlimitedAdmin =
+    session?.actorUser.role === 'super_admin' && !session?.isImpersonating;
+  const totalGstinCredits = Math.max(0, session?.effectiveUser.gstinCredits ?? 10);
+  const usedGstinCredits = Math.max(0, session?.effectiveUser.gstinCreditsUsed ?? 0);
+  const remainingGstinCredits = isUnlimitedAdmin
+    ? 999999
+    : Math.max(0, totalGstinCredits - usedGstinCredits);
 
   const readCacheSnapshot = React.useCallback((uid?: string) => {
     if (!uid) return null;
@@ -404,6 +412,9 @@ export function PurchasesDashboardPage({
         state: derivedState,
         stateCode: d.state_code || getStateCode(derivedState) || prev.stateCode,
       }));
+      if (!fromCache) {
+        void refreshSession();
+      }
       notify(
         'success',
         fromCache
@@ -1467,6 +1478,13 @@ export function PurchasesDashboardPage({
                 {fetchingGstin ? 'Fetching...' : 'Fetch GSTIN'}
               </Button>
             </div>
+            <p className={`text-[11px] font-mono ${!isUnlimitedAdmin && remainingGstinCredits <= 0 ? 'text-red-600 dark:text-red-400' : 'text-zinc-500'}`}>
+              {isUnlimitedAdmin
+                ? 'GSTIN Credits: Unlimited (Admin)'
+                : remainingGstinCredits > 0
+                  ? `GSTIN Credits Left: ${remainingGstinCredits} / ${totalGstinCredits}`
+                  : `0 GSTIN credits left (${totalGstinCredits} used) — contact Drona Admin to add more`}
+            </p>
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">

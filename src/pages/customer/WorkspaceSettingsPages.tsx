@@ -1,13 +1,15 @@
 import * as React from 'react';
-import { CheckCircle2, Upload } from 'lucide-react';
+import { CheckCircle2, LogOut, ShieldCheck, Smartphone, Upload } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
-import { authApi, businessApi, cachedRead } from '../../lib/api';
+import { authApi, businessApi, cachedRead, getLocalDeviceSessionId } from '../../lib/api';
+import { formatDateTime } from '../../lib/utils';
 import { INDIAN_STATES } from '../../shared/indianStates';
 import type {
   BusinessProfile,
   Invoice,
   Quotation,
   QuotationTemplateId,
+  UserDeviceSession,
 } from '../../shared/types';
 import { DocumentPreviewSheet } from '../../components/DocumentPreviewSheet';
 import { InvoiceThemeSelector } from '../../components/invoice/InvoiceThemeSelector';
@@ -749,8 +751,25 @@ export function CustomerSettingsPage() {
     React.useState<QuotationTemplateId>(() =>
       normalizeQuotationTemplateId(session?.businessProfile?.defaultQuotationTemplate)
     );
+  const [deviceSessions, setDeviceSessions] = React.useState<UserDeviceSession[]>([]);
+  const [sessionsBusy, setSessionsBusy] = React.useState(false);
 
   const tenantUid = session?.effectiveUser.uid;
+  const actorUid = session?.actorUser.uid;
+  const localSessionId = getLocalDeviceSessionId();
+
+  const loadDeviceSessions = React.useCallback(() => {
+    if (!actorUid || session?.isImpersonating) return;
+    authApi
+      .listDeviceSessions()
+      .then((res) => setDeviceSessions(res.sessions))
+      .catch(() => {});
+  }, [actorUid, session?.isImpersonating]);
+
+  React.useEffect(() => {
+    loadDeviceSessions();
+  }, [loadDeviceSessions]);
+
   React.useEffect(() => {
     if (session?.businessProfile) {
       setForm(session.businessProfile);
@@ -780,6 +799,41 @@ export function CustomerSettingsPage() {
   }, [tenantUid, session?.businessProfile]);
 
   if (!form) return <div className="p-8 text-sm text-zinc-500">Loading settings...</div>;
+
+  const isUnlimitedAdmin =
+    session?.actorUser.role === 'super_admin' && !session?.isImpersonating;
+  const totalGstinCredits = Math.max(0, session?.effectiveUser.gstinCredits ?? 10);
+  const usedGstinCredits = Math.max(0, session?.effectiveUser.gstinCreditsUsed ?? 0);
+  const remainingGstinCredits = Math.max(0, totalGstinCredits - usedGstinCredits);
+  const maxLoginsAllowed = Math.max(1, session?.actorUser.maxLogins ?? 2);
+
+  const handleRevokeDevice = async (sessionId: string) => {
+    if (!actorUid) return;
+    setSessionsBusy(true);
+    try {
+      await authApi.revokeDeviceSession(actorUid, sessionId);
+      notify('success', 'Other device signed out');
+      loadDeviceSessions();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out device');
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
+
+  const handleRevokeOtherDevices = async () => {
+    if (!actorUid) return;
+    setSessionsBusy(true);
+    try {
+      await authApi.revokeAllOtherDeviceSessions(actorUid, localSessionId || undefined);
+      notify('success', 'All other devices signed out');
+      loadDeviceSessions();
+    } catch (err) {
+      notify('error', err instanceof Error ? err.message : 'Failed to sign out devices');
+    } finally {
+      setSessionsBusy(false);
+    }
+  };
 
   const handleSavePrefs = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -1100,6 +1154,123 @@ export function CustomerSettingsPage() {
         </CardHeader>
         <CardContent>
           <PWAInstallButton variant="card" className="w-full sm:w-auto" />
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <ShieldCheck className="h-5 w-5 text-[#F57C00]" />
+            Account Quotas &amp; Active Devices
+          </CardTitle>
+          <CardDescription>
+            View GSTIN lookup credits and active device logins assigned to your account by Drona Admin
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-5">
+          <div className="rounded-xl border border-zinc-200 dark:border-zinc-800 p-4 space-y-2.5">
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                GSTIN Lookup Credits
+              </div>
+              <div className="font-mono text-sm font-bold text-zinc-900 dark:text-zinc-100">
+                {isUnlimitedAdmin
+                  ? 'Unlimited (Admin)'
+                  : `${remainingGstinCredits} / ${totalGstinCredits} remaining`}
+              </div>
+            </div>
+            {!isUnlimitedAdmin ? (
+              <>
+                <div className="h-2 w-full rounded-full bg-zinc-100 dark:bg-zinc-800 overflow-hidden">
+                  <div
+                    className={`h-full transition-all ${
+                      remainingGstinCredits === 0 ? 'bg-red-500' : 'bg-[#F57C00]'
+                    }`}
+                    style={{
+                      width: `${
+                        totalGstinCredits > 0
+                          ? Math.min(100, Math.round((usedGstinCredits / totalGstinCredits) * 100))
+                          : 100
+                      }%`,
+                    }}
+                  />
+                </div>
+                <p className="text-[11px] text-zinc-500">
+                  {usedGstinCredits} used · Previously looked-up GSTINs stay cached locally for 0 credits.
+                  {remainingGstinCredits === 0 ? ' Contact Drona Admin to top up GSTIN credits.' : ''}
+                </p>
+              </>
+            ) : null}
+          </div>
+
+          {!session?.isImpersonating ? (
+            <div className="space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <div className="flex items-center gap-2 text-sm font-semibold text-zinc-900 dark:text-zinc-100">
+                  <Smartphone className="h-4 w-4 text-[#F57C00]" />
+                  Logged-in Devices ({deviceSessions.length} / {maxLoginsAllowed})
+                </div>
+                {deviceSessions.filter((s) => s.sessionId !== localSessionId).length > 0 ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={sessionsBusy}
+                    onClick={handleRevokeOtherDevices}
+                  >
+                    <LogOut className="h-3.5 w-3.5" />
+                    Sign Out Other Devices
+                  </Button>
+                ) : null}
+              </div>
+
+              {deviceSessions.length === 0 ? (
+                <div className="rounded-lg border border-dashed border-zinc-200 dark:border-zinc-800 p-3 text-xs text-zinc-500">
+                  Up to {maxLoginsAllowed} concurrent device{maxLoginsAllowed === 1 ? '' : 's'} can stay signed in at the same time.
+                </div>
+              ) : (
+                <div className="divide-y divide-zinc-100 dark:divide-zinc-800 rounded-xl border border-zinc-200 dark:border-zinc-800">
+                  {deviceSessions.map((sess) => {
+                    const isCurrent = Boolean(localSessionId && sess.sessionId === localSessionId);
+                    return (
+                      <div
+                        key={sess.sessionId}
+                        className="flex items-center justify-between gap-3 px-3.5 py-2.5 text-xs"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex items-center gap-2">
+                            <span className="font-medium text-zinc-900 dark:text-zinc-100 truncate">
+                              {sess.deviceLabel || 'Device'}
+                            </span>
+                            {isCurrent ? (
+                              <span className="rounded bg-emerald-50 dark:bg-emerald-950/40 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-700 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-800">
+                                This Device
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="text-[11px] font-mono text-zinc-500 mt-0.5">
+                            Last active: {formatDateTime(sess.lastActiveAt || sess.createdAt)}
+                          </div>
+                        </div>
+                        {!isCurrent ? (
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="ghost"
+                            disabled={sessionsBusy}
+                            onClick={() => handleRevokeDevice(sess.sessionId)}
+                            className="text-red-600 hover:text-red-700 hover:bg-red-50 dark:hover:bg-red-950/30 shrink-0"
+                          >
+                            Sign Out
+                          </Button>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

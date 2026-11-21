@@ -23,6 +23,7 @@ import type {
   TaxPricingMode,
   TaxSupplyMode,
   TemplateId,
+  UserDeviceSession,
   UserRecord,
 } from '../shared/types';
 import { GSTIN_REGEX, isValidGstinChecksum } from '../shared/indianStates';
@@ -35,12 +36,19 @@ import {
 import {
   cachedRead,
   ensureTenantMetaListener,
+  getLocalDeviceSessionId,
   rtdbService,
   subscribeRtdbPath,
   updateRuntimeSessionCache,
 } from './rtdbService';
 
-export { cachedRead, ensureTenantMetaListener, subscribeRtdbPath, updateRuntimeSessionCache };
+export {
+  cachedRead,
+  ensureTenantMetaListener,
+  getLocalDeviceSessionId,
+  subscribeRtdbPath,
+  updateRuntimeSessionCache,
+};
 
 const TOKEN_KEY = 'drona_auth_token';
 
@@ -151,6 +159,14 @@ export const authApi = {
 
   changePassword: (currentPassword: string, newPassword: string) =>
     rtdbService.changePassword(currentPassword, newPassword),
+
+  listDeviceSessions: () => rtdbService.listUserDeviceSessions(),
+
+  revokeDeviceSession: (uid: string, sessionId: string) =>
+    rtdbService.revokeUserDeviceSession(uid, sessionId),
+
+  revokeAllOtherDeviceSessions: (uid: string, keepSessionId?: string) =>
+    rtdbService.revokeAllUserDeviceSessions(uid, keepSessionId),
 };
 
 export const businessApi = {
@@ -193,6 +209,8 @@ export const gstinApi = {
     }
 
     const result = await dedupeFetch(`gstin:${gstin}`, async () => {
+      await rtdbService.checkGstinCreditsAvailable();
+
       const res = await fetch(
         `/api/gstin?gstin=${encodeURIComponent(gstin)}&include=profile`,
         { headers: { Accept: 'application/json' } }
@@ -206,7 +224,14 @@ export const gstinApi = {
           res.status || 500
         );
       }
-      return setCachedGstinLookup(gstin, body as GstinLookupResponse);
+
+      const creditState = await rtdbService.consumeGstinCredit(gstin);
+      const enriched: GstinLookupResponse = {
+        ...(body as GstinLookupResponse),
+        credits_remaining:
+          creditState.total < 999999 ? creditState.remaining : body.credits_remaining,
+      };
+      return setCachedGstinLookup(gstin, enriched);
     });
 
     return { result, fromCache: false };
@@ -406,6 +431,8 @@ export const adminApi = {
     address?: string;
     subscriptionPlan: string;
     subscriptionAmount: number;
+    gstinCredits?: number;
+    maxLogins?: number;
   }) => rtdbService.adminCreateUser(payload),
   getUserDetails: (uid: string): Promise<{
     user: UserRecord;
@@ -414,6 +441,7 @@ export const adminApi = {
     quotations: Quotation[];
     analytics: CustomerAnalyticsData;
     logs: ActivityLog[];
+    deviceSessions: UserDeviceSession[];
   }> => rtdbService.adminGetUserDetails(uid),
   updateUser: (
     uid: string,
@@ -424,8 +452,17 @@ export const adminApi = {
       gstin?: string;
       subscriptionPlan?: string;
       subscriptionAmount?: number;
+      gstinCredits?: number;
+      gstinCreditsUsed?: number;
+      maxLogins?: number;
     }
   ) => rtdbService.adminUpdateUser(uid, payload),
+  listUserSessions: (uid: string) => rtdbService.listUserDeviceSessions(uid),
+  revokeUserSession: (uid: string, sessionId: string) =>
+    rtdbService.revokeUserDeviceSession(uid, sessionId),
+  revokeAllUserSessions: (uid: string) =>
+    rtdbService.revokeAllUserDeviceSessions(uid),
+  deleteUser: (uid: string) => rtdbService.adminDeleteUser(uid),
   setUserStatus: (uid: string, status: 'active' | 'inactive') =>
     rtdbService.adminSetUserStatus(uid, status),
   resetUserPassword: (uid: string, _newPassword?: string) =>
