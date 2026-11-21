@@ -63,8 +63,6 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
   const [customerId, setCustomerId] = React.useState('all');
   const [startDate, setStartDate] = React.useState('');
   const [endDate, setEndDate] = React.useState('');
-  const [page, setPage] = React.useState(1);
-  const pageSize = 12;
 
   // Record payment modal
   const [payInvoice, setPayInvoice] = React.useState<Invoice | null>(null);
@@ -162,9 +160,6 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
     });
   }, [allInvoices, search, status, customerId, startDate, endDate]);
 
-  const totalPages = Math.max(1, Math.ceil(invoices.length / pageSize));
-  const paginated = invoices.slice((page - 1) * pageSize, page * pageSize);
-
   const handleOpenPayment = (inv: Invoice) => {
     setPayInvoice(inv);
     setPayForm({
@@ -222,20 +217,14 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
             <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="Search invoice #, customer..."
               className="pl-9"
             />
           </div>
           <Select
             value={status}
-            onChange={(e) => {
-              setStatus(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setStatus(e.target.value)}
             className="w-full sm:w-44"
           >
             <option value="all">All Statuses</option>
@@ -249,10 +238,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
           </Select>
           <Select
             value={customerId}
-            onChange={(e) => {
-              setCustomerId(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setCustomerId(e.target.value)}
             className="w-full sm:w-48"
           >
             <option value="all">All Customers</option>
@@ -425,7 +411,7 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {paginated.map((inv) => (
+                  {invoices.map((inv) => (
                     <TableRow key={inv.id}>
                       <TableCell>
                         <button
@@ -514,31 +500,9 @@ export function InvoicesListPage({ navigate }: { navigate: (path: string) => voi
               </Table>
               </div>
 
-              {totalPages > 1 ? (
-                <div className="hidden md:flex items-center justify-between border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800">
-                  <span>
-                    Page {page} of {totalPages} ({invoices.length} invoices)
-                  </span>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={page <= 1}
-                      onClick={() => setPage((p) => p - 1)}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={page >= totalPages}
-                      onClick={() => setPage((p) => p + 1)}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
+              <div className="hidden md:flex items-center justify-between border-t border-zinc-100 px-4 py-2.5 text-xs text-zinc-500 dark:border-zinc-800">
+                <span>Showing {invoices.length} invoices</span>
+              </div>
             </>
           )}
         </CardContent>

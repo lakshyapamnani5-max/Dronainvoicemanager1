@@ -74,7 +74,9 @@ export function OutstandingReportPage({ navigate }: { navigate: (path: string) =
       setCustomers(initialHydrated.customers);
       setLoading(!initialHydrated.complete);
     }
-    void load(Boolean(initialHydrated?.complete));
+    if (!initialHydrated?.complete) {
+      void load(false);
+    }
   }, [initialHydrated, load]);
 
   React.useEffect(() => {

@@ -24,6 +24,7 @@ import { CustomerDashboard } from './pages/customer/CustomerDashboard';
 import { CustomerDetailsPage, CustomersPage } from './pages/customer/CustomersPage';
 import { GstCustomerPage } from './pages/customer/GstCustomerPage';
 import { InvoiceDetailsPage, InvoicesListPage } from './pages/customer/InvoicesPages';
+import { MobileCalculatorPage } from './pages/customer/MobileCalculatorPage';
 import { PaymentsPage } from './pages/customer/PaymentsPage';
 import { PurchaseDetailsPage } from './pages/customer/PurchaseDetailsPage';
 import { PurchaseEditorPage } from './pages/customer/PurchaseEditorPage';
@@ -634,6 +635,20 @@ function AppRouter() {
       </AppShell>
     );
   }
+  if (path === '/calculator') {
+    return (
+      <AppShell
+        currentPath={path}
+        navigate={navigate}
+        title="Calculator"
+        breadcrumbs={[bizName, 'Calculator']}
+        hideFooter
+      >
+        <MobileCalculatorPage />
+      </AppShell>
+    );
+  }
+
   if (path === '/settings') {
     return (
       <AppShell

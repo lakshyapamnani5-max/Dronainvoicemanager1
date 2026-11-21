@@ -101,7 +101,7 @@ const LOGO_SENTINEL = '__DRONA_PROF_LOGO__';
 const SIG_SENTINEL = '__DRONA_PROF_SIG__';
 const QR_SENTINEL = '__DRONA_PROF_QR__';
 
-export const DEFAULT_COLLECTION_TTL_MS = 5 * 60 * 1000; // 5 minutes
+export const DEFAULT_COLLECTION_TTL_MS = 24 * 60 * 60 * 1000; // 24 hours (invalidated in real time via _meta)
 export const DEFAULT_ADMIN_TTL_MS = 3 * 60 * 1000; // 3 minutes
 
 const tenantMemory = new Map<string, TenantCacheEntry>();

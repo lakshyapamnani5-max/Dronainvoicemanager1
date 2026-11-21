@@ -120,7 +120,9 @@ export function PurchaseDetailsPage({
   );
 
   React.useEffect(() => {
-    void load(Boolean(initialData));
+    if (!initialData) {
+      void load(false);
+    }
   }, [load, initialData]);
 
   React.useEffect(() => {

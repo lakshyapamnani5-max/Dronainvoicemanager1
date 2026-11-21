@@ -134,8 +134,6 @@ export function PurchasesDashboardPage({
   const [billSupplierId, setBillSupplierId] = React.useState('all');
   const [billStartDate, setBillStartDate] = React.useState('');
   const [billEndDate, setBillEndDate] = React.useState('');
-  const [billPage, setBillPage] = React.useState(1);
-  const billPageSize = 12;
 
   // Delete Bill Confirmation Modal
   const [deleteTargetBill, setDeleteTargetBill] = React.useState<Purchase | null>(null);
@@ -306,12 +304,6 @@ export function PurchasesDashboardPage({
       return true;
     });
   }, [snapshot.purchases, billSearch, billStatus, billSupplierId, billStartDate, billEndDate]);
-
-  const totalBillPages = Math.max(1, Math.ceil(filteredBills.length / billPageSize));
-  const paginatedBills = filteredBills.slice(
-    (billPage - 1) * billPageSize,
-    billPage * billPageSize
-  );
 
   const buildExportRows = () =>
     filteredBills.map((p) => ({
@@ -965,20 +957,14 @@ export function PurchasesDashboardPage({
                 <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
                 <Input
                   value={billSearch}
-                  onChange={(e) => {
-                    setBillSearch(e.target.value);
-                    setBillPage(1);
-                  }}
+                  onChange={(e) => setBillSearch(e.target.value)}
                   placeholder="Search bill #, PO #, supplier, GSTIN..."
                   className="pl-9"
                 />
               </div>
               <Select
                 value={billStatus}
-                onChange={(e) => {
-                  setBillStatus(e.target.value);
-                  setBillPage(1);
-                }}
+                onChange={(e) => setBillStatus(e.target.value)}
                 className="w-full sm:w-44"
               >
                 <option value="all">All Statuses</option>
@@ -991,10 +977,7 @@ export function PurchasesDashboardPage({
               </Select>
               <Select
                 value={billSupplierId}
-                onChange={(e) => {
-                  setBillSupplierId(e.target.value);
-                  setBillPage(1);
-                }}
+                onChange={(e) => setBillSupplierId(e.target.value)}
                 className="w-full sm:w-48"
               >
                 <option value="all">All Suppliers</option>
@@ -1007,20 +990,14 @@ export function PurchasesDashboardPage({
               <Input
                 type="date"
                 value={billStartDate}
-                onChange={(e) => {
-                  setBillStartDate(e.target.value);
-                  setBillPage(1);
-                }}
+                onChange={(e) => setBillStartDate(e.target.value)}
                 className="w-full sm:w-36"
                 aria-label="Start date"
               />
               <Input
                 type="date"
                 value={billEndDate}
-                onChange={(e) => {
-                  setBillEndDate(e.target.value);
-                  setBillPage(1);
-                }}
+                onChange={(e) => setBillEndDate(e.target.value)}
                 className="w-full sm:w-36"
                 aria-label="End date"
               />
@@ -1147,7 +1124,7 @@ export function PurchasesDashboardPage({
                         </TableRow>
                       </TableHeader>
                       <TableBody>
-                        {paginatedBills.map((p) => (
+                        {filteredBills.map((p) => (
                           <TableRow key={p.id}>
                             <TableCell className="font-mono font-medium">
                               <button
@@ -1236,32 +1213,9 @@ export function PurchasesDashboardPage({
                     </Table>
                   </div>
 
-                  {/* Pagination - visible on desktop, mobile has continuous scroll */}
-                  {totalBillPages > 1 ? (
-                    <div className="hidden md:flex items-center justify-between px-4 py-3 border-t border-zinc-100 dark:border-zinc-800 text-xs text-zinc-500">
-                      <span>
-                        Page {billPage} of {totalBillPages} ({filteredBills.length} bills)
-                      </span>
-                      <div className="flex items-center gap-2">
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={billPage <= 1}
-                          onClick={() => setBillPage((p) => Math.max(1, p - 1))}
-                        >
-                          Previous
-                        </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          disabled={billPage >= totalBillPages}
-                          onClick={() => setBillPage((p) => Math.min(totalBillPages, p + 1))}
-                        >
-                          Next
-                        </Button>
-                      </div>
-                    </div>
-                  ) : null}
+                  <div className="hidden md:flex items-center justify-between px-4 py-2.5 border-t border-zinc-100 dark:border-zinc-800 text-xs text-zinc-500">
+                    <span>Showing {filteredBills.length} purchase bills</span>
+                  </div>
                 </>
               )}
             </CardContent>

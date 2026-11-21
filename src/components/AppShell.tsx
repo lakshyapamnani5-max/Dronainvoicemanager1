@@ -5,6 +5,7 @@ import {
   BarChart3,
   Bell,
   Building2,
+  Calculator,
   CreditCard,
   FileCheck2,
   FileSpreadsheet,
@@ -166,8 +167,9 @@ export function AppShell({
     }
     if (cachedRead.hasTenantCollectionData(tenantUid, 'notifications')) {
       setNotifications(cachedRead.getTenantEntry(tenantUid).notifications);
+    } else {
+      void loadNotifications();
     }
-    void loadNotifications();
     return cachedRead.subscribeTenantCache(tenantUid, (changed) => {
       if (changed.has('notifications')) {
         setNotifications(cachedRead.getTenantEntry(tenantUid).notifications);
@@ -213,12 +215,12 @@ export function AppShell({
       ]
     : [
         { label: 'Invoices', path: '/invoices', icon: Receipt },
-        { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
+        { label: 'Quotes', path: '/quotations', icon: FileCheck2 },
       ];
 
   const mobileBottomRight = isAdminView
     ? [{ label: 'Invoices', path: '/admin/invoices', icon: Receipt }]
-    : [{ label: 'Quotes', path: '/quotations', icon: FileCheck2 }];
+    : [{ label: 'Calculator', path: '/calculator', icon: Calculator }];
 
   const isMoreActive = isAdminView
     ? [
@@ -229,11 +231,13 @@ export function AppShell({
         '/admin/settings',
       ].some((p) => currentPath === p || currentPath.startsWith(p + '/'))
     : [
+        '/dashboard',
         '/customers',
         '/purchases',
         '/gst-customer',
         '/rate-card',
         '/payments',
+        '/reports/gst',
         '/reports/outstanding',
         '/reports/sales',
         '/business-profile',

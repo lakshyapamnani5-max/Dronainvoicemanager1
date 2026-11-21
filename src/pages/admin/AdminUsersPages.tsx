@@ -54,8 +54,6 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
   const [search, setSearch] = React.useState('');
   const [statusFilter, setStatusFilter] = React.useState('all');
   const [sortKey, setSortKey] = React.useState<'createdAt' | 'totalSales' | 'businessName'>('createdAt');
-  const [page, setPage] = React.useState(1);
-  const pageSize = 10;
 
   const load = React.useCallback(async (silent = false) => {
     if (!silent) setLoading(true);
@@ -100,9 +98,6 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
     });
   }, [allUsers, search, statusFilter, sortKey]);
 
-  const totalPages = Math.max(1, Math.ceil(sorted.length / pageSize));
-  const paginated = sorted.slice((page - 1) * pageSize, page * pageSize);
-
   const handleToggleStatus = async (u: AdminUserRow) => {
     const next = u.status === 'active' ? 'inactive' : 'active';
     try {
@@ -132,10 +127,7 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
             <Search className="absolute left-3 top-3 sm:top-2.5 h-4 w-4 text-zinc-400" />
             <Input
               value={search}
-              onChange={(e) => {
-                setSearch(e.target.value);
-                setPage(1);
-              }}
+              onChange={(e) => setSearch(e.target.value)}
               placeholder="Search business, owner, email, GSTIN..."
               className="pl-9"
             />
@@ -143,10 +135,7 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
 
           <Select
             value={statusFilter}
-            onChange={(e) => {
-              setStatusFilter(e.target.value);
-              setPage(1);
-            }}
+            onChange={(e) => setStatusFilter(e.target.value)}
             className="w-full sm:w-36"
           >
             <option value="all">All Status</option>
@@ -183,7 +172,7 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
             <>
               {/* Mobile Business Cards */}
               <div className="md:hidden divide-y divide-zinc-100 dark:divide-zinc-800">
-                {paginated.map((u) => (
+                {sorted.map((u) => (
                   <div key={u.uid} className="p-4 space-y-3">
                     <div className="flex items-start justify-between gap-3">
                       <button
@@ -270,7 +259,7 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {paginated.map((u) => (
+                    {sorted.map((u) => (
                       <TableRow key={u.uid}>
                         <TableCell>
                           <button
@@ -343,31 +332,9 @@ export function AdminUsersListPage({ navigate }: { navigate: (path: string) => v
                 </Table>
               </div>
 
-              {totalPages > 1 ? (
-                <div className="flex flex-wrap items-center justify-between gap-2 border-t border-zinc-100 px-4 py-3 text-xs text-zinc-500 dark:border-zinc-800">
-                  <span>
-                    Page {page} of {totalPages} ({sorted.length} businesses)
-                  </span>
-                  <div className="flex gap-2">
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={page <= 1}
-                      onClick={() => setPage((p) => p - 1)}
-                    >
-                      Previous
-                    </Button>
-                    <Button
-                      size="sm"
-                      variant="outline"
-                      disabled={page >= totalPages}
-                      onClick={() => setPage((p) => p + 1)}
-                    >
-                      Next
-                    </Button>
-                  </div>
-                </div>
-              ) : null}
+              <div className="flex items-center justify-between border-t border-zinc-100 px-4 py-2.5 text-xs text-zinc-500 dark:border-zinc-800">
+                <span>Showing {sorted.length} businesses</span>
+              </div>
             </>
           )}
         </CardContent>
